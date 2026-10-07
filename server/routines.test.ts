@@ -120,7 +120,7 @@ describe("routines startup state", () => {
     expect(new RoutineManager(h.options).listRuns()).toEqual([]);
   });
 
-  it.each(["{broken", "{}", '{"version":1,"routines":[],"runs":null}'])(
+  it.each(["", "{broken", "{}", '{"version":1,"routines":[],"runs":null}'])(
     "refuses persisted work with an invalid routines file: %s", (contents) => {
       const h = harness();
       writeFileSync(h.options.file!, contents);
@@ -128,6 +128,13 @@ describe("routines startup state", () => {
       expect(readFileSync(h.options.file!, "utf8")).toBe(contents);
     },
   );
+
+  it("does not treat an unreadable routines path as a fresh workspace", () => {
+    const h = harness();
+    mkdirSync(h.options.file!);
+    expect(() => new RoutineManager(h.options)).toThrow();
+    expect(statSync(h.options.file!).isDirectory()).toBe(true);
+  });
 });
 
 describe("bounded scheduled overlap and run health", () => {
