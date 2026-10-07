@@ -9,6 +9,28 @@ const RESPONSE_SCHEMA = "agentic-driver.bot-startup-decision.v1";
 const MAX_BYTES = 4096;
 const ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
 
+export function driverScopedBoot(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OMB_DRIVER_SCOPED_BOOT === "1";
+}
+
+/** Recurring fail-closed check for the scoped bot runtime: every turn
+ * dispatch re-asks the host broker. Ordinary unscoped app launches never
+ * set OMB_DRIVER_SCOPED_BOOT and are untouched. A refusal is returned, not
+ * thrown, so both dispatch seams (throwing direct turns, callback-driven
+ * room turns) can fail closed in their own idiom. */
+export async function driverScopedDispatchRefusal(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  if (!driverScopedBoot(env)) return null;
+  try {
+    await requireDriverStartupGate({
+      socketPath: env.OMB_DRIVER_GATE_SOCKET ?? "",
+      assignmentId: env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
+    });
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : "driver startup gate refused dispatch";
+  }
+}
+
 export async function requireDriverStartupGate({ socketPath, assignmentId, timeoutMs = 2000 }: {
   socketPath: string; assignmentId: string; timeoutMs?: number;
 }): Promise<void> {

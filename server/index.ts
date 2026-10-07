@@ -4,7 +4,7 @@
 // First, before any module that could start a process: a Cloud home's
 // secrets off the launcher's pipe (cloud-secrets-boot.ts).
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
-import { requireDriverStartupGate } from "./driver-startup-gate.ts";
+import { driverScopedDispatchRefusal, requireDriverStartupGate } from "./driver-startup-gate.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
@@ -9412,6 +9412,12 @@ async function startTurn(
   },
 ) {
   workspaceMaintenance.assertAvailable();
+  // A scoped bot runtime re-asks the host broker on every dispatch: queued
+  // sends, routine runs and delegations admitted while the assignment was
+  // live must stop once it is held or its claim expires. Throws before any
+  // transcript or provider state is touched; unscoped launches skip this.
+  const scopedRefusal = await driverScopedDispatchRefusal();
+  if (scopedRefusal) throw Object.assign(new Error(scopedRefusal), { status: 503 });
   const profile = store.bot(botId);
   if (!profile) throw Object.assign(new Error("no such bot"), { status: 404 });
   const threadId = opts?.threadId ?? profile.threadId;
@@ -12209,6 +12215,14 @@ async function runGroupMemberTurn(
   // fresh bot rather than mixing a stale adapter with fresh permissions.
   setupRetry = 0,
 ): Promise<boolean> {
+  // Rooms dispatch per member here, not through startTurn: the recurring
+  // scoped-gate check must live in both seams to cover group goals, room
+  // queue drains and chained @mentions.
+  const scopedRefusal = await driverScopedDispatchRefusal();
+  if (scopedRefusal) {
+    onDispatchError?.(scopedRefusal);
+    return false;
+  }
   if (workspaceMaintenance.active) {
     onDispatchError?.("A workspace backup or restore is in progress.");
     return false;

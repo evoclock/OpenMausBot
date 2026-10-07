@@ -1,9 +1,9 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { requireDriverStartupGate } from "./driver-startup-gate.ts";
+import { driverScopedDispatchRefusal, requireDriverStartupGate } from "./driver-startup-gate.ts";
 
 const dirs: string[] = [];
 const servers: Server[] = [];
@@ -58,4 +58,45 @@ it.each(["held", "wrong-assignment", "replayed-nonce", "malformed"])("refuses %s
 it("refuses a silent broker within a bounded timeout", async () => {
   const path = await broker(() => null);
   await expect(requireDriverStartupGate({ socketPath: path, assignmentId: "a", timeoutMs: 25 })).rejects.toThrow(/timed out/);
+});
+
+describe("driverScopedDispatchRefusal recurring check", () => {
+  const saved: Record<string, string | undefined> = {};
+  const keys = ["OMB_DRIVER_SCOPED_BOOT", "OMB_DRIVER_GATE_SOCKET", "OMB_DRIVER_ASSIGNMENT_ID"];
+  beforeEach(() => { for (const key of keys) { saved[key] = process.env[key]; delete process.env[key]; } });
+  afterEach(() => { for (const key of keys) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; } });
+
+  const scoped = (socket: string) => {
+    process.env.OMB_DRIVER_SCOPED_BOOT = "1";
+    process.env.OMB_DRIVER_GATE_SOCKET = socket;
+    process.env.OMB_DRIVER_ASSIGNMENT_ID = "a";
+  };
+
+  it("is a no-op for ordinary unscoped launches, even with no broker", async () => {
+    await expect(driverScopedDispatchRefusal()).resolves.toBeNull();
+  });
+
+  it("fails closed when the broker socket is gone", async () => {
+    scoped("/no/such/broker.sock");
+    await expect(driverScopedDispatchRefusal()).resolves.toMatch(/unavailable/);
+  });
+
+  it("fails closed when the broker holds the assignment", async () => {
+    const path = await broker((request) => ({
+      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
+      nonce: request.nonce, dispatch: false,
+    }));
+    scoped(path);
+    await expect(driverScopedDispatchRefusal()).resolves.toMatch(/refused/);
+  });
+
+  it("admits a scoped dispatch only on a fresh positive decision", async () => {
+    const path = await broker((request) => ({
+      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
+      nonce: request.nonce, dispatch: true,
+    }));
+    scoped(path);
+    await expect(driverScopedDispatchRefusal()).resolves.toBeNull();
+    await expect(driverScopedDispatchRefusal()).resolves.toBeNull();
+  });
 });
