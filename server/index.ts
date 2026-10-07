@@ -4,6 +4,7 @@
 // First, before any module that could start a process: a Cloud home's
 // secrets off the launcher's pipe (cloud-secrets-boot.ts).
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
+import { requireDriverStartupGate } from "./driver-startup-gate.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
@@ -25160,6 +25161,16 @@ restoreChannelMessages();
   if (movedAutoPins) console.log(`Works on: moved ${movedAutoPins} auto-pinned thread(s) to their bot's current Works on`);
 }
 
+// A scoped launch checks before importing this module AND again immediately
+// before either listener can accept requests or any startup queue can drain.
+// Native containment must pin the scoped entrypoint: ordinary unscoped app
+// launches intentionally remain independent and are NOT a safe bot runtime.
+if (process.env.OMB_DRIVER_SCOPED_BOOT === "1") {
+  await requireDriverStartupGate({
+    socketPath: process.env.OMB_DRIVER_GATE_SOCKET ?? "",
+    assignmentId: process.env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
+  });
+}
 server.listen(PORT, "127.0.0.1", () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);

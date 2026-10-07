@@ -8,6 +8,7 @@ await requireDriverStartupGate({
   assignmentId: process.env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
 });
 
-// No server imports before the check: index.ts has startup side effects and
-// begins draining queued sends, routines and delegations after listen().
+// No server imports before the check: index.ts has startup side effects.
+// It rechecks immediately before listen(), after its initialization phase.
+process.env.OMB_DRIVER_SCOPED_BOOT = "1";
 await import("./index.ts");
