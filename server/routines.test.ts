@@ -1,3 +1,4 @@
+// Modified in 2026: cover fail-closed loading of persisted routine queues.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

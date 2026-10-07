@@ -1,3 +1,4 @@
+// Modified in 2026: fail closed when persisted routine queue state is unreadable.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
