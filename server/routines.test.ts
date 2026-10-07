@@ -113,6 +113,23 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+describe("routines startup state", () => {
+  it("starts fresh only when the routines file is absent", () => {
+    const h = harness();
+    expect(h.manager.listRoutines()).toEqual([]);
+    expect(new RoutineManager(h.options).listRuns()).toEqual([]);
+  });
+
+  it.each(["{broken", "{}", '{"version":1,"routines":[],"runs":null}'])(
+    "refuses persisted work with an invalid routines file: %s", (contents) => {
+      const h = harness();
+      writeFileSync(h.options.file!, contents);
+      expect(() => new RoutineManager(h.options)).toThrow();
+      expect(readFileSync(h.options.file!, "utf8")).toBe(contents);
+    },
+  );
+});
+
 describe("bounded scheduled overlap and run health", () => {
   const start = Date.parse("2026-09-13T08:00:00Z");
   const input = () => ({ name: "Health check", prompt: "Check the fixture", botId: "maus-1",

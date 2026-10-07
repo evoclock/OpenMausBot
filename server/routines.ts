@@ -795,6 +795,9 @@ export class RoutineManager {
     this.now = options.now ?? Date.now;
     try {
       const disk = JSON.parse(readFileSync(this.file, "utf8")) as Partial<RoutineFile>;
+      if (disk?.version !== 1 || !Array.isArray(disk.routines) || !Array.isArray(disk.runs)) {
+        throw new Error("Invalid routines file: expected version 1 with routines and runs");
+      }
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
             const schedule = loadSchedule(routine.schedule, this.now());
@@ -867,7 +870,11 @@ export class RoutineManager {
         this.webhookRunReceipts.push({ webhookId: run.webhookId, deliveryId: run.deliveryId, runId: run.id, acceptedAt: run.createdAt });
         known.add(key);
       }
-    } catch {
+    } catch (error) {
+      // A missing file is a fresh workspace. An unreadable or malformed file
+      // may contain admitted queued work: never silently start with an empty
+      // scheduler and overwrite that evidence on the next save.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
       this.routines = [];
       this.runs = [];
       this.routineRequestReceipts = [];
