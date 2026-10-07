@@ -4,7 +4,12 @@
 // First, before any module that could start a process: a Cloud home's
 // secrets off the launcher's pipe (cloud-secrets-boot.ts).
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
-import { driverScopedDispatchRefusal, requireDriverStartupGate } from "./driver-startup-gate.ts";
+import {
+  DRIVER_SCOPED_GATE_CONFIG,
+  driverScopedDispatchRefusal,
+  requireDriverStartupGate,
+  runDriverScopedModelCall,
+} from "./driver-startup-gate.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync, mkdirSync } from "node:fs";
@@ -6093,9 +6098,9 @@ const memoryUpkeep = createMemoryUpkeep({
     if (!bot || !instance || policyModelRefusal(instance)) return null;
     const generate = instance.generateText?.bind(instance);
     return generate ? {
-      generateText: async (prompt, options) => {
-        // Check every capture, organize and contradiction call, including
-        // consecutive calls within one upkeep pass.
+      generateText: async (prompt, options) => runDriverScopedModelCall(() => {
+        // Check the scoped lease before every capture, organize and
+        // contradiction call, including consecutive upkeep calls.
         assertWithinBudget(cfg, DATA_DIR);
         const threadId = `memory-${randomUUID()}`;
         return generate(prompt, { ...options, onUsage: (usage) => bookTurnUsage({
@@ -6111,7 +6116,7 @@ const memoryUpkeep = createMemoryUpkeep({
           costUsd: usage.costUsd ?? null,
           trigger: { kind: "bot", botId: bot.id },
         }, usage.input !== undefined && usage.output !== undefined, bot.threadId) });
-      },
+      }),
     } : {};
   },
   busy: (botId) => botHasActiveTurn(botId),
@@ -9331,7 +9336,7 @@ async function generateThreadTitle(
     // the race caps the wait; the signal aborts the provider call itself,
     // which every generateText driver that can honor it does
     const reply = await Promise.race([
-      provider.generateText!(prompt, { signal: expiry.signal }),
+      runDriverScopedModelCall(() => provider.generateText!(prompt, { signal: expiry.signal })),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           expiry.abort();
@@ -25179,11 +25184,8 @@ restoreChannelMessages();
 // before either listener can accept requests or any startup queue can drain.
 // Native containment must pin the scoped entrypoint: ordinary unscoped app
 // launches intentionally remain independent and are NOT a safe bot runtime.
-if (process.env.OMB_DRIVER_SCOPED_BOOT === "1") {
-  await requireDriverStartupGate({
-    socketPath: process.env.OMB_DRIVER_GATE_SOCKET ?? "",
-    assignmentId: process.env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
-  });
+if (DRIVER_SCOPED_GATE_CONFIG.enabled) {
+  await requireDriverStartupGate(DRIVER_SCOPED_GATE_CONFIG);
 }
 server.listen(PORT, "127.0.0.1", () => {
   companyRuntimeReady();

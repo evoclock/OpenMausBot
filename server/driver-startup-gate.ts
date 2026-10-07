@@ -9,26 +9,51 @@ const RESPONSE_SCHEMA = "agentic-driver.bot-startup-decision.v1";
 const MAX_BYTES = 4096;
 const ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
 
-export function driverScopedBoot(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.OMB_DRIVER_SCOPED_BOOT === "1";
+export interface DriverScopedGateConfig {
+  readonly enabled: boolean;
+  readonly socketPath: string;
+  readonly assignmentId: string;
 }
 
-/** Recurring fail-closed check for the scoped bot runtime: every turn
- * dispatch re-asks the host broker. Ordinary unscoped app launches never
- * set OMB_DRIVER_SCOPED_BOOT and are untouched. A refusal is returned, not
- * thrown, so both dispatch seams (throwing direct turns, callback-driven
- * room turns) can fail closed in their own idiom. */
-export async function driverScopedDispatchRefusal(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
-  if (!driverScopedBoot(env)) return null;
-  try {
-    await requireDriverStartupGate({
-      socketPath: env.OMB_DRIVER_GATE_SOCKET ?? "",
-      assignmentId: env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
-    });
-    return null;
-  } catch (error) {
-    return error instanceof Error ? error.message : "driver startup gate refused dispatch";
-  }
+/** Snapshot launcher-owned gate settings once. Later process.env changes must
+ * neither disable a scoped runtime nor redirect its broker checks. */
+export function captureDriverScopedGateConfig(env: NodeJS.ProcessEnv = process.env): DriverScopedGateConfig {
+  return Object.freeze({
+    enabled: env.OMB_DRIVER_SCOPED_BOOT === "1",
+    socketPath: env.OMB_DRIVER_GATE_SOCKET ?? "",
+    assignmentId: env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
+  });
+}
+
+export const DRIVER_SCOPED_GATE_CONFIG = captureDriverScopedGateConfig();
+
+/** Every scoped turn dispatch re-asks the host broker. Ordinary unscoped
+ * launches never set the boot marker and are untouched. */
+export function createDriverScopedDispatchRefusal(
+  config: DriverScopedGateConfig = DRIVER_SCOPED_GATE_CONFIG,
+): () => Promise<string | null> {
+  const snapshot = Object.freeze({ ...config });
+  return async () => {
+    if (!snapshot.enabled) return null;
+    try {
+      await requireDriverStartupGate(snapshot);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "driver startup gate refused dispatch";
+    }
+  };
+}
+
+export const driverScopedDispatchRefusal = createDriverScopedDispatchRefusal();
+
+/** Guard provider calls that happen outside the main turn-dispatch seam. */
+export async function runDriverScopedModelCall<T>(
+  call: () => Promise<T>,
+  refusal: () => Promise<string | null> = driverScopedDispatchRefusal,
+): Promise<T> {
+  const reason = await refusal();
+  if (reason) throw new Error(reason);
+  return call();
 }
 
 export async function requireDriverStartupGate({ socketPath, assignmentId, timeoutMs = 2000 }: {
