@@ -1,42 +1,240 @@
-// Offline integration seam for a host-owned, scoped bot launcher. The socket
-// must be mounted and pinned by the native launcher; this code cannot prove
-// who owns an arbitrary path supplied by the bot process.
-import { randomBytes } from "node:crypto";
-import { createConnection } from "node:net";
+// Host-owned, scoped bot startup gate over the launcher's stdin/stdout pipes.
+// The scoped entrypoint reserves stdout for framed broker traffic before it
+// imports the server. Ordinary unscoped launches do not touch these streams.
+import { TextDecoder } from "node:util";
+import type { Readable } from "node:stream";
 
-const REQUEST_SCHEMA = "agentic-driver.bot-startup-check.v1";
-const RESPONSE_SCHEMA = "agentic-driver.bot-startup-decision.v1";
-const MAX_BYTES = 4096;
-const ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
+const REQUEST_SCHEMA = "agentic-driver.bot-stdio-request.v1";
+const DECISION_SCHEMA = "agentic-driver.bot-stdio-decision.v1";
+const MAX_FRAME_BYTES = 4096;
+const DEFAULT_TIMEOUT_MS = 2000;
+const ASSIGNMENT_ID = /^[a-z0-9][a-z0-9-]{0,127}$/;
+const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DECISION_CODE = /^[a-z0-9-]{1,64}$/;
 
 export interface DriverScopedGateConfig {
   readonly enabled: boolean;
-  readonly socketPath: string;
-  readonly assignmentId: string;
 }
 
-/** Snapshot launcher-owned gate settings once. Later process.env changes must
- * neither disable a scoped runtime nor redirect its broker checks. */
+export interface DriverStartupGateClientOptions {
+  readonly input: Readable;
+  readonly writeFrame: (frame: Buffer) => Promise<void>;
+  readonly timeoutMs?: number;
+}
+
+/** Snapshot the launcher-owned scoped marker once. No guest-supplied identity
+ * or endpoint is trusted; the host returns run and assignment IDs per check. */
 export function captureDriverScopedGateConfig(env: NodeJS.ProcessEnv = process.env): DriverScopedGateConfig {
-  return Object.freeze({
-    enabled: env.OMB_DRIVER_SCOPED_BOOT === "1",
-    socketPath: env.OMB_DRIVER_GATE_SOCKET ?? "",
-    assignmentId: env.OMB_DRIVER_ASSIGNMENT_ID ?? "",
-  });
+  return Object.freeze({ enabled: env.OMB_DRIVER_SCOPED_BOOT === "1" });
 }
 
 export const DRIVER_SCOPED_GATE_CONFIG = captureDriverScopedGateConfig();
 
-/** Every scoped turn dispatch re-asks the host broker. Ordinary unscoped
- * launches never set the boot marker and are untouched. */
+function encodeFrame(value: unknown): Buffer {
+  const body = Buffer.from(JSON.stringify(value), "utf8");
+  if (body.length === 0 || body.length > MAX_FRAME_BYTES) {
+    throw new Error("driver startup gate request exceeds the frame limit");
+  }
+  const frame = Buffer.allocUnsafe(4 + body.length);
+  frame.writeUInt32BE(body.length, 0);
+  body.copy(frame, 4);
+  return frame;
+}
+
+function decodeDecision(body: Buffer, sequence: number): {
+  runId: string;
+  assignmentId: string;
+  dispatch: boolean;
+  code: string;
+} {
+  let decision: unknown;
+  try {
+    decision = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw new Error("driver startup gate response malformed");
+  }
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) ||
+      Object.getPrototypeOf(decision) !== Object.prototype) {
+    throw new Error("driver startup gate response malformed");
+  }
+  const value = decision as Record<string, unknown>;
+  if (Object.keys(value).sort().join(",") !== "assignmentId,code,dispatch,runId,schema,sequence" ||
+      value.schema !== DECISION_SCHEMA || value.sequence !== sequence ||
+      typeof value.runId !== "string" || !RUN_ID.test(value.runId) ||
+      typeof value.assignmentId !== "string" || !ASSIGNMENT_ID.test(value.assignmentId) ||
+      typeof value.dispatch !== "boolean" ||
+      typeof value.code !== "string" || !DECISION_CODE.test(value.code)) {
+    throw new Error("driver startup gate response refused or out of sequence");
+  }
+  return value as { runId: string; assignmentId: string; dispatch: boolean; code: string };
+}
+
+/** Create one serialized, fail-closed client. This stream-injected seam keeps
+ * protocol tests isolated from host pipes and from machine/user state. */
+export function createDriverStartupGateClient({ input, writeFrame, timeoutMs = DEFAULT_TIMEOUT_MS }: DriverStartupGateClientOptions): () => Promise<void> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) {
+    throw new Error("driver startup gate timeout configuration invalid");
+  }
+
+  let buffer = Buffer.alloc(0);
+  let nextSequence = 0;
+  let runId: string | null = null;
+  let assignmentId: string | null = null;
+  let terminalError: Error | null = null;
+  let pending: {
+    readonly sequence: number;
+    readonly timer: NodeJS.Timeout;
+    readonly resolve: () => void;
+    readonly reject: (error: Error) => void;
+  } | null = null;
+  let queue: Promise<void> = Promise.resolve();
+
+  const fail = (error: Error) => {
+    if (terminalError) return;
+    terminalError = error;
+    const current = pending;
+    pending = null;
+    if (current) {
+      clearTimeout(current.timer);
+      current.reject(error);
+    }
+  };
+
+  const onData = (chunk: Buffer | string) => {
+    if (terminalError) return;
+    if (!pending || !Buffer.isBuffer(chunk)) {
+      fail(new Error("driver startup gate received unexpected transport data"));
+      return;
+    }
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.length > MAX_FRAME_BYTES + 4) {
+      fail(new Error("driver startup gate response exceeds the frame limit"));
+      return;
+    }
+    if (buffer.length < 4) return;
+    const length = buffer.readUInt32BE(0);
+    if (length === 0 || length > MAX_FRAME_BYTES) {
+      fail(new Error("driver startup gate response frame length invalid"));
+      return;
+    }
+    if (buffer.length < 4 + length) return;
+    if (buffer.length !== 4 + length) {
+      fail(new Error("driver startup gate received overlapping responses"));
+      return;
+    }
+
+    const current = pending;
+    let decision: ReturnType<typeof decodeDecision>;
+    try {
+      decision = decodeDecision(buffer.subarray(4), current.sequence);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error("driver startup gate response refused"));
+      return;
+    }
+    buffer = Buffer.alloc(0);
+    if ((runId !== null && decision.runId !== runId) ||
+        (assignmentId !== null && decision.assignmentId !== assignmentId)) {
+      fail(new Error("driver startup gate host identity changed"));
+      return;
+    }
+    runId = decision.runId;
+    assignmentId = decision.assignmentId;
+    pending = null;
+    clearTimeout(current.timer);
+    if (!decision.dispatch) {
+      const error = new Error(`driver startup gate refused dispatch (${decision.code})`);
+      terminalError = error;
+      current.reject(error);
+      return;
+    }
+    nextSequence += 1;
+    current.resolve();
+  };
+
+  input.on("data", onData);
+  input.on("error", () => fail(new Error("driver startup gate transport failed")));
+  input.on("end", () => fail(new Error("driver startup gate transport closed")));
+  input.on("close", () => fail(new Error("driver startup gate transport closed")));
+
+  const check = (): Promise<void> => {
+    if (terminalError) return Promise.reject(terminalError);
+    if (!Number.isSafeInteger(nextSequence)) {
+      fail(new Error("driver startup gate sequence exhausted"));
+      return Promise.reject(terminalError!);
+    }
+    const sequence = nextSequence;
+    return new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => fail(new Error("driver startup gate timed out")), timeoutMs);
+      pending = { sequence, timer, resolve, reject };
+      let frame: Buffer;
+      try {
+        frame = encodeFrame({ schema: REQUEST_SCHEMA, kind: "gate.check", sequence });
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("driver startup gate request failed"));
+        return;
+      }
+      void writeFrame(frame).catch(() => fail(new Error("driver startup gate transport failed")));
+    });
+  };
+
+  return () => {
+    const current = queue.then(check);
+    queue = current.catch(() => {});
+    return current;
+  };
+}
+
+function reserveStdoutForBroker(): (frame: Buffer) => Promise<void> {
+  const stdout = process.stdout;
+  const writeControlFrame = stdout.write.bind(stdout);
+  stdout.write = ((
+    chunk: string | Uint8Array,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ): boolean => {
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    if (typeof chunk === "string") {
+      const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : undefined;
+      return encoding
+        ? process.stderr.write(chunk, encoding, done)
+        : process.stderr.write(chunk, done);
+    }
+    return process.stderr.write(chunk, done);
+  }) as typeof process.stdout.write;
+  // A closed host pipe is reported by the next write callback and by stdin;
+  // keep the stream error observed if it closes between checks.
+  stdout.on("error", () => {});
+
+  return (frame) => new Promise<void>((resolve, reject) => {
+    try {
+      writeControlFrame(frame, (error?: Error | null) => error ? reject(error) : resolve());
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error("driver startup gate transport failed"));
+    }
+  });
+}
+
+const processGateCheck = DRIVER_SCOPED_GATE_CONFIG.enabled
+  ? createDriverStartupGateClient({ input: process.stdin, writeFrame: reserveStdoutForBroker() })
+  : null;
+
+/** Recheck the host-owned scoped lease immediately before each protected
+ * dispatch or effect. Unscoped launches remain unchanged. */
+export async function requireDriverStartupGate(config: DriverScopedGateConfig = DRIVER_SCOPED_GATE_CONFIG): Promise<void> {
+  if (!config.enabled) return;
+  if (!processGateCheck) throw new Error("driver startup gate is unavailable");
+  await processGateCheck();
+}
+
 export function createDriverScopedDispatchRefusal(
   config: DriverScopedGateConfig = DRIVER_SCOPED_GATE_CONFIG,
+  check: (config: DriverScopedGateConfig) => Promise<void> = requireDriverStartupGate,
 ): () => Promise<string | null> {
   const snapshot = Object.freeze({ ...config });
   return async () => {
     if (!snapshot.enabled) return null;
     try {
-      await requireDriverStartupGate(snapshot);
+      await check(snapshot);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : "driver startup gate refused dispatch";
@@ -66,46 +264,4 @@ export async function runDriverScopedModelCall<T>(
   const reason = await refusal();
   if (reason) throw new Error(reason);
   return call();
-}
-
-export async function requireDriverStartupGate({ socketPath, assignmentId, timeoutMs = 2000 }: {
-  socketPath: string; assignmentId: string; timeoutMs?: number;
-}): Promise<void> {
-  if (typeof socketPath !== "string" || !socketPath.startsWith("/") || socketPath.includes("\0") ||
-      !ID.test(assignmentId) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 5000) {
-    throw new Error("driver startup gate configuration invalid");
-  }
-  const nonce = randomBytes(24).toString("hex");
-  const decision = await new Promise<unknown>((resolve, reject) => {
-    const socket = createConnection({ path: socketPath });
-    let settled = false;
-    let body = "";
-    const finish = (error?: Error, value?: unknown) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      if (error) reject(error);
-      else resolve(value);
-    };
-    socket.setTimeout(timeoutMs, () => finish(new Error("driver startup gate timed out")));
-    socket.on("error", () => finish(new Error("driver startup gate unavailable")));
-    socket.on("connect", () => socket.write(JSON.stringify({ schema: REQUEST_SCHEMA, assignmentId, nonce }) + "\n"));
-    socket.on("data", (chunk: Buffer) => {
-      body += chunk.toString("utf8");
-      if (Buffer.byteLength(body, "utf8") > MAX_BYTES) return finish(new Error("driver startup gate response too large"));
-      const end = body.indexOf("\n");
-      if (end < 0) return;
-      try { finish(undefined, JSON.parse(body.slice(0, end))); }
-      catch { finish(new Error("driver startup gate response malformed")); }
-    });
-    socket.on("end", () => finish(new Error("driver startup gate response incomplete")));
-  });
-  if (!decision || typeof decision !== "object" || Array.isArray(decision) ||
-      (decision as Record<string, unknown>).schema !== RESPONSE_SCHEMA ||
-      (decision as Record<string, unknown>).assignmentId !== assignmentId ||
-      (decision as Record<string, unknown>).nonce !== nonce ||
-      (decision as Record<string, unknown>).dispatch !== true ||
-      Object.keys(decision).sort().join(",") !== "assignmentId,dispatch,nonce,schema") {
-    throw new Error("driver startup gate refused dispatch");
-  }
 }

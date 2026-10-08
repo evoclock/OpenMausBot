@@ -20,6 +20,7 @@ import {
 } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { join } from "node:path";
+import { DRIVER_SCOPED_GATE_CONFIG } from "./driver-startup-gate.ts";
 import { resolveCliSpawn, type ResolvedSpawn } from "./env-path.ts";
 
 export function resolveCli(cli: string, args: string[] = [], env?: NodeJS.ProcessEnv): ResolvedSpawn {
@@ -29,6 +30,19 @@ export function resolveCli(cli: string, args: string[] = [], env?: NodeJS.Proces
 /** Leave headroom below CreateProcess' 32,767 UTF-16 code-unit limit for
  * libuv's quoting and environment-specific executable expansion. */
 export const WINDOWS_SAFE_COMMAND_LINE_CHARS = 30_000;
+
+/** Agent execution children must never inherit the scoped broker's control
+ * streams. Preserve an explicit ignored stdin and caller settings when unscoped. */
+export function cliExecutionStdio(
+  stdio: SpawnOptions["stdio"],
+  scoped = DRIVER_SCOPED_GATE_CONFIG.enabled,
+): SpawnOptions["stdio"] {
+  if (!scoped) return stdio;
+  const stdin = stdio === "ignore" || (Array.isArray(stdio) && stdio[0] === "ignore")
+    ? "ignore"
+    : "pipe";
+  return [stdin, "pipe", "pipe"];
+}
 
 /** Conservative size of the command line libuv will give CreateProcess.
  * JSON string quoting escapes every slash/quote case Windows quoting needs,
@@ -67,6 +81,7 @@ export function spawnCli(
   assertSafeCliArgv(resolved);
   const child = spawn(resolved.command, resolved.args, {
     ...opts,
+    stdio: cliExecutionStdio(opts.stdio),
     // posix: own process group so kill(-pid) reaps child MCP servers;
     // win32: taskkill /T does the reaping instead (see killCliTree)
     ...(process.platform === "win32" ? { windowsHide: true } : { detached: true }),
@@ -101,7 +116,14 @@ export function execCli(
     queueMicrotask(() => cb(error instanceof Error ? error : new Error(String(error)), "", ""));
     return;
   }
-  execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) =>
+  // execFile defaults to piped stdin/stdout/stderr. In particular, stdout and
+  // stderr stay captured instead of inheriting the scoped broker's streams;
+  // SpawnOptions.stdio is not supported by ExecFileOptions.
+  execFile(resolved.command, resolved.args, {
+    ...opts,
+    windowsHide: true,
+    encoding: "utf8",
+  }, (err, stdout, stderr) =>
     cb(err, stdout, stderr),
   );
 }

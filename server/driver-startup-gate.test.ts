@@ -1,161 +1,278 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createServer, type Server } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { PassThrough } from "node:stream";
 import {
   captureDriverScopedGateConfig,
   createDriverScopedDispatchRefusal,
   createDriverScopedWriteGate,
-  requireDriverStartupGate,
+  createDriverStartupGateClient,
   runDriverScopedModelCall,
   type DriverScopedGateConfig,
 } from "./driver-startup-gate.ts";
 
-const dirs: string[] = [];
-const servers: Server[] = [];
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+const fixtures: Array<{ input: PassThrough; output: PassThrough }> = [];
+const RUN_ID = "00000000-0000-4000-8000-000000000001";
+const ASSIGNMENT_ID = "assignment-a";
+afterEach(() => {
+  for (const fixture of fixtures.splice(0)) {
+    fixture.input.destroy();
+    fixture.output.destroy();
+  }
 });
 
-async function broker(reply: (request: Record<string, unknown>) => unknown) {
-  // Unix socket paths are short (sun_path); macOS tmpdir() is too long, so use /tmp on POSIX.
-  const dir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "g-"));
-  dirs.push(dir);
-  const path = join(dir, "gate.sock");
-  const server = createServer((socket) => {
-    let body = "";
-    socket.on("data", (chunk) => {
-      body += chunk.toString("utf8");
-      if (!body.includes("\n")) return;
-      const request = JSON.parse(body.split("\n")[0]);
-      const response = reply(request);
-      if (response !== null) socket.end(JSON.stringify(response) + "\n");
-    });
-  });
-  servers.push(server);
-  await new Promise<void>((resolve) => server.listen(path, resolve));
-  return path;
+function frame(value: unknown): Buffer {
+  return rawFrame(Buffer.from(JSON.stringify(value), "utf8"));
 }
 
-it("refuses missing configuration and missing broker", async () => {
-  await expect(requireDriverStartupGate({ socketPath: "", assignmentId: "a" })).rejects.toThrow(/configuration/);
-  await expect(requireDriverStartupGate({ socketPath: "/no/such/broker.sock", assignmentId: "a" })).rejects.toThrow(/unavailable/);
-});
+function rawFrame(body: Buffer): Buffer {
+  const result = Buffer.alloc(4 + body.length);
+  result.writeUInt32BE(body.length, 0);
+  body.copy(result, 4);
+  return result;
+}
 
-it("accepts only exact fresh assignment, nonce and positive decision", async () => {
-  const path = await broker((request) => ({
-    schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-    nonce: request.nonce, dispatch: true,
-  }));
-  await expect(requireDriverStartupGate({ socketPath: path, assignmentId: "a" })).resolves.toBeUndefined();
-});
+function fixture(timeoutMs = 2000) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  fixtures.push({ input, output });
+  const requests: Record<string, unknown>[] = [];
+  const waiters: Array<(request: Record<string, unknown>) => void> = [];
+  let requestBuffer = Buffer.alloc(0);
+  output.on("data", (chunk: Buffer) => {
+    requestBuffer = Buffer.concat([requestBuffer, chunk]);
+    while (requestBuffer.length >= 4) {
+      const length = requestBuffer.readUInt32BE(0);
+      if (requestBuffer.length < 4 + length) return;
+      const request = JSON.parse(requestBuffer.subarray(4, 4 + length).toString("utf8"));
+      requestBuffer = requestBuffer.subarray(4 + length);
+      const waiter = waiters.shift();
+      if (waiter) waiter(request);
+      else requests.push(request);
+    }
+  });
+  const nextRequest = () => {
+    const queued = requests.shift();
+    if (queued) return Promise.resolve(queued);
+    return new Promise<Record<string, unknown>>((resolve) => waiters.push(resolve));
+  };
+  const check = createDriverStartupGateClient({
+    input,
+    timeoutMs,
+    writeFrame: (bytes) => new Promise<void>((resolve, reject) => {
+      output.write(bytes, (error) => error ? reject(error) : resolve());
+    }),
+  });
+  return {
+    check,
+    nextRequest,
+    respond(value: unknown) { input.write(frame(value)); },
+    respondRaw(body: Buffer) { input.write(rawFrame(body)); },
+    respondBytes(bytes: Buffer) { input.write(bytes); },
+    respondLength(length: number) {
+      const header = Buffer.alloc(4);
+      header.writeUInt32BE(length, 0);
+      input.write(header);
+    },
+    close() { input.end(); },
+  };
+}
 
-it.each(["held", "wrong-assignment", "replayed-nonce", "malformed"])("refuses %s response", async (mode) => {
-  const path = await broker((request) => mode === "malformed" ? { dispatch: true } : ({
-    schema: "agentic-driver.bot-startup-decision.v1",
-    assignmentId: mode === "wrong-assignment" ? "b" : request.assignmentId,
-    nonce: mode === "replayed-nonce" ? "old" : request.nonce,
-    dispatch: mode !== "held",
-  }));
-  await expect(requireDriverStartupGate({ socketPath: path, assignmentId: "a" })).rejects.toThrow(/refused/);
-});
+function decision(request: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
+  return {
+    schema: "agentic-driver.bot-stdio-decision.v1",
+    sequence: request.sequence,
+    runId: RUN_ID,
+    assignmentId: ASSIGNMENT_ID,
+    dispatch: true,
+    code: "admitted",
+    ...overrides,
+  };
+}
 
-it("refuses a silent broker within a bounded timeout", async () => {
-  const path = await broker(() => null);
-  await expect(requireDriverStartupGate({ socketPath: path, assignmentId: "a", timeoutMs: 25 })).rejects.toThrow(/timed out/);
+async function allowNext(broker: ReturnType<typeof fixture>) {
+  const request = await broker.nextRequest();
+  broker.respond(decision(request));
+  return request;
+}
+
+describe("driver startup stdio protocol", () => {
+  it("sends only the exact sequential gate request and accepts host-provided identity", async () => {
+    const broker = fixture();
+    const check = broker.check();
+    const request = await broker.nextRequest();
+
+    expect(request).toEqual({
+      schema: "agentic-driver.bot-stdio-request.v1",
+      kind: "gate.check",
+      sequence: 0,
+    });
+    expect(Object.keys(request).sort()).toEqual(["kind", "schema", "sequence"]);
+    broker.respond(decision(request));
+    await expect(check).resolves.toBeUndefined();
+  });
+
+  it("serializes concurrent checks and advances sequence only after admission", async () => {
+    const broker = fixture();
+    const first = broker.check();
+    const second = broker.check();
+    const request0 = await broker.nextRequest();
+    expect(request0.sequence).toBe(0);
+    broker.respond(decision(request0));
+    await expect(first).resolves.toBeUndefined();
+
+    const request1 = await broker.nextRequest();
+    expect(request1.sequence).toBe(1);
+    broker.respond(decision(request1));
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["malformed JSON", Buffer.from("{")],
+    ["invalid UTF-8", Buffer.from([0xff])],
+  ])("fails closed on %s", async (_label, body) => {
+    const broker = fixture();
+    const check = broker.check();
+    await broker.nextRequest();
+    broker.respondRaw(body);
+    await expect(check).rejects.toThrow(/malformed/);
+  });
+
+  it.each([
+    ["wrong schema", { schema: "wrong" }],
+    ["wrong sequence", { sequence: 1 }],
+    ["invalid run ID", { runId: "run-a" }],
+    ["invalid assignment ID", { assignmentId: "../other" }],
+    ["non-boolean decision", { dispatch: "true" }],
+    ["invalid decision code", { code: "not allowed" }],
+    ["unexpected field", { extra: true }],
+  ])("refuses %s", async (_label, override) => {
+    const broker = fixture();
+    const check = broker.check();
+    const request = await broker.nextRequest();
+    broker.respond(decision(request, override));
+    await expect(check).rejects.toThrow(/refused|malformed/);
+  });
+
+  it.each([0, 4097])("refuses invalid frame length %i", async (length) => {
+    const broker = fixture();
+    const check = broker.check();
+    await broker.nextRequest();
+    broker.respondLength(length);
+    await expect(check).rejects.toThrow(/frame length/);
+  });
+
+  it("refuses a response with trailing bytes", async () => {
+    const broker = fixture();
+    const check = broker.check();
+    const request = await broker.nextRequest();
+    const bytes = frame(decision(request));
+    broker.respondBytes(Buffer.concat([bytes, bytes]));
+    await expect(check).rejects.toThrow(/overlapping/);
+  });
+
+  it("refuses a host identity change between checks", async () => {
+    const broker = fixture();
+    const first = broker.check();
+    const request0 = await broker.nextRequest();
+    broker.respond(decision(request0));
+    await expect(first).resolves.toBeUndefined();
+
+    const second = broker.check();
+    const request1 = await broker.nextRequest();
+    broker.respond(decision(request1, { assignmentId: "assignment-b" }));
+    await expect(second).rejects.toThrow(/identity changed/);
+  });
+
+  it("refuses a held assignment and permanently fails closed", async () => {
+    const broker = fixture();
+    const check = broker.check();
+    const request = await broker.nextRequest();
+    broker.respond(decision(request, { dispatch: false, code: "gate-refused" }));
+    await expect(check).rejects.toThrow(/refused dispatch/);
+    await expect(broker.check()).rejects.toThrow(/refused dispatch/);
+  });
+
+  it("fails closed on timeout, input closure, and transport write failure", async () => {
+    const timed = fixture(20);
+    const timedCheck = timed.check();
+    await timed.nextRequest();
+    await expect(timedCheck).rejects.toThrow(/timed out/);
+
+    const closed = fixture();
+    const closedCheck = closed.check();
+    await closed.nextRequest();
+    closed.close();
+    await expect(closedCheck).rejects.toThrow(/closed/);
+
+    const input = new PassThrough();
+    fixtures.push({ input, output: new PassThrough() });
+    const broken = createDriverStartupGateClient({
+      input,
+      writeFrame: async () => { throw new Error("fixture write failure"); },
+    });
+    await expect(broken()).rejects.toThrow(/transport failed/);
+  });
+
+  it("rejects invalid timeout configuration", () => {
+    expect(() => createDriverStartupGateClient({
+      input: new PassThrough(), writeFrame: async () => {}, timeoutMs: 5001,
+    })).toThrow(/timeout configuration/);
+  });
 });
 
 describe("driver-scoped recurring checks", () => {
-  const scoped = (socket: string): DriverScopedGateConfig => ({ enabled: true, socketPath: socket, assignmentId: "a" });
+  const scoped: DriverScopedGateConfig = { enabled: true };
 
-  it("leaves ordinary unscoped model calls alone after later environment changes", async () => {
-    const env: NodeJS.ProcessEnv = {};
-    const config = captureDriverScopedGateConfig(env);
-    env.OMB_DRIVER_SCOPED_BOOT = "1";
-    env.OMB_DRIVER_GATE_SOCKET = "/no/such/broker.sock";
-    env.OMB_DRIVER_ASSIGNMENT_ID = "a";
-    const refusal = createDriverScopedDispatchRefusal(config);
-    let calls = 0;
-    await expect(runDriverScopedModelCall(async () => ++calls, refusal)).resolves.toBe(1);
-    expect(calls).toBe(1);
-  });
-
-  it("fails closed before a scoped write when the broker socket is gone", async () => {
-    const refusal = createDriverScopedDispatchRefusal(scoped("/no/such/broker.sock"));
-    await expect(refusal()).resolves.toMatch(/unavailable/);
-    await expect(createDriverScopedWriteGate(refusal)()).rejects.toThrow(/unavailable/);
-  });
-
-  it("fails closed when the broker holds the assignment", async () => {
-    const path = await broker((request) => ({
-      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-      nonce: request.nonce, dispatch: false,
-    }));
-    const refusal = createDriverScopedDispatchRefusal(scoped(path));
-    await expect(refusal()).resolves.toMatch(/refused/);
-  });
-
-  it("admits a scoped dispatch only on a fresh positive decision", async () => {
-    const path = await broker((request) => ({
-      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-      nonce: request.nonce, dispatch: true,
-    }));
-    const refusal = createDriverScopedDispatchRefusal(scoped(path));
-    await expect(refusal()).resolves.toBeNull();
-    await expect(refusal()).resolves.toBeNull();
-  });
-
-  it("keeps the scoped marker and broker identity from mutable environment changes", async () => {
-    const path = await broker((request) => ({
-      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-      nonce: request.nonce, dispatch: false,
-    }));
+  it("snapshots only the scoped marker and leaves ordinary launches untouched", async () => {
     const env: NodeJS.ProcessEnv = {
       OMB_DRIVER_SCOPED_BOOT: "1",
-      OMB_DRIVER_GATE_SOCKET: path,
-      OMB_DRIVER_ASSIGNMENT_ID: "a",
+      OMB_DRIVER_ASSIGNMENT_ID: "ignored-guest-value",
+      OMB_DRIVER_GATE_SOCKET: "/ignored/endpoint",
     };
     const config = captureDriverScopedGateConfig(env);
-    const refusal = createDriverScopedDispatchRefusal(config);
     env.OMB_DRIVER_SCOPED_BOOT = "0";
-    env.OMB_DRIVER_GATE_SOCKET = "/no/such/broker.sock";
-    env.OMB_DRIVER_ASSIGNMENT_ID = "b";
-    await expect(refusal()).resolves.toMatch(/refused/);
+    expect(config).toEqual({ enabled: true });
+
+    const ordinary = captureDriverScopedGateConfig({});
+    let checks = 0;
+    const refusal = createDriverScopedDispatchRefusal(ordinary, async () => {
+      checks += 1;
+      throw new Error("must not check an ordinary launch");
+    });
+    await expect(runDriverScopedModelCall(async () => "ordinary", refusal)).resolves.toBe("ordinary");
+    expect(checks).toBe(0);
   });
 
-  it("blocks a memory write when the broker holds after an allowed model call", async () => {
+  it("fails closed before a scoped write when the host holds after an allowed model call", async () => {
     let held = false;
-    const path = await broker((request) => ({
-      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-      nonce: request.nonce, dispatch: !held,
-    }));
-    const refusal = createDriverScopedDispatchRefusal(scoped(path));
+    const broker = fixture();
+    const refusal = createDriverScopedDispatchRefusal(scoped, () => broker.check());
     const beforeWrite = createDriverScopedWriteGate(refusal);
     let modelCalls = 0;
     let writes = 0;
-    await expect(runDriverScopedModelCall(async () => {
+
+    const model = runDriverScopedModelCall(async () => {
       modelCalls += 1;
       return "facts";
-    }, refusal)).resolves.toBe("facts");
+    }, refusal);
+    await allowNext(broker);
+    await expect(model).resolves.toBe("facts");
     held = true;
 
     const persist = async () => {
       await beforeWrite();
       writes += 1;
     };
-    await expect(persist()).rejects.toThrow(/refused/);
+    const pendingWrite = persist();
+    const request = await broker.nextRequest();
+    broker.respond(decision(request, { dispatch: held ? false : true, code: "gate-refused" }));
+    await expect(pendingWrite).rejects.toThrow(/refused dispatch/);
     expect(modelCalls).toBe(1);
     expect(writes).toBe(0);
   });
 
-  it("does not start title or memory-upkeep provider calls after a scoped hold", async () => {
-    const path = await broker((request) => ({
-      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
-      nonce: request.nonce, dispatch: false,
-    }));
-    const refusal = createDriverScopedDispatchRefusal(scoped(path));
+  it("does not start title or upkeep provider calls after a scoped hold", async () => {
+    const broker = fixture();
+    const refusal = createDriverScopedDispatchRefusal(scoped, () => broker.check());
     let titleCalls = 0;
     let upkeepCalls = 0;
     const titleGenerateText = () => runDriverScopedModelCall(async () => {
@@ -167,8 +284,11 @@ describe("driver-scoped recurring checks", () => {
       return "memory facts";
     }, refusal);
 
-    await expect(titleGenerateText()).rejects.toThrow(/refused/);
-    await expect(upkeepGenerateText()).rejects.toThrow(/refused/);
+    const title = titleGenerateText();
+    const request = await broker.nextRequest();
+    broker.respond(decision(request, { dispatch: false, code: "gate-refused" }));
+    await expect(title).rejects.toThrow(/refused dispatch/);
+    await expect(upkeepGenerateText()).rejects.toThrow(/refused dispatch/);
     expect(titleCalls).toBe(0);
     expect(upkeepCalls).toBe(0);
   });
