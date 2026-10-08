@@ -443,6 +443,12 @@ describe("the upkeep loop", () => {
     engine = {};
     expect((await upkeep().capture({ botId: BOT.id, threadId: "t", turns: [{ person: "x", bot: "y" }] })).note).toBe(NO_TEXT_ENGINE);
     expect(prompts).toEqual([]);
+    const logs: string[] = [];
+    const ordinary = upkeep(undefined, logs);
+    ordinary.noteTurn(BOT.id, "ordinary", { person: "x", bot: "y" });
+    ordinary.flushThread("ordinary");
+    await ordinary.idle();
+    expect(logs.some((line) => line.includes("capture outcome"))).toBe(false);
   });
 
   it("tidies: archives the expired, merges duplicates, strikes a contradiction, all undoable rows", async () => {
@@ -567,6 +573,12 @@ describe("the upkeep loop", () => {
     expect(service.status(BOT.id).lastTidy).toMatchObject({ duplicates: 1, note: expect.stringMatching(/status was not recorded/) });
     await service.tick();
     expect(modelCalls).toBe(2);
+
+    // A deliberate manual pass may run; only the automatic same-day retry is suppressed.
+    const manual = await service.tidy(BOT.id);
+    expect(manual.duplicates).toBe(0);
+    expect(modelCalls).toBe(3);
+    expect(service.status(BOT.id).lastTidy?.note).not.toMatch(/status was not recorded/);
   });
 
   it("moves detail the bot wrote itself out of MEMORY.md into topics, keeping core facts", async () => {

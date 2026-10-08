@@ -384,7 +384,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         return;
       }
       void track(capture(batch)).then((report) => {
-        if (report.note) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
+        if (partialCaptureReports.get(batch.botId) === report) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
       }).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
     },
   });
@@ -480,7 +480,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       }
       throw error;
     }
-    if (paused || !upkeepEnabled(deps.bot(botId))) return { ...stopped, ...(organized ? { organized } : {}) };
+    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
     const first = readRaw(botId, "MEMORY.md") ?? "";
     const engine = deps.engine(botId);
     const candidates = contradictionCandidates(first, today);
@@ -497,7 +497,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         contradictionsChecked = true;
       }
     }
-    if (paused || !upkeepEnabled(deps.bot(botId))) return { ...stopped, ...(organized ? { organized } : {}) };
+    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
     // Re-read after the await. If the notes changed meanwhile, the model's
     // line numbers no longer point at the same facts: keep only the
     // deterministic steps this time.
@@ -667,7 +667,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       paused = false;
       for (const batch of deferred.splice(0)) {
         void track(capture(batch)).then((report) => {
-          if (report.note) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
+          if (partialCaptureReports.get(batch.botId) === report) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
         }).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
       }
     },
