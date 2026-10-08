@@ -275,6 +275,36 @@ describe("the upkeep loop", () => {
     expect(service.status(BOT.id).lastCapture).toBeUndefined();
   });
 
+  it("does not write when backup pause starts during the scoped gate check", async () => {
+    ensureWorkspace(BOT.id);
+    const before = memory();
+    let modelCalls = 0;
+    let gateStarted!: () => void;
+    let releaseGate!: () => void;
+    const started = new Promise<void>((resolve) => { gateStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const service = upkeep(() => {
+      gateStarted();
+      return gate;
+    });
+
+    const capture = service.capture({ botId: BOT.id, threadId: "t1", turns: [{ person: "I like jazz", bot: "Noted." }] });
+    await started;
+    service.pause();
+    releaseGate();
+    const report = await capture;
+
+    expect(modelCalls).toBe(1);
+    expect(report.added).toBe(0);
+    expect(memory()).toBe(before);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toBeUndefined();
+  });
+
   it("captures new facts as dated, sourced entries, journaled as upkeep, and adds About me lines", async () => {
     ensureWorkspace(BOT.id);
     answers.push(JSON.stringify([

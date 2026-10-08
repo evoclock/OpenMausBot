@@ -193,7 +193,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   const beforeWrite = deps.beforeWrite;
 
   const record = async (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
-    if (beforeWrite) await beforeWrite();
+    if (beforeWrite) {
+      await beforeWrite();
+      if (paused) return;
+    }
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -237,10 +240,13 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       deferred.push(batch);
       return { at, added: 0, topics: 0, aboutMe: 0, note: "deferred until the backup finishes" };
     }
-    // Re-read after the await: the bot or the person may have written since.
-    // From here to the journal rows there is no await, so no write interleaves.
+    // The broker check below can yield. Recheck upkeep state afterwards, then
+    // keep each persistence burst synchronous with its journal rows.
     if (!upkeepEnabled(deps.bot(bot.id))) return off;
-    if (beforeWrite) await beforeWrite();
+    if (beforeWrite) {
+      await beforeWrite();
+      if (paused || !upkeepEnabled(deps.bot(bot.id))) return off;
+    }
     const { parsed, added, topics } = writing(bot.id, () => {
       const before = readRaw(bot.id, "MEMORY.md");
       const archiveBefore = readRaw(bot.id, ARCHIVE_PATH);
@@ -295,7 +301,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const aboutMeTexts = parsed.filter((candidate) => candidate.aboutUser).map((candidate) => candidate.text);
     let aboutMe = 0;
     if (owner && aboutMeTexts.length) {
-      if (beforeWrite) await beforeWrite();
+      if (beforeWrite) {
+        await beforeWrite();
+        if (paused || !upkeepEnabled(deps.bot(bot.id))) return off;
+      }
       aboutMe = deps.addToAboutMe({ botId: bot.id, botName: bot.name }, aboutMeTexts);
     }
     // whoever wrote MEMORY.md — the bot, the person or this capture — detail
@@ -342,12 +351,18 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const moved = new Set(proposed.map((move) => move.entry.line));
     const moves = proposed.slice(0, MAX_MOVES);
     const judgedCore = candidates.filter((entry) => !moved.has(entry.line)).map((entry) => factIdentity(entry.body));
+    if (beforeWrite) {
+      await beforeWrite();
+      if (paused || !upkeepEnabled(deps.bot(botId)) || (readRaw(botId, "MEMORY.md") ?? "") !== first) return 0;
+    }
     const saved = loadState();
     saved.bots[botId] = { ...saved.bots[botId], core: [...new Set([...(saved.bots[botId]?.core ?? []), ...judgedCore])].slice(-MAX_CORE) };
-    if (beforeWrite) await beforeWrite();
     saveState(saved);
     if (!moves.length) return 0;
-    if (beforeWrite) await beforeWrite();
+    if (beforeWrite) {
+      await beforeWrite();
+      if (paused || !upkeepEnabled(deps.bot(botId)) || (readRaw(botId, "MEMORY.md") ?? "") !== first) return 0;
+    }
     return writing(botId, () => {
       const { byTopic } = applyMoves(before, moves);
       const written = new Set<string>();
@@ -427,7 +442,11 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       // The archive is written first: a line is never out of MEMORY.md
       // before it is in the archive, and the newest journal row — the one a
       // person undoes — is MEMORY.md, whose undo brings the line back.
-      if (beforeWrite) await beforeWrite();
+      if (beforeWrite) {
+        await beforeWrite();
+        if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+        if ((readRaw(botId, "MEMORY.md") ?? "") !== before) return { ...stopped, note: "Memory changed while waiting for the write gate; this tidy pass made no further changes." };
+      }
       writing(botId, () => {
         if (archived.length) appendArchive(botId, archived);
         writeMemoryFile(botId, text);
@@ -446,7 +465,11 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       const topicPlan = planTidy(topicBefore, today);
       if (!planChanges(topicPlan)) continue;
       const tidied = applyTidy(topicBefore, topicPlan, today);
-      if (beforeWrite) await beforeWrite();
+      if (beforeWrite) {
+        await beforeWrite();
+        if (paused || !upkeepEnabled(deps.bot(botId))) break;
+        if ((readRaw(botId, path) ?? "") !== topicBefore) continue;
+      }
       writing(botId, () => {
         if (tidied.archived.length) appendArchive(botId, tidied.archived);
         writeMemoryTopic(botId, topic.name, tidied.text);
