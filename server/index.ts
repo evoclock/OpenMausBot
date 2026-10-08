@@ -7,6 +7,7 @@ import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import {
   DRIVER_SCOPED_GATE_CONFIG,
   driverScopedDispatchRefusal,
+  driverScopedWriteGate,
   requireDriverStartupGate,
   runDriverScopedModelCall,
 } from "./driver-startup-gate.ts";
@@ -6133,6 +6134,7 @@ const memoryUpkeep = createMemoryUpkeep({
     return facts.length;
   },
   sourceLabel: (botId, threadId) => memorySourceLabel({ task: store.taskByThread(botId, threadId), threadId }),
+  beforeWrite: driverScopedWriteGate,
   // On a Cloud home upkeep only works on the owner's conversations (see the
   // capture hook below), so its writes are the owner's (lending-memory.ts).
   ...(lendingMemory ? { writing: <T>(botId: string, write: () => T): T => lendingMemory.trustedWrite(botId, write) } : {}),

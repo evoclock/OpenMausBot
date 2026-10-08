@@ -210,7 +210,7 @@ describe("the upkeep loop", () => {
   let organizeAnswer: string;
   let organizePrompts: string[];
 
-  const upkeep = () => createMemoryUpkeep({
+  const upkeep = (beforeWrite?: () => Promise<void>) => createMemoryUpkeep({
     bots: () => [BOT],
     bot: (id) => (id === BOT.id ? BOT : undefined),
     engine: () => engine,
@@ -223,6 +223,7 @@ describe("the upkeep loop", () => {
     quietMs: () => 60_000,
     tidyHour: () => 3,
     now: () => clock,
+    ...(beforeWrite ? { beforeWrite } : {}),
   });
 
   beforeEach(() => {
@@ -251,6 +252,28 @@ describe("the upkeep loop", () => {
   });
 
   const memory = () => readFileSync(join(workspaceDir(BOT.id), "MEMORY.md"), "utf8");
+
+  it("blocks capture writes when the scoped broker holds after the model call", async () => {
+    ensureWorkspace(BOT.id);
+    const before = memory();
+    let modelCalls = 0;
+    let held = false;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      held = true;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const service = upkeep(async () => {
+      if (held) throw new Error("driver startup gate refused dispatch");
+    });
+
+    await expect(service.capture({ botId: BOT.id, threadId: "t1", turns: [{ person: "I like jazz", bot: "Noted." }] }))
+      .rejects.toThrow(/refused/);
+    expect(modelCalls).toBe(1);
+    expect(memory()).toBe(before);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toBeUndefined();
+  });
 
   it("captures new facts as dated, sourced entries, journaled as upkeep, and adds About me lines", async () => {
     ensureWorkspace(BOT.id);

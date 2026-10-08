@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   captureDriverScopedGateConfig,
   createDriverScopedDispatchRefusal,
+  createDriverScopedWriteGate,
   requireDriverStartupGate,
   runDriverScopedModelCall,
   type DriverScopedGateConfig,
@@ -81,9 +82,10 @@ describe("driver-scoped recurring checks", () => {
     expect(calls).toBe(1);
   });
 
-  it("fails closed when the broker socket is gone", async () => {
+  it("fails closed before a scoped write when the broker socket is gone", async () => {
     const refusal = createDriverScopedDispatchRefusal(scoped("/no/such/broker.sock"));
     await expect(refusal()).resolves.toMatch(/unavailable/);
+    await expect(createDriverScopedWriteGate(refusal)()).rejects.toThrow(/unavailable/);
   });
 
   it("fails closed when the broker holds the assignment", async () => {
@@ -121,6 +123,31 @@ describe("driver-scoped recurring checks", () => {
     env.OMB_DRIVER_GATE_SOCKET = "/no/such/broker.sock";
     env.OMB_DRIVER_ASSIGNMENT_ID = "b";
     await expect(refusal()).resolves.toMatch(/refused/);
+  });
+
+  it("blocks a memory write when the broker holds after an allowed model call", async () => {
+    let held = false;
+    const path = await broker((request) => ({
+      schema: "agentic-driver.bot-startup-decision.v1", assignmentId: request.assignmentId,
+      nonce: request.nonce, dispatch: !held,
+    }));
+    const refusal = createDriverScopedDispatchRefusal(scoped(path));
+    const beforeWrite = createDriverScopedWriteGate(refusal);
+    let modelCalls = 0;
+    let writes = 0;
+    await expect(runDriverScopedModelCall(async () => {
+      modelCalls += 1;
+      return "facts";
+    }, refusal)).resolves.toBe("facts");
+    held = true;
+
+    const persist = async () => {
+      await beforeWrite();
+      writes += 1;
+    };
+    await expect(persist()).rejects.toThrow(/refused/);
+    expect(modelCalls).toBe(1);
+    expect(writes).toBe(0);
   });
 
   it("does not start title or memory-upkeep provider calls after a scoped hold", async () => {

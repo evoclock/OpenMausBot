@@ -66,6 +66,9 @@ export interface UpkeepDeps {
   sourceLabel: (botId: string, threadId: string) => string;
   quietMs: () => number;
   tidyHour: () => number;
+  /** Fresh scoped-lease check immediately before each synchronous upkeep
+   * persistence burst. Omitted for ordinary unscoped runtimes. */
+  beforeWrite?: () => Promise<void>;
   /** Wraps each synchronous burst of writes this makes to one bot's memory
    * (capture, organize, tidy), so the host can tell them from writes made
    * elsewhere (an OMB Cloud home: server/lending-memory.ts). */
@@ -187,7 +190,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   let paused = false;
   const deferred: CaptureBatch[] = [];
 
-  const record = (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+  const beforeWrite = deps.beforeWrite;
+
+  const record = async (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+    if (beforeWrite) await beforeWrite();
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
@@ -209,7 +215,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const engine = deps.engine(bot.id);
     if (!engine?.generateText) {
       const report = { at, added: 0, topics: 0, aboutMe: 0, note: NO_TEXT_ENGINE };
-      record(bot.id, { lastCapture: report });
+      await record(bot.id, { lastCapture: report });
       return report;
     }
     ensureWorkspace(bot.id);
@@ -223,7 +229,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     }));
     if (answer === null) {
       const report = { at, added: 0, topics: 0, aboutMe: 0, note: "The capture call did not answer in time." };
-      record(bot.id, { lastCapture: report });
+      await record(bot.id, { lastCapture: report });
       return report;
     }
     if (paused) {
@@ -234,6 +240,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     // Re-read after the await: the bot or the person may have written since.
     // From here to the journal rows there is no await, so no write interleaves.
     if (!upkeepEnabled(deps.bot(bot.id))) return off;
+    if (beforeWrite) await beforeWrite();
     const { parsed, added, topics } = writing(bot.id, () => {
       const before = readRaw(bot.id, "MEMORY.md");
       const archiveBefore = readRaw(bot.id, ARCHIVE_PATH);
@@ -285,12 +292,17 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     // counts, not only new ones — the bot may already have noted it in its
     // own memory, and About me is where every other bot learns it.
     const owner = batch.turns.every((turn) => turn.owner !== false);
-    const aboutMe = owner ? deps.addToAboutMe({ botId: bot.id, botName: bot.name }, parsed.filter((c) => c.aboutUser).map((c) => c.text)) : 0;
+    const aboutMeTexts = parsed.filter((candidate) => candidate.aboutUser).map((candidate) => candidate.text);
+    let aboutMe = 0;
+    if (owner && aboutMeTexts.length) {
+      if (beforeWrite) await beforeWrite();
+      aboutMe = deps.addToAboutMe({ botId: bot.id, botName: bot.name }, aboutMeTexts);
+    }
     // whoever wrote MEMORY.md — the bot, the person or this capture — detail
     // that is not core moves to its topic now, not only at night
     const organized = await organize(bot.id);
     const report: CaptureReport = { at, added, topics, aboutMe, organized };
-    record(bot.id, { lastCapture: report });
+    await record(bot.id, { lastCapture: report });
     if (added || topics || aboutMe) log(`memory upkeep: noticed ${added} fact(s) for MEMORY.md, ${topics} for topic files and ${aboutMe} for About me — ${bot.name} (${bot.id}) from ${batch.threadId}`);
     return report;
   }
@@ -332,8 +344,10 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const judgedCore = candidates.filter((entry) => !moved.has(entry.line)).map((entry) => factIdentity(entry.body));
     const saved = loadState();
     saved.bots[botId] = { ...saved.bots[botId], core: [...new Set([...(saved.bots[botId]?.core ?? []), ...judgedCore])].slice(-MAX_CORE) };
+    if (beforeWrite) await beforeWrite();
     saveState(saved);
     if (!moves.length) return 0;
+    if (beforeWrite) await beforeWrite();
     return writing(botId, () => {
       const { byTopic } = applyMoves(before, moves);
       const written = new Set<string>();
@@ -413,6 +427,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       // The archive is written first: a line is never out of MEMORY.md
       // before it is in the archive, and the newest journal row — the one a
       // person undoes — is MEMORY.md, whose undo brings the line back.
+      if (beforeWrite) await beforeWrite();
       writing(botId, () => {
         if (archived.length) appendArchive(botId, archived);
         writeMemoryFile(botId, text);
@@ -431,6 +446,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       const topicPlan = planTidy(topicBefore, today);
       if (!planChanges(topicPlan)) continue;
       const tidied = applyTidy(topicBefore, topicPlan, today);
+      if (beforeWrite) await beforeWrite();
       writing(botId, () => {
         if (tidied.archived.length) appendArchive(botId, tidied.archived);
         writeMemoryTopic(botId, topic.name, tidied.text);
@@ -449,7 +465,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       contradictionsChecked,
       ...(note ? { note } : {}),
     };
-    record(botId, { lastTidy: report });
+    await record(botId, { lastTidy: report });
     if (report.expired || report.duplicates || report.superseded || organized) log(`memory upkeep: tidied ${bot?.name ?? botId} — ${report.expired} expired, ${report.duplicates} duplicate(s), ${report.superseded} contradicted`);
     return report;
   }

@@ -46,6 +46,18 @@ export function createDriverScopedDispatchRefusal(
 
 export const driverScopedDispatchRefusal = createDriverScopedDispatchRefusal();
 
+/** Recheck the scoped lease immediately before a synchronous upkeep write burst. */
+export function createDriverScopedWriteGate(
+  refusal: () => Promise<string | null> = driverScopedDispatchRefusal,
+): () => Promise<void> {
+  return async () => {
+    const reason = await refusal();
+    if (reason) throw new Error(reason);
+  };
+}
+
+export const driverScopedWriteGate = createDriverScopedWriteGate();
+
 /** Guard provider calls that happen outside the main turn-dispatch seam. */
 export async function runDriverScopedModelCall<T>(
   call: () => Promise<T>,
