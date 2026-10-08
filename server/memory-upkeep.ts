@@ -480,7 +480,15 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       }
       throw error;
     }
-    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+    const stoppedAfterOrganization = (): TidyReport => {
+      if (!beforeWrite || !organized) return stopped;
+      return rememberPartialTidy(botId, {
+        ...stopped,
+        organized,
+        note: "Organization completed, but the tidy step was skipped because upkeep paused or was disabled. No further tidy writes were made.",
+      });
+    };
+    if (paused || !upkeepEnabled(deps.bot(botId))) return stoppedAfterOrganization();
     const first = readRaw(botId, "MEMORY.md") ?? "";
     const engine = deps.engine(botId);
     const candidates = contradictionCandidates(first, today);
@@ -497,7 +505,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         contradictionsChecked = true;
       }
     }
-    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+    if (paused || !upkeepEnabled(deps.bot(botId))) return stoppedAfterOrganization();
     // Re-read after the await. If the notes changed meanwhile, the model's
     // line numbers no longer point at the same facts: keep only the
     // deterministic steps this time.

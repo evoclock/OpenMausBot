@@ -505,6 +505,37 @@ describe("the upkeep loop", () => {
     expect(organizePrompts).toHaveLength(1);
   });
 
+  it("keeps scoped organization evidence when backup pause stops the later tidy step", async () => {
+    ensureWorkspace(BOT.id);
+    writeMemoryFile(BOT.id, [
+      "- 2026-09-25 · The client Acme wants logo revisions.",
+      "- 2026-09-25 · The client Beta needs a website.",
+      "- 2026-09-25 · The trip to Rome is in October.",
+      "- 2026-09-25 · The project Cedar uses Rust.",
+      "- 2026-09-25 · The meeting with Delta is on Friday.",
+      "- 2026-09-25 · The vendor Echo ships on Mondays.",
+      "",
+    ].join("\n"));
+    let service!: ReturnType<typeof upkeep>;
+    engine = { generateText: async (prompt) => {
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[{"i":0,"topic":"acme"}]}';
+      }
+      service.pause();
+      return '{"pairs":[]}';
+    } };
+    service = upkeep(async () => {});
+
+    const report = await service.tidy(BOT.id);
+
+    expect(report).toMatchObject({ organized: 1, expired: 0, duplicates: 0 });
+    expect(report.note).toMatch(/Organization completed.*tidy step was skipped/);
+    expect(memory()).not.toContain("Acme wants logo revisions");
+    expect(readMemoryTopic(BOT.id, "acme.md")).toContain("Acme wants logo revisions");
+    expect(service.status(BOT.id).lastTidy).toMatchObject({ organized: 1, note: expect.stringMatching(/Organization completed/) });
+  });
+
   it("does not tidy after the contradiction model response when the write gate is unavailable", async () => {
     ensureWorkspace(BOT.id);
     const original = [
@@ -578,7 +609,7 @@ describe("the upkeep loop", () => {
     const manual = await service.tidy(BOT.id);
     expect(manual.duplicates).toBe(0);
     expect(modelCalls).toBe(3);
-    expect(service.status(BOT.id).lastTidy?.note).not.toMatch(/status was not recorded/);
+    expect(service.status(BOT.id).lastTidy?.note).toBeUndefined();
   });
 
   it("moves detail the bot wrote itself out of MEMORY.md into topics, keeping core facts", async () => {
