@@ -67,7 +67,7 @@ export interface UpkeepDeps {
   quietMs: () => number;
   tidyHour: () => number;
   /** Fresh scoped-lease check immediately before each synchronous upkeep
-   * persistence burst. Omitted for ordinary unscoped runtimes. */
+   * persistence burst. Optional; absent means no scoped write check. */
   beforeWrite?: () => Promise<void>;
   /** Wraps each synchronous burst of writes this makes to one bot's memory
    * (capture, organize, tidy), so the host can tell them from writes made
@@ -106,6 +106,13 @@ export interface CaptureReport {
 
 interface UpkeepState {
   bots: Record<string, { lastTidy?: TidyReport; lastCapture?: CaptureReport; core?: string[] }>;
+}
+
+class ScopedWriteGateBlocked extends Error {
+  constructor() {
+    super("the scoped broker refused this write");
+    this.name = "ScopedWriteGateBlocked";
+  }
 }
 
 /** How many "this entry is core" judgements are remembered per bot. */
@@ -164,7 +171,7 @@ export interface MemoryUpkeep {
   flushThread(threadId: string): void;
   /** Forget a bot's waiting turns (switch turned off, bot deleted). */
   dropBot(botId: string): void;
-  /** Run one capture batch; resolves when written. Exposed for tests. */
+  /** Run one capture batch; resolves with actual counts and a note on partial outcomes. */
   capture(batch: CaptureBatch): Promise<CaptureReport>;
   tidy(botId: string): Promise<TidyReport>;
   status(botId: string): { lastTidy?: TidyReport; lastCapture?: CaptureReport; modelSteps: boolean };
@@ -189,17 +196,48 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   let timer: ReturnType<typeof setInterval> | null = null;
   let paused = false;
   const deferred: CaptureBatch[] = [];
+  // Keep truthful partial outcomes visible without attempting a status write
+  // while the scoped gate refuses it. These reports are volatile until restart.
+  const partialCaptureReports = new Map<string, CaptureReport>();
+  const partialTidyReports = new Map<string, TidyReport>();
+  // If a scoped tidy is partially applied but its status write is refused,
+  // avoid replaying it automatically for this bot/date in this process.
+  // Manual tidy calls remain explicit; this volatile guard does not survive restart.
+  const autoTidyBlockedDay = new Map<string, string>();
 
   const beforeWrite = deps.beforeWrite;
+  const checkWriteGate = async () => {
+    try {
+      await beforeWrite?.();
+    } catch {
+      throw new ScopedWriteGateBlocked();
+    }
+  };
+  const suppressAutoTidyToday = (botId: string) => autoTidyBlockedDay.set(botId, memoryDate(now()));
+  const rememberPartialCapture = (botId: string, report: CaptureReport) => {
+    partialCaptureReports.set(botId, report);
+    return report;
+  };
+  const rememberPartialTidy = (botId: string, report: TidyReport) => {
+    partialTidyReports.set(botId, report);
+    return report;
+  };
+  const appendTidyNote = (report: TidyReport, extra: string): TidyReport => ({
+    ...report,
+    note: [report.note, extra].filter(Boolean).join(" "),
+  });
 
-  const record = async (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }) => {
+  const record = async (botId: string, patch: { lastTidy?: TidyReport; lastCapture?: CaptureReport }): Promise<boolean> => {
     if (beforeWrite) {
-      await beforeWrite();
-      if (paused) return;
+      await checkWriteGate();
+      if (paused) return false;
     }
     const state = loadState();
     state.bots[botId] = { ...state.bots[botId], ...patch };
     saveState(state);
+    if (patch.lastCapture) partialCaptureReports.delete(botId);
+    if (patch.lastTidy) partialTidyReports.delete(botId);
+    return true;
   };
 
   const track = <T>(promise: Promise<T>): Promise<T> => {
@@ -244,7 +282,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     // keep each persistence burst synchronous with its journal rows.
     if (!upkeepEnabled(deps.bot(bot.id))) return off;
     if (beforeWrite) {
-      await beforeWrite();
+      await checkWriteGate();
       if (paused || !upkeepEnabled(deps.bot(bot.id))) return off;
     }
     const { parsed, added, topics } = writing(bot.id, () => {
@@ -300,18 +338,39 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const owner = batch.turns.every((turn) => turn.owner !== false);
     const aboutMeTexts = parsed.filter((candidate) => candidate.aboutUser).map((candidate) => candidate.text);
     let aboutMe = 0;
+    const partialCapture = (note: string, organized?: number): CaptureReport => ({
+      at, added, topics, aboutMe, ...(organized !== undefined ? { organized } : {}), note,
+    });
     if (owner && aboutMeTexts.length) {
       if (beforeWrite) {
-        await beforeWrite();
-        if (paused || !upkeepEnabled(deps.bot(bot.id))) return off;
+        try {
+          await checkWriteGate();
+        } catch (error) {
+          if (error instanceof ScopedWriteGateBlocked) return rememberPartialCapture(bot.id, partialCapture(`Capture saved ${added} notebook fact(s) and ${topics} topic fact(s), but About me was not updated because the scoped write gate refused it. This memory-upkeep instance will not retry this batch automatically.`));
+          throw error;
+        }
+        if (paused || !upkeepEnabled(deps.bot(bot.id))) return rememberPartialCapture(bot.id, partialCapture("Notebook changes were saved, but About me was not updated because upkeep paused or was disabled. This memory-upkeep instance will not retry this batch automatically."));
       }
       aboutMe = deps.addToAboutMe({ botId: bot.id, botName: bot.name }, aboutMeTexts);
     }
     // whoever wrote MEMORY.md — the bot, the person or this capture — detail
     // that is not core moves to its topic now, not only at night
-    const organized = await organize(bot.id);
+    let organized: number;
+    try {
+      organized = await organize(bot.id);
+    } catch (error) {
+      if (error instanceof ScopedWriteGateBlocked) return rememberPartialCapture(bot.id, partialCapture(`Capture saved ${added} notebook fact(s), ${topics} topic fact(s), and ${aboutMe} About me fact(s); organization was blocked by the scoped write gate. This memory-upkeep instance will not retry this batch automatically.`, 0));
+      throw error;
+    }
     const report: CaptureReport = { at, added, topics, aboutMe, organized };
-    await record(bot.id, { lastCapture: report });
+    let recorded: boolean;
+    try {
+      recorded = await record(bot.id, { lastCapture: report });
+    } catch (error) {
+      if (error instanceof ScopedWriteGateBlocked) return rememberPartialCapture(bot.id, { ...report, note: `Capture completed with ${added} notebook fact(s), ${topics} topic fact(s), and ${aboutMe} About me fact(s); upkeep status was not recorded because the scoped write gate refused it. This memory-upkeep instance will not retry this batch automatically.` });
+      throw error;
+    }
+    if (!recorded) return rememberPartialCapture(bot.id, { ...report, note: `Capture completed with ${added} notebook fact(s), ${topics} topic fact(s), and ${aboutMe} About me fact(s); upkeep status was not recorded because upkeep paused. This memory-upkeep instance will not retry this batch automatically.` });
     if (added || topics || aboutMe) log(`memory upkeep: noticed ${added} fact(s) for MEMORY.md, ${topics} for topic files and ${aboutMe} for About me — ${bot.name} (${bot.id}) from ${batch.threadId}`);
     return report;
   }
@@ -324,7 +383,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         deferred.push(batch);
         return;
       }
-      void track(capture(batch)).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
+      void track(capture(batch)).then((report) => {
+        if (report.note) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
+      }).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
     },
   });
 
@@ -352,7 +413,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const moves = proposed.slice(0, MAX_MOVES);
     const judgedCore = candidates.filter((entry) => !moved.has(entry.line)).map((entry) => factIdentity(entry.body));
     if (beforeWrite) {
-      await beforeWrite();
+      await checkWriteGate();
       if (paused || !upkeepEnabled(deps.bot(botId)) || (readRaw(botId, "MEMORY.md") ?? "") !== first) return 0;
     }
     const saved = loadState();
@@ -360,7 +421,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     saveState(saved);
     if (!moves.length) return 0;
     if (beforeWrite) {
-      await beforeWrite();
+      await checkWriteGate();
       if (paused || !upkeepEnabled(deps.bot(botId)) || (readRaw(botId, "MEMORY.md") ?? "") !== first) return 0;
     }
     return writing(botId, () => {
@@ -409,8 +470,17 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     const stopped: TidyReport = { at, expired: 0, duplicates: 0, superseded: 0, deferred: 0, contradictionsChecked: false, note: "Memory upkeep is off or paused; no further changes were made." };
     if (paused || !upkeepEnabled(bot)) return stopped;
     ensureWorkspace(botId);
-    const organized = await organize(botId);
-    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+    let organized: number;
+    try {
+      organized = await organize(botId);
+    } catch (error) {
+      if (error instanceof ScopedWriteGateBlocked) {
+        suppressAutoTidyToday(botId);
+        return rememberPartialTidy(botId, { ...stopped, note: "Organization was blocked by the scoped write gate; no tidy changes followed. Automatic tidy is suppressed for the rest of this process today." });
+      }
+      throw error;
+    }
+    if (paused || !upkeepEnabled(deps.bot(botId))) return { ...stopped, ...(organized ? { organized } : {}) };
     const first = readRaw(botId, "MEMORY.md") ?? "";
     const engine = deps.engine(botId);
     const candidates = contradictionCandidates(first, today);
@@ -427,7 +497,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
         contradictionsChecked = true;
       }
     }
-    if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
+    if (paused || !upkeepEnabled(deps.bot(botId))) return { ...stopped, ...(organized ? { organized } : {}) };
     // Re-read after the await. If the notes changed meanwhile, the model's
     // line numbers no longer point at the same facts: keep only the
     // deterministic steps this time.
@@ -443,9 +513,17 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       // before it is in the archive, and the newest journal row — the one a
       // person undoes — is MEMORY.md, whose undo brings the line back.
       if (beforeWrite) {
-        await beforeWrite();
-        if (paused || !upkeepEnabled(deps.bot(botId))) return stopped;
-        if ((readRaw(botId, "MEMORY.md") ?? "") !== before) return { ...stopped, note: "Memory changed while waiting for the write gate; this tidy pass made no further changes." };
+        try {
+          await checkWriteGate();
+        } catch (error) {
+          if (error instanceof ScopedWriteGateBlocked) {
+            suppressAutoTidyToday(botId);
+            return rememberPartialTidy(botId, { ...stopped, ...(organized ? { organized } : {}), note: "The scoped write gate blocked tidy changes; any organization reported above remains saved. Automatic tidy is suppressed for the rest of this process today." });
+          }
+          throw error;
+        }
+        if (paused || !upkeepEnabled(deps.bot(botId))) return { ...stopped, ...(organized ? { organized } : {}) };
+        if ((readRaw(botId, "MEMORY.md") ?? "") !== before) return { ...stopped, ...(organized ? { organized } : {}), note: "Memory changed while waiting for the write gate; this tidy pass made no further changes." };
       }
       writing(botId, () => {
         if (archived.length) appendArchive(botId, archived);
@@ -457,6 +535,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     // archive (written first, as above) and exact duplicates merged.
     let topicExpired = 0;
     let topicDuplicates = 0;
+    let stoppedByGate = false;
     for (const topic of listMemoryTopics(botId)) {
       if (topic.name === ARCHIVE_TOPIC) continue;
       const path = `memory/${topic.name}`;
@@ -466,7 +545,16 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       if (!planChanges(topicPlan)) continue;
       const tidied = applyTidy(topicBefore, topicPlan, today);
       if (beforeWrite) {
-        await beforeWrite();
+        try {
+          await checkWriteGate();
+        } catch (error) {
+          if (error instanceof ScopedWriteGateBlocked) {
+            suppressAutoTidyToday(botId);
+            stoppedByGate = true;
+            break;
+          }
+          throw error;
+        }
         if (paused || !upkeepEnabled(deps.bot(botId))) break;
         if ((readRaw(botId, path) ?? "") !== topicBefore) continue;
       }
@@ -487,8 +575,22 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       ...(organized ? { organized } : {}),
       contradictionsChecked,
       ...(note ? { note } : {}),
+      ...(stoppedByGate ? { note: [note, "The scoped write gate stopped later topic tidy writes; earlier tidy changes remain saved. Automatic tidy is suppressed for the rest of this process today."].filter(Boolean).join(" ") } : {}),
     };
-    await record(botId, { lastTidy: report });
+    let recorded: boolean;
+    try {
+      recorded = await record(botId, { lastTidy: report });
+    } catch (error) {
+      if (error instanceof ScopedWriteGateBlocked) {
+        suppressAutoTidyToday(botId);
+        return rememberPartialTidy(botId, appendTidyNote(report, "Tidy changes shown above were saved, but upkeep status was not recorded because the scoped write gate refused it. Automatic tidy is suppressed for the rest of this process today."));
+      }
+      throw error;
+    }
+    if (!recorded) {
+      suppressAutoTidyToday(botId);
+      return rememberPartialTidy(botId, appendTidyNote(report, "Tidy changes shown above were saved, but upkeep status was not recorded because upkeep paused. Automatic tidy is suppressed for the rest of this process today."));
+    }
     if (report.expired || report.duplicates || report.superseded || organized) log(`memory upkeep: tidied ${bot?.name ?? botId} — ${report.expired} expired, ${report.duplicates} duplicate(s), ${report.superseded} contradicted`);
     return report;
   }
@@ -504,6 +606,7 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
   function due(botId: string): boolean {
     const current = now();
     if (current.getHours() < deps.tidyHour()) return false;
+    if (autoTidyBlockedDay.get(botId) === memoryDate(current)) return false;
     const last = loadState().bots[botId]?.lastTidy?.at;
     return !last || memoryDate(new Date(last)) < memoryDate(current);
   }
@@ -514,7 +617,8 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       if (paused) return;
       if (!upkeepEnabled(bot) || deps.busy(bot.id) || !due(bot.id)) continue;
       try {
-        await tidy(bot.id);
+        const report = await tidy(bot.id);
+        if (report.note && autoTidyBlockedDay.get(bot.id) === memoryDate(now())) log(`memory upkeep: tidy outcome for ${bot.id} — ${report.expired} expired, ${report.duplicates} duplicate(s), ${report.superseded} contradicted, ${report.organized ?? 0} organized: ${report.note}`);
       } catch (error) {
         log(`memory upkeep: tidy failed for ${bot.id}: ${(error as Error).message}`);
       }
@@ -528,13 +632,20 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       buffer.add(botId, threadId, turn);
     },
     flushThread: (threadId) => buffer.flush(threadId),
-    dropBot: (botId) => buffer.dropBot(botId),
+    dropBot(botId) {
+      buffer.dropBot(botId);
+      partialCaptureReports.delete(botId);
+      partialTidyReports.delete(botId);
+      autoTidyBlockedDay.delete(botId);
+    },
     capture: (batch) => track(capture(batch)),
     tidy,
     status(botId) {
       // the core judgements are upkeep's own bookkeeping, not status
       const { lastTidy, lastCapture } = loadState().bots[botId] ?? {};
-      return { ...(lastTidy ? { lastTidy } : {}), ...(lastCapture ? { lastCapture } : {}), modelSteps: Boolean(deps.engine(botId)?.generateText) };
+      const currentTidy = partialTidyReports.get(botId) ?? lastTidy;
+      const currentCapture = partialCaptureReports.get(botId) ?? lastCapture;
+      return { ...(currentTidy ? { lastTidy: currentTidy } : {}), ...(currentCapture ? { lastCapture: currentCapture } : {}), modelSteps: Boolean(deps.engine(botId)?.generateText) };
     },
     tick,
     start() {
@@ -555,7 +666,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
     resume() {
       paused = false;
       for (const batch of deferred.splice(0)) {
-        void track(capture(batch)).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
+        void track(capture(batch)).then((report) => {
+          if (report.note) log(`memory upkeep: capture outcome for ${batch.botId} — ${report.added} notebook fact(s), ${report.topics} topic fact(s), ${report.aboutMe} About me fact(s): ${report.note}`);
+        }).catch((error: unknown) => log(`memory upkeep: capture failed for ${batch.botId}: ${(error as Error).message}`));
       }
     },
     async idle() {

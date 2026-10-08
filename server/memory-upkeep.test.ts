@@ -210,7 +210,7 @@ describe("the upkeep loop", () => {
   let organizeAnswer: string;
   let organizePrompts: string[];
 
-  const upkeep = (beforeWrite?: () => Promise<void>) => createMemoryUpkeep({
+  const upkeep = (beforeWrite?: () => Promise<void>, logs?: string[]) => createMemoryUpkeep({
     bots: () => [BOT],
     bot: (id) => (id === BOT.id ? BOT : undefined),
     engine: () => engine,
@@ -224,6 +224,7 @@ describe("the upkeep loop", () => {
     tidyHour: () => 3,
     now: () => clock,
     ...(beforeWrite ? { beforeWrite } : {}),
+    ...(logs ? { log: (line: string) => { logs.push(line); } } : {}),
   });
 
   beforeEach(() => {
@@ -273,6 +274,65 @@ describe("the upkeep loop", () => {
     expect(memory()).toBe(before);
     expect(aboutMeAdded).toEqual([]);
     expect(service.status(BOT.id).lastCapture).toBeUndefined();
+  });
+
+  it("returns truthful partial capture evidence when the About me gate holds after notebook writes", async () => {
+    ensureWorkspace(BOT.id);
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const logs: string[] = [];
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker hold");
+    }, logs);
+
+    service.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Noted." });
+    service.flushThread("t1");
+    await service.idle();
+    await flushMemoryJournal(BOT.id);
+
+    expect(modelCalls).toBe(1);
+    expect(logs.join("\n")).toMatch(/Capture saved 1 notebook fact\(s\).*About me was not updated.*instance will not retry this batch automatically/);
+    expect(memory()).toContain("The person likes jazz");
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "capture" && row.path === "MEMORY.md")).toBe(true);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toMatchObject({ added: 1, aboutMe: 0, note: expect.stringMatching(/not updated/) });
+    await service.idle();
+    expect(modelCalls).toBe(1);
+  });
+
+  it("returns completed topic writes when the status-record gate is unavailable", async () => {
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "Acme needs a logo", kind: "fact", topic: "Acme" }]);
+    } };
+    const logs: string[] = [];
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker unavailable");
+    }, logs);
+
+    service.noteTurn(BOT.id, "t1", { person: "Acme needs a logo", bot: "Noted." });
+    service.flushThread("t1");
+    await service.idle();
+    await flushMemoryJournal(BOT.id);
+    const report = service.status(BOT.id).lastCapture!;
+
+    expect(modelCalls).toBe(1);
+    expect(report).toMatchObject({ added: 0, topics: 1, aboutMe: 0 });
+    expect(report.note).toMatch(/status was not recorded.*instance will not retry this batch automatically/);
+    expect(logs.join("\n")).toMatch(/1 topic fact\(s\).*status was not recorded.*instance will not retry this batch automatically/);
+    expect(readMemoryTopic(BOT.id, "acme.md")).toContain("Acme needs a logo");
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "capture" && row.path === "memory/acme.md")).toBe(true);
+    expect(service.status(BOT.id).lastCapture).toMatchObject({ topics: 1, note: expect.stringMatching(/status was not recorded/) });
+    await service.idle();
+    expect(modelCalls).toBe(1);
   });
 
   it("does not write when backup pause starts during the scoped gate check", async () => {
@@ -413,6 +473,100 @@ describe("the upkeep loop", () => {
     expect(rows.filter((row) => row.actor === "upkeep" && row.via === "tidy").map((row) => row.path)).toEqual(["MEMORY.md", "memory/archive.md"]);
     // newest first: undoing the top row puts MEMORY.md back, and the archive keeps its copy
     expect(rows[0]!.path).toBe("MEMORY.md");
+  });
+
+  it("does not perform an organize move when hold arrives after its model response", async () => {
+    ensureWorkspace(BOT.id);
+    const original = "- 2026-09-25 · The client Acme wants logo revisions.\n";
+    writeMemoryFile(BOT.id, original);
+    organizeAnswer = '{"moves":[{"i":0,"topic":"acme","aliases":["client"]}]}';
+    let checks = 0;
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker hold");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(report.note).toMatch(/Organization was blocked.*suppressed for the rest of this process today/);
+    expect(memory()).toBe(original);
+    expect(readMemoryTopic(BOT.id, "acme.md")).toBeNull();
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).filter((row) => row.via === "organize")).toHaveLength(0);
+    expect(organizePrompts).toHaveLength(1);
+    expect(service.status(BOT.id).lastTidy?.note).toMatch(/Organization was blocked/);
+    await service.tick();
+    expect(organizePrompts).toHaveLength(1);
+  });
+
+  it("does not tidy after the contradiction model response when the write gate is unavailable", async () => {
+    ensureWorkspace(BOT.id);
+    const original = [
+      "- 2026-09-01 · Likes tea", "- 2026-09-02 · Likes tea", "- 2026-09-03 · Has a dog",
+      "- 2026-09-04 · Drives a Honda", "- 2026-09-05 · Plays chess", "- 2026-09-06 · Office is in Pune", "",
+    ].join("\n");
+    writeMemoryFile(BOT.id, original);
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async (prompt) => {
+      modelCalls += 1;
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[]}';
+      }
+      prompts.push(prompt);
+      return '{"pairs":[]}';
+    } };
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker unavailable");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(modelCalls).toBe(2);
+    expect(report.note).toMatch(/scoped write gate blocked tidy changes/);
+    expect(memory()).toBe(original);
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).filter((row) => row.via === "tidy")).toHaveLength(0);
+    expect(service.status(BOT.id).lastTidy?.note).toMatch(/scoped write gate blocked tidy changes/);
+    await service.tick();
+    expect(modelCalls).toBe(2);
+  });
+
+  it("reports tidy writes when the status gate refuses and suppresses automatic replay for the day", async () => {
+    ensureWorkspace(BOT.id);
+    writeMemoryFile(BOT.id, [
+      "- 2026-09-01 · Likes tea", "- 2026-09-02 · Likes tea", "- 2026-09-03 · Has a dog",
+      "- 2026-09-04 · Drives a Honda", "- 2026-09-05 · Plays chess", "- 2026-09-06 · Office is in Pune", "",
+    ].join("\n"));
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async (prompt) => {
+      modelCalls += 1;
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[]}';
+      }
+      prompts.push(prompt);
+      return '{"pairs":[]}';
+    } };
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 3) throw new Error("broker unavailable");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(modelCalls).toBe(2);
+    expect(report.duplicates).toBe(1);
+    expect(report.note).toMatch(/Tidy changes shown above were saved.*status was not recorded.*suppressed for the rest of this process today/);
+    expect(memory().match(/Likes tea/g)).toHaveLength(1);
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "tidy" && row.path === "MEMORY.md")).toBe(true);
+    expect(service.status(BOT.id).lastTidy).toMatchObject({ duplicates: 1, note: expect.stringMatching(/status was not recorded/) });
+    await service.tick();
+    expect(modelCalls).toBe(2);
   });
 
   it("moves detail the bot wrote itself out of MEMORY.md into topics, keeping core facts", async () => {
