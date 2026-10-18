@@ -44,6 +44,8 @@ import {
   mergeLocalInject,
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
+import { decodePiConfig, type PiConfig } from "./pi-config.ts";
+import { checkPiReadiness } from "../pi-readiness.ts";
 import { allowsTool, canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
 import { customServerGate, gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
 import { remoteMcpSpec } from "../mcp-http.ts";
@@ -325,7 +327,7 @@ export async function applyPiLocalCatalog(
 }
 
 function piAgentDir(env: Record<string, string | undefined>): string {
-  return join(env.HOME || env.USERPROFILE || homedir(), ".pi", "agent");
+  return env.PI_CODING_AGENT_DIR || join(env.HOME || env.USERPROFILE || homedir(), ".pi", "agent");
 }
 
 /** Upsert a live local host into ~/.pi/agent/models.json so `set_model` can reach it. */
@@ -404,9 +406,9 @@ export function ensurePiInjectModel(
 }
 
 function readPiDefaultModel(env: Record<string, string | undefined>): string {
-  const home = env.HOME || env.USERPROFILE || homedir();
+  const dir = piAgentDir(env);
   try {
-    const s = JSON.parse(readFileSync(`${home}/.pi/agent/settings.json`, "utf8")) as {
+    const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")) as {
       defaultProvider?: string;
       defaultModel?: string;
     };
@@ -468,23 +470,7 @@ export async function updatePiModelCatalog(
   });
 }
 
-export interface PiConfig {
-  cli: string;
-  /** Full-auto: never ask before an action. Host control is unavailable in this mode. */
-  fullAuto: boolean;
-}
-
-function decodeConfig(raw: unknown): PiConfig {
-  if (raw === null || raw === undefined) return { cli: "pi", fullAuto: false };
-  if (typeof raw !== "object") throw new Error("pi config must be an object");
-  const obj = raw as { cli?: unknown; fullAuto?: unknown };
-  if (obj.cli !== undefined && typeof obj.cli !== "string") throw new Error("pi config `cli` must be a string");
-  if (obj.fullAuto !== undefined && typeof obj.fullAuto !== "boolean") throw new Error("pi config `fullAuto` must be a boolean");
-  return {
-    cli: obj.cli && obj.cli.trim() ? obj.cli.trim() : "pi",
-    fullAuto: obj.fullAuto === true,
-  };
-}
+export type { PiConfig } from "./pi-config.ts";
 
 const EMPTY: ModelCatalog = { default: "", options: [] };
 
@@ -509,7 +495,7 @@ interface PiEvent {
   title?: string;
 }
 
-function piEnvironment(source: Record<string, string | undefined>): Record<string, string | undefined> {
+export function piEnvironment(source: Record<string, string | undefined>): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...source, PATH: augmentedPath() };
   // pi reads provider keys from its env: an inherited key would flip billing, and workspace
   // credentials are the harness's secrets.
@@ -531,12 +517,12 @@ export const PiDriver: ProviderDriver<PiConfig> = {
     docsUrl: "https://pi.dev",
   },
   models: EMPTY,
-  decodeConfig,
-  defaultConfig: () => decodeConfig({}),
+  decodeConfig: decodePiConfig,
+  defaultConfig: () => decodePiConfig({}),
 
   async create(input: DriverCreateInput<PiConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
-    const catalogEnv = piEnvironment({ ...process.env, ...input.environment });
+    const catalogEnv = piEnvironment({ ...process.env, ...input.environment, ...(config.agentDir ? { PI_CODING_AGENT_DIR: config.agentDir } : {}) });
     let models = EMPTY;
     const readModels = async () => {
       let base = models;
@@ -587,6 +573,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       if (startupModelRefresh) await startupModelRefresh;
       const { threadId } = turn;
+      if (config.agentDir) {
+        const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
+        if (!readiness.skill.ready) throw new Error(readiness.skill.action);
+      }
       const selection = parseToolScope(turn.toolScope);
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;
@@ -609,7 +599,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
 
       // Before any credential-bearing temp file, so a model setup failure leaves nothing to clean up.
       if (typeof turn.model === "string" && turn.model) {
-        ensurePiInjectModel(turn.model, { ...process.env, ...input.environment });
+        ensurePiInjectModel(turn.model, catalogEnv);
       }
 
       // The MCP config carries credentials: a 0600 temp file removed at settle, never argv.
@@ -637,7 +627,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             cwd: turn.cwd,
             env: piEnvironment({
               ...process.env,
-              ...input.environment,
+              ...catalogEnv,
               OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json"),
             }),
           }, "bot");
