@@ -1,10 +1,10 @@
-// Modified in 2026: fail closed when persisted routine queue state is unreadable.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
 import { DATA_DIR } from "./config.ts";
+import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { writeFileAtomic } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
@@ -693,13 +693,7 @@ export class RoutineManager {
     this.now = options.now ?? Date.now;
     try {
       const disk = JSON.parse(readFileSync(this.file, "utf8")) as Partial<RoutineFile>;
-      if (disk === null || typeof disk !== "object" || Array.isArray(disk)) throw new Error("Invalid routines file");
-      if (disk.version !== 1 || !Array.isArray(disk.routines) || !Array.isArray(disk.runs)) {
-        throw new Error("Invalid routines file: expected version 1 with routines and runs");
-      }
-      for (const key of ["routineRequestReceipts", "webhookRunReceipts"] as const) {
-        if (key in disk && !Array.isArray(disk[key])) throw new Error(`Invalid routines file: ${key} is not a list`);
-      }
+      assertRoutineFileShape(disk);
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
             const schedule = loadSchedule(routine.schedule, this.now());
@@ -781,8 +775,7 @@ export class RoutineManager {
         known.add(key);
       }
     } catch (error) {
-      // Missing files start empty. Unreadable or malformed files remain frozen
-      // below, so the scheduler cannot overwrite admitted work or lose evidence.
+      // Missing files start empty; malformed state stays frozen to protect queued work.
       this.routines = [];
       this.unloadedRoutines = [];
       this.runs = [];
