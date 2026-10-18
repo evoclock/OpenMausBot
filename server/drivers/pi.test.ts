@@ -1082,7 +1082,7 @@ describe("PiDriver turns (fake CLI)", () => {
   it("writes models.json and set_model for a host::model inject pick", async () => {
     const home = mkdtempSync(join(tmpdir(), "omb-pi-turn-inject-"));
     const dump = join(home, "dump.jsonl");
-    await create(undefined, { HOME: home, FAKE_PI_DUMP: dump });
+    await create(undefined, { HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent"), FAKE_PI_DUMP: dump });
     const { turnId } = await instance.adapter.sendTurn({
       threadId: "t-inject",
       text: "hi",

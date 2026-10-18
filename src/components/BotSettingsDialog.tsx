@@ -100,6 +100,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
           <div className="rounded-xl bg-card p-4 text-[13px] text-ink-secondary">Couldn’t load the overview.</div>
         ) : (
           <OverviewSection
+            botId={bot.id}
             overview={overview}
             refreshError={overview !== null && overviewError}
             prompt={prompt}
