@@ -16,6 +16,7 @@ function host(): WorkerHost & { calls: string[] } {
     async roles() { return { development: "worker", independentReview: "reviewer" }; },
     async acquire() { calls.push("acquire"); return { repository: contract.repository,
       directory: "isolated", branch: "review", base: "base", leaseId: "lease" }; },
+    async release(leaseId, reason) { calls.push(`release:${leaseId}:${reason}`); },
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["worker artifact"], progress: true }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["separate review"] }; },
     async verifyWithPstack() { calls.push("pstack"); return ["acceptance result"]; },
@@ -44,7 +45,31 @@ test("a workspace on another branch blocks before dispatch", async () => {
     repository: contract.repository, directory: "isolated", branch: "unapproved", base: "base", leaseId: "lease",
   }; };
   assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
-  assert.deepEqual(route.calls, ["acquire"]);
+  assert.deepEqual(route.calls, ["acquire", "release:lease:isolated workspace does not match the run contract"]);
+});
+
+test("a workspace in another repository blocks and releases before dispatch", async () => {
+  const route = host();
+  route.acquire = async () => { route.calls.push("acquire"); return {
+    repository: "other/agents", directory: "isolated", branch: contract.ref, base: "base", leaseId: "lease",
+  }; };
+  assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
+  assert.deepEqual(route.calls, ["acquire", "release:lease:isolated workspace does not match the run contract"]);
+});
+
+test.each(["runPlaybook", "review"] as const)("%s failure releases the lease", async (step) => {
+  const route = host();
+  route[step] = async () => { route.calls.push(step); throw new Error("host failure"); };
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
+  assert.equal(result.kind, "blocked");
+  assert.equal(route.calls.at(-1), "release:lease:worker route failed; reconcile outward effects");
+});
+
+test("a worker without progress blocks and releases the lease", async () => {
+  const route = host();
+  route.runPlaybook = async () => { route.calls.push("worker"); return { revision: "", evidence: [], progress: false }; };
+  assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
+  assert.deepEqual(route.calls, ["acquire", "worker", "release:lease:worker made no verified progress"]);
 });
 
 test("a favorable reviewer alone never completes an unverified run", async () => {
