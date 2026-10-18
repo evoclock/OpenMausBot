@@ -17,9 +17,7 @@ export const sharedComputerOperation = z.object({
 }).strict();
 type Registration = z.infer<typeof sharedComputerRegistration>;
 type Operation = z.infer<typeof sharedComputerOperation>;
-/** Who lent a computer: the paired session that registered it (it alone may
- * poll, answer and disconnect) and the person behind that session (only that
- * person's bot turns may see or use it). */
+/** The registering session alone may poll, answer and disconnect; only that person's bot turns may see or use it. */
 export type SharedComputerOwner = { session: string; person: string };
 export type SharedComputerStatus = {
   id: string; name: string; online: boolean; busy: boolean; lastSeenAt: number;
@@ -28,17 +26,11 @@ export type SharedComputerStatus = {
 type Job = { id: string; operation: Operation; active: () => boolean; sent: boolean; resolve: (result: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Computer = { registration: Registration; owner: SharedComputerOwner; secret: string; seen: number; jobs: Map<string, Job>; wake?: () => void };
 const failure = (message: string, status = 409) => Object.assign(new Error(message), { status });
-/** Bounds memory, not anyone's share: a desktop session holds one entry. */
 const TOTAL = 100;
-/** How long a lent computer that stopped polling (asleep, app closed) stays
- * known, so a status reader can tell "lent but offline" from "not lent". */
 const RETAIN_MS = 14 * 24 * 60 * 60_000;
 const OFFLINE = "This shared computer is offline. Keep its desktop app open; do not substitute files on the server.";
 
-/** The scopes the desktop registered, checked by the server as well. The
- * desktop's own grant is the authority and checks every operation again;
- * this only means the server never even queues work outside what the desktop
- * said it lends. */
+/** The desktop's grant is the authority and checks every operation again; the server just never queues work outside what it lends. */
 export function sharedComputerScopeRefusal(registration: Registration, operation: Pick<Operation, "action" | "folder_id">): string | null {
   switch (operation.action) {
     case "run_command":
@@ -56,10 +48,7 @@ export function sharedComputerScopeRefusal(registration: Registration, operation
   }
 }
 
-/** The person a bot turn acts for, from the harness's own record of which
- * message started it: that request must name this exact turn generation (a
- * continuation of the same request adds its generation), must not have been
- * stopped, and its message must come from a person. Anything else is nobody. */
+/** The person behind a request proven for this exact turn generation, not stopped, from a person's message; anything else is nobody. */
 export function provenRequestPerson(
   request: { messageId?: string; generations: ReadonlySet<string>; stopped?: boolean } | undefined,
   generation: string,
@@ -69,13 +58,8 @@ export function provenRequestPerson(
   return personOf(request.messageId) ?? null;
 }
 
-/** In-memory rendezvous only. Authority over local resources stays on the
- * desktop. Restart/disconnect NEVER replays an operation with an unknown outcome.
- *
- * Partitioned by owner: an entry is keyed by the registering session and the
- * desktop's id, so another session can never take over an id, and a bot turn
- * sees only the computers of the person it acts for. A turn that acts for
- * nobody provable (principal null) sees none. */
+/** In-memory rendezvous: authority stays on the desktop, and restart/disconnect never replays an operation with an unknown outcome.
+ * Keyed by registering session and desktop id, so no other session takes over an id and a turn sees only its person's computers. */
 export class SharedComputers {
   private computers = new Map<string, Computer>();
   private sessionLive: (id: string) => boolean;
@@ -91,9 +75,7 @@ export class SharedComputers {
       return;
     }
     this.reap();
-    // A paired desktop runs one grant per server, so a new id from the same
-    // session is a new save: its earlier entry is stale and goes. No other
-    // session can reach, replace or squat this key.
+    // A new id from the same session replaces its entry; no other session can reach, replace or squat this key.
     for (const [stale, entry] of this.computers) {
       if (entry.owner.session !== owner.session) continue;
       this.computers.delete(stale); entry.wake?.();
@@ -102,7 +84,6 @@ export class SharedComputers {
     if (this.computers.size >= TOTAL) throw failure("Too many shared computers");
     this.computers.set(key, { registration, owner: { ...owner }, secret, seen: Date.now(), jobs: new Map() });
   }
-  /** Forget entries whose session ended or that have been silent too long. */
   private reap() {
     for (const [key, entry] of this.computers) {
       if (entry.jobs.size === 0 && (!this.sessionLive(entry.owner.session) || Date.now() - entry.seen > RETAIN_MS)) this.computers.delete(key);
@@ -114,16 +95,10 @@ export class SharedComputers {
     if (!entry || !this.sessionLive(session) || !/^[a-f0-9]{64}$/.test(secret) || !timingSafeEqual(Buffer.from(secret), Buffer.from(entry.secret))) throw failure("Shared computer is disconnected or not authorized", 403);
     return entry;
   }
-  /** The online computers one person lent. */
   list(principal: string | null) {
     if (!principal) return [];
     return [...this.computers.values()].filter(entry => entry.owner.person === principal && this.online(entry)).map(entry => entry.registration);
   }
-  /** What one person has lent, online or not: the documented status a
-   * reader (the Cloud UI, the next step's placement) uses to tell "your Mac
-   * is lent and awake" from "lent but asleep" and "not lent". No secret, no
-   * session. Resets when this server restarts; a lending desktop registers
-   * again within seconds of being online. */
   status(principal: string | null): SharedComputerStatus[] {
     if (!principal) return [];
     this.reap();
@@ -173,8 +148,7 @@ export class SharedComputers {
     this.computers.delete(SharedComputers.key(session, id)); entry.wake?.();
     for (const job of entry.jobs.values()) this.finish(entry, job, failure("Computer disconnected. An in-flight action may have completed; inspect before retrying."));
   }
-  /** One bot operation for the person the turn acts for. Another person's
-   * computer answers exactly like one that does not exist. */
+  /** Another person's computer answers exactly like one that does not exist. */
   request(operation: Operation, principal: string | null, active: () => boolean): Promise<unknown> {
     if (!principal) return Promise.reject(failure("This conversation cannot use a shared computer: only a conversation started by the person who shared it can.", 403));
     const entry = [...this.computers.values()].find(candidate => candidate.registration.id === operation.computer_id && candidate.owner.person === principal && this.online(candidate));

@@ -12,6 +12,16 @@ authentication, and runtime temporary-folder behavior from T3 Code, Copyright
 Selected-text citation matching adapts T3 Code's assistant citation selection,
 Copyright 2026 T3 Tools Inc., used under the MIT License.
 
+The egress gate for the bots' browser (server/browser/egress/) adapts T3 Code's
+public-only SOCKS5 proxy for HTML previews and the Linux listener-ownership
+scan of its preview port scanner, Copyright 2026 T3 Tools Inc., used under the
+MIT License (third_party/t3-code/LICENSE).
+
+Prompt-cache keep-warm (server/cache-keepwarm.ts and
+server/drivers/claude-keepwarm.ts) ports the design of Cache Tax,
+https://github.com/karanb192/claude-code-mods, Copyright (c) 2026 Karan
+Bansal, used under the MIT License (third_party/cache-tax/LICENSE).
+
 The secure phone credential transport uses @hpke/core and @hpke/common from
 hpke-js, Copyright 2023-2024 Ajitomi Daisuke, used under the MIT License.
 
@@ -31,6 +41,21 @@ under the MIT License. Its cache and refresh logic is adapted from OpenCode,
 https://github.com/anomalyco/opencode, Copyright (c) 2025 opencode, used under
 the MIT License. The full license texts are in third_party/models-dev/LICENSE
 and third_party/opencode/LICENSE.
+
+The browser driver's US keyboard layout and key-event rules
+(server/browser/cdp/keyboard.ts) come from Puppeteer, Copyright 2017 Google
+Inc., used under the Apache License, Version 2.0 (third_party/puppeteer).
+
+The browser driver's action semantics, error messages, limits and test cases,
+its copy capture and its browser host diagnosis adapt T3 Code's server
+browser (apps/server/src/preview), Copyright 2026 T3 Tools Inc., used under
+the MIT License (third_party/t3-code/LICENSE).
+
+The bots' browser service on that driver (server/browser/) adapts T3 Code's
+server browser and preview tools: its session control, tab lifecycle,
+viewers and screencast pacing, tool definitions and snapshot bound
+(apps/server/src/preview and apps/server/src/mcp), Copyright 2026 T3 Tools
+Inc., used under the MIT License (third_party/t3-code/LICENSE).
 
 The browser desktop viewer bundles the unmodified noVNC 1.7.0 library,
 Copyright the noVNC authors, under MPL-2.0 and its accompanying licenses.

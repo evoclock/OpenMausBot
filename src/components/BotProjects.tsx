@@ -73,8 +73,6 @@ export function FolderActions({ project, canMoveUp, canMoveDown, canMarkRead, sa
   </>;
 }
 
-/** Folders only organize threads. The project-shaped API is retained for
- * compatibility; neither model settings nor working directories live here. */
 export function BotProjectDialog({ bot, project, onClose, onCreated }: {
   bot: Bot;
   project?: BotProject;
@@ -178,7 +176,6 @@ export function BotProjectDialog({ bot, project, onClose, onCreated }: {
   );
 }
 
-/** One-click new thread in the current folder. Folder creation lives in the sidebar. */
 export function NewThreadButton({ bot, className, compact = false, onCreated }: { bot: Bot; className?: string; compact?: boolean; onCreated?: () => void }) {
   const { dispatch } = useStore();
   const projects = bot.projects ?? [];

@@ -1,7 +1,6 @@
 import { TurnResources } from "./turn-resources.ts";
 
-/** A local desktop call competes with ordinary bot turns for the same screen.
- * Leases expire if Electron crashes; human takeover always wins renewal. */
+/** Leases expire if Electron crashes; human takeover always wins renewal. */
 const LEASE_EXPIRY_MS = 40_000;
 
 type SharedComputerLease = { timer: NodeJS.Timeout; generation: number; lastActivity: number };
@@ -19,15 +18,11 @@ export class SharedComputerControl {
     }
     this.arm(id);
   }
-  /** Extends a held lease for one long desktop action without re-running the
-   * takeover checks: a heartbeat while the operation is pending must not be
-   * able to lose its own screen. Renewing an expired or released id is a
-   * no-op — the lease is gone and only acquire can bring it back. */
+  /** Skips the takeover checks: a heartbeat for a pending operation must not lose its own screen. */
   renew(id: string) {
     if (this.leases.has(id)) this.arm(id);
   }
-  /** (Re)arm the expiry timer. The generation counter makes a stale timer a
-   * no-op: only the callback of the newest arming may release the lease. */
+  /** The generation counter makes a stale timer a no-op: only the newest arming may release the lease. */
   private arm(id: string) {
     const previous = this.leases.get(id);
     if (previous) clearTimeout(previous.timer);

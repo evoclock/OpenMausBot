@@ -1,9 +1,5 @@
 // @vitest-environment happy-dom
-// The open chat's rows re-render only when their own message changes. A
-// store event elsewhere (another bot's frame, a field of this bot that no
-// row shows) renders none of them; a patched tool chip renders that chip
-// and nothing else. Counted through the leaf each row draws, which is not
-// memoized here, so it renders exactly when its row does.
+// Counted through the leaf each row draws, which is not memoized here, so it renders exactly when its row does.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -32,14 +28,18 @@ vi.mock("./ToolActivity", async (importOriginal) => ({
     return createElement("span", null, tool.name);
   },
 }));
-// The real button, run inside a counting component: whatever it subscribes
-// to re-renders this component, so every render of it is counted.
+// The real button, run inside a counting component, so every render of it is counted.
 vi.mock("./SpeakButton", async (importOriginal) => {
-  const { SpeakButton } = await importOriginal<typeof import("./SpeakButton")>();
+  const actual = await importOriginal<typeof import("./SpeakButton")>();
   return {
-    SpeakButton: (props: Parameters<typeof SpeakButton>[0]) => {
+    ...actual,
+    SpeakButton: (props: Parameters<typeof actual.SpeakButton>[0]) => {
       renders.speak++;
-      return SpeakButton(props);
+      return actual.SpeakButton(props);
+    },
+    useSpeakAction: (args: Parameters<typeof actual.useSpeakAction>[0]) => {
+      renders.speak++;
+      return actual.useSpeakAction(args);
     },
   };
 });
@@ -58,8 +58,6 @@ const { t } = await import("@/lib/i18n");
 
 const message = (id: string, parentId: string | undefined, fields: Partial<Message>): Message =>
   ({ id, parentId, role: "bot", kind: "text", at: new Date(2026, 9, 3, 9, Number(id.slice(1))).getTime(), ...fields });
-// Three turns, each a question, one tool step and an answer; the last turn's
-// step is still running.
 const messages: Message[] = [];
 for (let turn = 0; turn < 3; turn++) {
   const at = turn * 3;
@@ -95,6 +93,25 @@ async function draw() {
   flushSync(() => root.render(createElement(BotEditorStore, { value, children })));
   await settle();
 }
+async function menuOf(mid: string) {
+  const more = document.querySelector<HTMLButtonElement>(`[data-mid="${mid}"] button[aria-haspopup="menu"]`);
+  if (!more) return [];
+  flushSync(() => more.click());
+  await settle();
+  const items = [...document.querySelectorAll<HTMLButtonElement>(`[data-mid="${mid}"] [role=menuitem]`)]
+    .map((item) => ({ label: item.textContent ?? "", title: item.title, disabled: item.disabled }));
+  flushSync(() => more.click());
+  await settle();
+  return items;
+}
+async function menusWith(label: string) {
+  const found: { mid: string; title: string; disabled: boolean }[] = [];
+  for (const row of document.querySelectorAll("[data-mid]")) {
+    const mid = row.getAttribute("data-mid")!;
+    for (const item of await menuOf(mid)) if (item.label === label) found.push({ mid, title: item.title, disabled: item.disabled });
+  }
+  return found;
+}
 async function rowRendersAfter(change: (current: AppState) => AppState) {
   renders.botText = renders.userText = renders.toolChip = renders.speak = 0;
   state = change(state);
@@ -103,7 +120,6 @@ async function rowRendersAfter(change: (current: AppState) => AppState) {
 }
 
 beforeAll(async () => {
-  // late on the day of the thread, so its separator reads "Today"
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(2026, 9, 3, 23, 0));
   vi.stubGlobal("fetch", () => new Promise(() => {}));
@@ -147,7 +163,6 @@ describe("chat transcript rows", () => {
     expect(document.body.textContent).toContain("Read file 2, page 2");
   });
 
-  // The separator used to follow every store event; now it follows the date.
   it("moves Today on to Yesterday after midnight, at the next store event", async () => {
     vi.setSystemTime(new Date(2026, 9, 4, 0, 30));
     const scout = state.bots.find((bot) => bot.id === "scout")!;
@@ -157,23 +172,19 @@ describe("chat transcript rows", () => {
   });
 
   it("offers Regenerate on the last answer only, and not during a turn", async () => {
-    const regenerate = () => [...document.querySelectorAll(`button[aria-label="${t("chat.regenerate")}"]`)]
-      .map((button) => button.closest("[data-mid]")?.getAttribute("data-mid"));
-    expect(regenerate()).toEqual(["m5"]);
+    const regenerate = async () => (await menusWith(t("chat.regenerate"))).map((item) => item.mid);
+    expect(await regenerate()).toEqual(["m5"]);
     const busy = (value: boolean) => (current: AppState) => {
       const { messages: _transcript, ...frame } = current.bots.find((bot) => bot.id === "pepper")!;
       const tasks = frame.tasks?.map((task) => ({ ...task, busy: value, activity: value ? "working" as const : "idle" as const }));
       return reducer(current, { type: "botPatched", bot: { ...frame, busy: value, tasks } });
     };
     await rowRendersAfter(busy(true));
-    expect(regenerate()).toEqual([]);
+    expect(await regenerate()).toEqual([]);
     await rowRendersAfter(busy(false));
-    expect(regenerate()).toEqual(["m5"]);
+    expect(await regenerate()).toEqual(["m5"]);
   });
 
-  // A paired Mac keeps its voice choice ("This Mac" or "Host voice") on the
-  // device, outside the store. The read-aloud buttons pick up a switch at the
-  // next store event, here the settings beside the chat closing.
   it("follows this device's voice choice at the next store event", async () => {
     const bridge = window.ogb;
     window.ogb = { ...bridge, platform: "darwin", remoteClient: { active: true } } as typeof window.ogb;
@@ -181,9 +192,7 @@ describe("chat transcript rows", () => {
     vi.stubGlobal("localStorage", { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => kept.set(key, value) });
     vi.stubGlobal("speechSynthesis", { getVoices: () => [] });
     vi.stubGlobal("SpeechSynthesisUtterance", class {});
-    const speak = () => [...document.querySelectorAll<HTMLButtonElement>("button[aria-label]")]
-      .filter((button) => button.getAttribute("aria-label") === t("chat.speak.read") || button.getAttribute("aria-label") === t("chat.speak.needsKey"))
-      .map((button) => `${button.getAttribute("aria-label")}${button.disabled ? " (off)" : ""}`);
+    const speak = async () => (await menusWith(t("chat.speak.read"))).map((item) => `${item.title}${item.disabled ? " (off)" : ""}`);
     const switchTo = async (provider: "host" | "system") => {
       await rowRendersAfter((current) => reducer(current, { type: "toggleSettings", open: true }));
       setRemoteVoiceProvider(provider);
@@ -191,12 +200,10 @@ describe("chat transcript rows", () => {
     };
     try {
       await switchTo("system");
-      expect(speak()).toEqual([t("chat.speak.read"), t("chat.speak.read")]);
-      // no speech key on the host, so Host voice cannot read aloud
+      expect(await speak()).toEqual([t("chat.speak.read"), t("chat.speak.read")]);
       await switchTo("host");
-      expect(speak()).toEqual([`${t("chat.speak.needsKey")} (off)`, `${t("chat.speak.needsKey")} (off)`]);
+      expect(await speak()).toEqual([`${t("chat.speak.needsKey")} (off)`, `${t("chat.speak.needsKey")} (off)`]);
     } finally {
-      // the stubbed globals go in afterAll
       window.ogb = bridge;
     }
   });

@@ -106,7 +106,6 @@ function base64UrlDecode(value: string): unknown {
   return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0))));
 }
 
-/** Readable in clients without citation UI and unambiguous to model providers. */
 export function citationFallback(citation: CitationAttachment): string {
   const quote = citation.quote.split("\n").map((line) => `> ${line}`).join("\n");
   return `> Quoted message:\n${quote}${citation.comment ? `\n\nComment:\n${citation.comment}` : ""}`;

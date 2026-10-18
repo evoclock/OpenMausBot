@@ -1,9 +1,10 @@
 # Verifying OpenMausBot
 
-OpenMausBot has one development control surface: `pnpm control:omb`. It is a
-thin command-line adapter over `scripts/mcp-server.ts`, so verification uses
-the same URL validation, task pinning, bounded transcripts, wait states, and
-redaction as external MCP clients.
+OpenMausBot has one development control surface: `pnpm control:omb`. It runs
+the published `openmausbot` verbs (docs/headless-cli.md), which call the MCP
+tools in `scripts/mcp-server.ts`, so verification uses the same URL
+validation, task pinning, bounded transcripts, wait states, and redaction as
+external MCP clients and scripts.
 
 ## Launch
 
@@ -27,7 +28,8 @@ exception: `OMB_OPENAI_LIVE_URL` crosses when it is a loopback
 `http://127.0.0.1:PORT` (the fake GPT-Live that
 `node --experimental-strip-types server/testing/fake-openai-live.ts` prints),
 and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
-reach the fake.
+reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls from a phone need a Pro plan,
+and that is how a server the desktop app did not start says so.
 
 Pass the printed URL explicitly from a second terminal:
 
@@ -42,6 +44,7 @@ recipe from sending messages to the user's running app by accident.
 
 Use only mapped, tested commands:
 
+- [The headless command line](headless-cli.md)
 - [Chat turns](chat-turns.md)
 - [Conversation context compaction](context-compaction.md)
 - [Work summaries and engine hooks](digests.md)
@@ -53,14 +56,19 @@ Use only mapped, tested commands:
 - [Profile proposal and credential-card lifecycle](proposal-cards.md)
 - [Full Access without duplicate approvals](full-access.md)
 - [Exact command allowlist UI and saved rules](command-allowlist.md)
+- [The safety floor: a never-list no grant can allow](safety-floor.md)
 - [Peer approval denial, expiry, and cancellation](peer-approvals.md)
 - [Waiting for an occupied desktop](computer-wait.md)
 - [Chat UI, driven headlessly](chat-ui.md)
+- [Chat widgets](widgets.md)
+- [Chat widgets: prompts to try with a real bot](widget-prompts.md)
+- [Phone web app installation and safe areas](phone-web-app.md)
 - [Welcome flow and guided tour](onboarding.md)
 - [Channels](channels.md)
 - [In-chat team coordination](room-coordination.md)
 - [Chief access to additional teams](team-access.md)
 - [Engines and Doctor](engines.md)
+- [Cline engine and native loopback qualification](cline.md)
 - [Claude coordination and turn-scoped tools](claude-tool-lifecycle.md)
 - [Codex bot instructions](codex-instructions.md)
 - [Codex browser routing and native search](codex-browser-routing.md)
@@ -93,9 +101,18 @@ built-in browser panel, and updater UI—is still not proven by the harness. Use
 the relevant Electron/package smoke test and state that limitation. Add a map
 entry only after the shared control surface can really drive it.
 
+The [switchable local environments recipe](local-environments.md) verifies
+creating, switching between and recovering named local environments by hand on
+a packaged desktop install; the control surface cannot drive it, so it is not
+in the map above.
+
 The [MCP sign-in fixture](mcp-sign-in.md) checks remote sign-in, callback URL
 paste-back, MCP tools and logout cancellation through the real settings panel
 and a synthetic OAuth provider in a disposable workspace.
+
+The [Whop fixture](whop.md) checks its one-click setup, cancellation, denied
+consent, discovery failures, reconnect and disconnect using that same registry
+and a synthetic provider, without accessing a real Whop account.
 
 The [Connected Apps OAuth fixture](connected-apps-oauth.md) checks blocked-popup
 recovery, safe authorization links and abandoned-account retries through real
@@ -123,7 +140,8 @@ and HTTP tailnet endpoint refresh without touching a real Tailscale installation
 
 The [external runtimes recipe](external-runtime.md) proves a bot's standing
 comms capability from `external-runtimes.json` against a disposable server and
-the fake engine: scope, on-demand token reads, and immediate delegation drain.
+the fake engine: scope, on-demand token reads, `coordinate_bots` roots polled
+through `assignment_status`, and immediate dispatch to a free teammate.
 
 The [cloud preview fixture](cloud-preview.md) mounts the real Computer panel
 against an isolated server for image decoding, loading, and recovery UI checks.
@@ -134,6 +152,10 @@ and Docker-over-SSH timeout cleanup without contacting a real server.
 The [live browser fixture](browser-live.md) mounts the real Browser panel with
 an explicitly selected native engine and Chrome in a disposable home, covering
 watching, takeover, input, and profile switching.
+
+The [page health and recorded browser steps check](browser-steps.md) drives the
+real engine against a fixture page with failing requests and page errors, and
+reads the recorded steps back through the server.
 
 The [Local VM resume fixture](local-vm-resume.md) checks idle stop, restart
 recovery, guarded resume and the stopped-to-ready Computer panel flow.
@@ -156,6 +178,17 @@ route module, and stale-response isolation.
 The [chat and settings polish fixture](chat-polish.md) exercises attachment
 galleries, opt-in video playback, persisted tool details, and responsive settings
 through the real renderer in an isolated fake-engine workspace.
+
+The [rich tables fixture](rich-tables.md) checks Markdown tables and message-scoped
+CSV/TSV previews, large-file virtualization, sorting, search, export and keyboard
+interaction in a disposable workspace.
+
+The [recent files fixture](computer-files.md) mounts the Files panel with synthetic
+digest rows and real message-scoped downloads from a disposable workspace.
+
+The [Data viewer fixture](data.md) checks real DuckDB loading, querying, export,
+restart persistence, result history and the full renderer's 100,000-row grid
+in a disposable workspace with synthetic data.
 
 The [people invitation fixture](people.md) checks hosted workspace sign-in,
 roles and device revocation through the real HTTP API with a stubbed email
@@ -184,35 +217,11 @@ steer messages from external interfaces. It also verifies bounded request
 lineage snapshots, Chief continuations and exact-execution Stop without
 interrupting a newer request.
 
-The [iOS thread checks](ios-threads.md) cover the native thread tree, folder
-search and draft isolation using disposable simulators and an offline fixture.
-
-The [iOS Local VM view](ios-local-vm.md) pairs a disposable simulator with an
-isolated server, companion sidecar and synthetic Local VM to check on-demand
-stills and the per-device computer-access gate.
-
-The [Android stream recovery checks](android-stream-recovery.md) exercise early
-stream closure and fallback through disposable HTTP endpoints.
-
-The [iOS transcript checks](ios-transcript.md) cover completed-turn folds,
-Hidden activity, and compact webhook messages using bundled offline data.
-
-The [iOS responsiveness checks](ios-responsiveness.md) exercise ordinary chat
-typing and navigation during a synthetic busy-fleet stream, plus batched
-delivery, compact off-main widget writes and bounded Markdown parse reuse.
-
-The [Android thread checks](android-threads.md) cover the Compose thread tree,
-local selection, draft isolation and installable preview APK.
-
-The [Android server pairing checks](android-server-pairing.md) cover server QR
-confirmation, manual codes, retries and saved-server identity validation.
-
-The [Android transcript checks](android-transcript.md) cover completed-turn
-folds, Hidden reasoning, and compact webhook messages through real Compose UI.
-
-The [Android Live call checks](android-live-calls.md) cover the `/api/live/*`
-client, the `live.call` frame, the call manager's state machine, the call bar,
-and an emulator smoke against the fixture and the fake GPT-Live.
+The [Live calls fixture](live-calls.md) checks the call id on spoken requests,
+the one "call" row a finished call leaves, its generated title and the desktop's
+record row, against the fake GPT-Live in a disposable workspace. `control-omb`
+cannot start a call, so the recipe also calls the harness's own routes. It
+proves no real audio, OpenAI key or phone.
 
 The [right-to-left fixture](bidi.md) checks per-block direction in bot replies
 and per-line direction in sent turns, with code pinned left-to-right.

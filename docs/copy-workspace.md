@@ -29,13 +29,14 @@ and keep their swap back in those folders.
   bots and chats from this Mac** ("this computer" elsewhere), with **Copy** and
   **Not now**. Not now hides it for that server for good. A server added
   earlier shows it the next time it is opened, while it is still empty. On an
-  OMB Cloud whose setup checklist is up, the same offer is the checklist's
-  second step instead (docs/cloud-pro.md). **Copy** there switches the window
+  OMB Cloud, the same offer is the first step of its welcome instead (before
+  anything there starts a chat), and later the setup card's **Bring your
+  stuff** step (docs/cloud-pro.md). **Copy** there switches the window
   to this computer, on Settings → Servers with that server's panel open, and
   the person starts the copy there (Security, below); on the person's own
   OMB Cloud, verified through the Admin, it starts the copy at once.
 - **Settings → Servers → Copy this computer here**, on every saved server's
-  row (not This computer), and **Settings → OpenMausBot Cloud** under My Cloud once
+  row (not This computer), and **Settings → MausBot Cloud** under My Cloud once
   it is Ready. Both open the same panel: the size and counts
   (`GET /api/cloud-move/estimate` on this computer's own server), that API keys
   and sign-ins stay on this computer, and **Copy to {server}**. When the server
@@ -45,7 +46,9 @@ and keep their swap back in those folders.
   it already keeps a backup for Swap back (an earlier copy), the panel says
   that copying again backs up what it has now in that backup's place and
   deletes the one from {date}, and the button reads **Replace {server} and
-  delete its {date} backup**. There is no confirmation dialog.
+  delete its {date} backup**. There is no confirmation dialog. A server that
+  has bots or chats of its own also offers **Bring newer chats to {server}**
+  first (Bring newer chats, below), which replaces nothing.
 - **Settings → Backups → Import from this computer**, on a server open in the
   desktop app, beside importing a file. It is the same offer, the same states
   and messages as the card, and its **Copy** opens the same panel on this
@@ -54,7 +57,14 @@ and keep their swap back in those folders.
 
 After a copy the app opens the server it went to, and its page says what came
 and what does not run there yet (routines arrive paused; the phone stays
-paired with this computer), until **Done**.
+paired with this computer), until **Done**. A copy to My Cloud also makes My
+Cloud the server this app opens from then on (the active server is saved), and
+this computer's own page shows one line at the bottom of the window, **Your
+bots now live on My Cloud. Chats here stay on this computer.** with **Open My
+Cloud** (`CloudHomeNote`). Main remembers the Cloud the copy went to in its
+`cloud-move.json` (`electron/cloud-move-choices.mjs`); Swap My Cloud back
+clears it, and the line shows only while that Cloud is still this app's My
+Cloud. It is never a dialog and never blocks this computer.
 
 ## Every state, one message
 
@@ -81,6 +91,9 @@ the same.
 | A proxy refuses even 512 KB parts (`proxy_limit`) | A proxy in front of {server} refused a 512 KB upload. Raise its request size limit (nginx: client_max_body_size 64m), then copy again. | Continue the copy |
 | Not back after the restart | {server} hasn't come back yet. If it doesn't start again on its own, start OpenMausBot there; it finishes installing the copy when it starts. | Open {server} |
 | Other failures | what happened | Copy again / Continue the copy |
+| Bringing newer chats | {server} is adding the newer chats… | none |
+| Brought | Added N conversations and M messages to {server}. (or: {server} already has every chat from this computer, so nothing was added.) Then a line each for chats of bots or rooms only on this computer, conversations deleted on {server}, and what its bots have not read. | Done |
+| A bring that failed | {server} could not add the chats: what it said. Nothing on {server} was removed. | Bring newer chats to {server} |
 
 ## What moves, and what stays
 
@@ -170,6 +183,58 @@ That archive is the one undo point kept:
 startup on every server deletes a copy's safety copy and staged files once its
 restore is installed (`tidyCloudMoveStorage`, which touches only restores a copy
 recorded). A restore made from Settings → Backups keeps its safety copy.
+
+## Bring newer chats
+
+When the person kept chatting on both after a copy, **Bring newer chats to
+{server}** adds to that server what this computer has and it lacks, and
+nothing else. It is one way, this computer to the server, from this
+computer's own Settings only (the `cloud-move:bring` channel takes no
+server's page), and it uses the copy's own path: the same owner session, the
+same encrypted export and upload in parts (steps 1 to 5 above), then
+`POST /api/cloud-move/merge {sha256, password}`. The server stages the upload
+as an ordinary backup (so it is authenticated and checked like any other),
+adds what it lacks inside the same gate that waits for every bot turn there to
+finish, deletes the staged copy, and answers in `GET /api/cloud-move` with
+`job: {kind: "merge", state: "done", result}`. It never restarts and never
+keeps a Swap back point: it removes nothing, so there is nothing to undo.
+`server/cloud-chat-merge.ts` holds all of it.
+
+What is added, matched by the ids both share since the copy:
+
+- **A whole conversation the server never had**, under the same bot or room,
+  with only what a conversation is: its title, when it began, who opened or
+  closed it, pins, links, read position and project (if that project exists
+  there). Never its approval level or remembered permissions, model, working
+  folder, engine session or usage: it runs on the bot's settings there, and
+  its first turn there reads it as history.
+- **The messages a conversation both have is missing**, by id. The ones on
+  this computer's visible path go among the server's by time, a turn (a line a
+  person or teammate wrote and what answered it) at a time; the only thing
+  that changes on a message the server already had is the link that now puts
+  it after an added one. An edit branch stays a branch. This computer's
+  context summaries of a conversation both have stay behind: they describe
+  this computer's engine session, not the server's.
+- **Their attachments**, copied into the server's own `attachments` folder
+  under the same random names (never over a file already there), with their
+  paths rewritten as a restore does.
+
+What is not: routines, webhooks and calendar calls, bots' settings, souls,
+memory and skills, rooms' setup, connections, credentials, queued messages
+and notifications. Chats with a bot or in a room the server does not have
+stay here, and the result says how many (adding a bot or a room would be
+setup, not a chat); bot-to-bot channels it does not have are left out
+silently. A conversation the server once had and deleted since is not
+brought back: one with a message from before the two were last in step (the
+export the server's last restore installed, or a later bring on top of it,
+`.backups/chats-brought.json`) or no newer than the newest message both share
+was there. Running it again adds nothing.
+
+Bots there may not have read what was added to conversations they already
+had: their engines keep their own sessions, and the result says so.
+Conversations added whole are read as history on their first turn there.
+Apps open on the server see the new conversations at once and new messages in
+a conversation when they open it again; nothing is read aloud or notified.
 
 ## Restart, per launcher
 

@@ -1,7 +1,10 @@
-// Stall-watchdog contract: activity keeps a turn alive indefinitely, human
-// approvals pause the clock, silence past the ceiling stalls exactly once.
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import type { Message } from "./store.ts";
+import { TurnStops, stoppedTurnOutcome } from "./turn-outcome.ts";
 import { TurnWatchdog, type WatchedTurn } from "./turn-watchdog.ts";
 
 const STALL = 10_000;
@@ -51,7 +54,6 @@ describe("TurnWatchdog", () => {
     tick(STALL * 100);
     dog.sweep();
     expect(stalls).toHaveLength(0);
-    // the answer restarts the clock rather than inheriting the wait
     dog.setWaitingOnHuman("t1", false);
     tick(STALL - 1);
     dog.sweep();
@@ -70,6 +72,23 @@ describe("TurnWatchdog", () => {
     expect(stalls).toHaveLength(0);
   });
 
+  it("says a turn is waiting exactly while the sweep would spare it", () => {
+    const { dog } = rig();
+    expect(dog.waiting("t1")).toBe(false);
+    dog.watch("t1", "bot1");
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", true);
+    dog.setWaitingOnHuman("t1", false);
+    expect(dog.waiting("t1")).toBe(true);
+    dog.setWaitingOnComputer("t1", false);
+    expect(dog.waiting("t1")).toBe(false);
+    dog.setWaitingOnHuman("t1", true);
+    dog.settle("t1");
+    expect(dog.waiting("t1")).toBe(false);
+  });
+
   it("lets the computer wait's own deadline govern, then restarts the stall clock", () => {
     const { dog, stalls, tick } = rig();
     dog.watch("t1", "bot1");
@@ -77,7 +96,6 @@ describe("TurnWatchdog", () => {
     tick(STALL * 100);
     dog.sweep();
     expect(stalls).toHaveLength(0);
-    // Resolving an unrelated human ask cannot clear the resource wait.
     dog.setWaitingOnHuman("t1", false);
     tick(STALL * 100);
     dog.sweep();
@@ -102,5 +120,54 @@ describe("TurnWatchdog", () => {
     tick(STALL);
     dog.sweep();
     expect(stalls).toEqual([expect.objectContaining({ botId: "bot2" })]);
+  });
+});
+
+// The harness's stall handler (index.ts), run without starting a server.
+describe("the stall handler", () => {
+  function load() {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    const from = source.indexOf("\nconst TURN_STALL_MS"), to = source.indexOf("\nwatchdog.start();");
+    if (from < 0 || to <= from) throw new Error("Stall handler section moved");
+    const code = ts.transpileModule(`${source.slice(from, to)}\nglobalThis.watchdog = watchdog;`,
+      { compilerOptions: { target: ts.ScriptTarget.ESNext } }).outputText;
+    const messages: Message[] = [
+      { id: "a", role: "bot", kind: "activity", at: 1, turnId: "turn-1", tool: { name: "Bash", ok: true, itemId: "i1" } } as Message,
+      { id: "b", role: "bot", kind: "text", at: 2, turnId: "turn-1", text: "Exporting the second half now." } as Message,
+    ];
+    const settled: Array<{ generation?: string; text: string }> = [], delegations: string[] = [];
+    const context = vm.createContext({
+      process: { env: {} },
+      RoomTurnStallRegistry: class { stall() {} },
+      TurnStops, stoppedTurnOutcome, reportsToRequester: () => true,
+      TurnWatchdog: class { options: unknown; constructor(options: { onStall: (turn: WatchedTurn) => void }) { this.options = options; } },
+      store: { messagesFor: () => messages, activePath: () => messages, appendMessage() {} },
+      turnResourceOwners: new Map(), directTurnGenerationByThread: new Map([["t1", "gen-1"]]), directRequestOwners: new Map(),
+      localVmThreadTargets: new Map(), liveTurnByThread: new Map([["t1", "turn-1"]]), turnUsage: new Map(), turnContext: new Map(),
+      cancelDirectTurnDispatch() {}, revokeInternalCapabilitiesForThread() {}, repeats: { settle() {} },
+      botForThread: () => ({ id: "eli" }), activeRoutineRunForThread: () => undefined,
+      runningTurnInstance: () => ({ adapter: { interruptTurn: async () => {} } }),
+      failedTurnTool: (name: string) => ({ name, ok: false }), reportIncident() {},
+      settleDirectFollowup: (generation: string | undefined, outcome: { text: string }) => settled.push({ generation, text: outcome.text }),
+      finalizeDelegationWatch: (_threadId: string, _ok: boolean, _reply: string, why: string) => delegations.push(why),
+      setTimeout: () => ({ unref() {} }),
+    });
+    vm.runInContext(code, context, { filename: "index.ts (stall handler fixture)" });
+    return { context, settled, delegations };
+  }
+
+  it("tells a stalled turn's requester why it stopped and what it did", () => {
+    const { context, settled, delegations } = load();
+    context.watchdog.options.onStall({ threadId: "t1", botId: "eli" });
+    const told = 'No activity for 20 minutes — the turn was stopped. Before it stopped it made 1 tool call: Bash ×1.\nIts last message, quoted: "Exporting the second half now."';
+    expect(settled).toEqual([{ generation: "gen-1", text: told }]);
+    expect(delegations).toEqual([]);
+  });
+
+  it("gives a stopped turn's own end the cause the harness noted before interrupting it", () => {
+    const { context } = load();
+    expect(context.stoppedTurnText("t1", "turn-1", undefined, "interrupted")).toMatch(/^The turn did not complete \(interrupted\)\. /);
+    vm.runInContext('turnStops.stopping("t1", "turn-1", "turn interrupted — the Company connection changed")', context);
+    expect(context.stoppedTurnText("t1", "turn-1", undefined, "interrupted")).toMatch(/^Turn interrupted — the Company connection changed\. Before it stopped/);
   });
 });

@@ -61,14 +61,11 @@ export function toLocalTimeInput(at: number): string {
 }
 
 export function fromLocalDateAndTime(date: string, time: string, originalAt?: number): number {
-  // Date/time inputs display minutes, but agent-created schedules can carry
-  // seconds and milliseconds. A title-only save must not move the anchor or
-  // choose a different occurrence of a repeated local time at a DST boundary.
+  // Inputs show minutes but schedules carry seconds: a title-only save must not move the anchor, DST included.
   if (originalAt != null && date === toLocalDateInput(originalAt) && time === toLocalTimeInput(originalAt)) return originalAt;
   return new Date(`${date}T${time}`).getTime();
 }
 
-/** Start a new interval at least one full cadence from now, on a clean minute boundary. */
 export function nextIntervalAnchor(now: number, everyMinutes: number): number {
   return Math.ceil((now + everyMinutes * 60_000) / 60_000) * 60_000;
 }
@@ -83,7 +80,6 @@ export function intervalAnchorForSave(
     : nextIntervalAnchor(now, everyMinutes);
 }
 
-/** The next cadence point, retaining the original phase when editing. */
 export function nextIntervalForSave(
   now: number,
   everyMinutes: number,
@@ -99,16 +95,10 @@ export function snapMinutes(minutes: number, increment = CALENDAR_SLOT_MINUTES):
   return Math.max(0, Math.min(24 * 60 - increment, Math.round(minutes / increment) * increment));
 }
 
-/**
- * Assign overlapping events to stable, side-by-side columns. Adjacent events can
- * reuse a column, while overlap chains share one column count so cards never
- * cover each other as a cluster grows.
- */
 export function packCalendarCollisions(
   items: readonly CalendarCollisionItem[],
 ): Map<string, CalendarCollisionLayout> {
-  // Short events keep a 16px hit target in the renderer. Pack against that
-  // same visual footprint so adjacent five-minute cards never cover each other.
+  // Pack against the renderer's 16px minimum card height so short cards never overlap.
   const visualEnd = (item: CalendarCollisionItem) =>
     item.at + Math.max(15, item.durationMinutes) * 60_000;
   const sorted = [...items].sort((left, right) =>
@@ -145,7 +135,6 @@ export function packCalendarCollisions(
   return result;
 }
 
-/** Format a local UTC offset in the compact style used by calendar gutters. */
 export function formatGmtOffset(offsetMinutes: number): string {
   if (offsetMinutes === 0) return "GMT+0";
   const sign = offsetMinutes > 0 ? "+" : "-";
@@ -196,9 +185,6 @@ export function projectedRoutineItems(
       if (run.status === "queued" || run.status === "running" || run.status === "waiting") {
         return true;
       }
-      // A routine may later be edited or deleted, so the current definition
-      // cannot safely tell us whether its history came from a dense interval.
-      // Keep active receipts unbounded above, while trimming terminal history.
       const count = receiptCounts.get(run.routineId) ?? 0;
       if (count >= MAX_RECEIPTS_PER_ROUTINE_PER_RANGE) return false;
       receiptCounts.set(run.routineId, count + 1);
@@ -219,15 +205,12 @@ export function projectedRoutineItems(
   for (const routine of routines) {
     if (!routine.enabled) continue;
     if (routine.schedule.type === "cron") {
-      // Never reconstruct skipped work before the scheduler's next occurrence.
-      // Bound dense expressions per visible day, not per range: daily routines
-      // must still appear throughout a month, not vanish after the 12th.
+      // Never reconstruct work before nextRunAt; bound dense schedules per day so daily routines fill the month.
       if (routine.nextRunAt == null) continue;
       for (let day = startOfDay(Math.max(from, routine.nextRunAt)); day < to; day = addDays(day, 1)) {
         const after = Math.max(day, from, routine.createdAt, routine.nextRunAt) - 1;
         const upcoming = nextCronRuns(routine.schedule, after, MAX_CRON_PROJECTIONS_PER_DAY);
         if (!upcoming.length || upcoming[0]! >= to) break;
-        // Jump over empty days for sparse monthly/yearly schedules.
         day = startOfDay(upcoming[0]!);
         const end = Math.min(to, addDays(day, 1));
         for (const at of upcoming) {
@@ -253,9 +236,7 @@ export function projectedRoutineItems(
       continue;
     }
     if (routine.schedule.type === "interval") {
-      // The scheduler deliberately skips overlapping and stale interval ticks.
-      // Its persisted nextRunAt is the only future occurrence users can act on;
-      // reconstructing an unreceipted tick would resurrect work it skipped.
+      // The scheduler skips overlapping and stale ticks: reconstructing an unreceipted one would resurrect skipped work.
       const at = routine.nextRunAt;
       if (at != null && at >= from && at < to && !hasReceipt(routine.id, at)) {
         items.push({

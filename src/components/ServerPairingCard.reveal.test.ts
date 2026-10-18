@@ -2,8 +2,7 @@ import { createElement, type EffectCallback } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, expect, it, vi } from "vitest";
 
-// Connect your phone opens Settings with a request; the card reveals itself
-// once it is drawn, once per request. React's hooks are replayed by hand.
+// React's hooks are replayed by hand.
 const f = vi.hoisted(() => ({ values: [] as unknown[], index: 0, effects: [] as EffectCallback[], revealed: [] as unknown[] }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
@@ -22,7 +21,6 @@ function render(props: Parameters<typeof ServerPairingCard>[0]) {
   renderToStaticMarkup(createElement(() => ServerPairingCard(props)));
   f.effects[REVEAL]!();
 }
-/** The card's root ref, which React would attach once the card is drawn. */
 const root = () => f.values.find((value) => value && typeof value === "object" && "current" in value && (value as { current: unknown }).current === null) as { current: unknown } | undefined;
 
 beforeEach(() => { f.values = []; f.index = 0; f.effects = []; f.revealed = []; });

@@ -53,7 +53,6 @@ describe("usage ledger files", () => {
     const rows = readUsage(dataDir, { from: new Date("2026-09-01T00:00:00Z"), to: new Date("2026-10-31T23:59:59Z") });
     expect(rows.map((r) => r.botId)).toEqual(["b1", "b2", "b3"]);
     expect(rows[1]!.costUsd).toBeNull();
-    // a cost is labelled with where it came from; an unpriced row has no label
     expect(rows[0]!.costSource).toBe("reported");
     expect(rows[1]).not.toHaveProperty("costSource");
   });
@@ -177,6 +176,23 @@ describe("usage summaries", () => {
     expect(triggerLabel({ kind: "routine" })).toBe("Routine: unknown");
   });
 
+  it("keeps helper-model calls in a group of their own, apart from bot-to-bot turns, and never as a routine", () => {
+    const helper: UsageRow = {
+      ...row({ botId: "b2", botName: "Clerk", threadId: "memory-1", instanceId: "claude", driverKind: "claudeAgent", model: "claude-haiku-4-5", costUsd: 0.002, trigger: { kind: "helper", botId: "b2", job: "memory" } }),
+      at: "2026-09-02T11:00:00.000Z",
+    };
+    expect(triggerKey(helper.trigger)).toBe("helper");
+    expect(triggerLabel(helper.trigger)).toBe("Helper model");
+    const byPerson = summarizeUsage([...rows, helper], "user").groups;
+    expect(byPerson.find((group) => group.key === "helper")).toMatchObject({ label: "Helper model", turns: 1, costUsd: 0.002 });
+    expect(byPerson.find((group) => group.key === "bot")).toMatchObject({ label: "Bot to bot", turns: 1, costUsd: 0.001 });
+    // still the bot's spend, on the helper's engine, and not a routine's
+    expect(summarizeUsage([helper], "bot").groups.map((group) => group.label)).toEqual(["Clerk"]);
+    expect(summarizeUsage([helper], "engine").groups.map((group) => group.label)).toEqual(["claudeAgent"]);
+    expect(summarizeUsage([helper], "routine").groups.map((group) => group.key)).toEqual(["manual"]);
+    expect(usageCsv([helper]).split("\n")[1]).toBe("2026-09-02T11:00:00.000Z,Clerk,claude-haiku-4-5,claudeAgent,Helper model,1200,300,900,0.002,reported,memory-1");
+  });
+
   it("exports spreadsheet-safe CSV with one line per turn", () => {
     const csv = usageCsv([
       rows[0]!,
@@ -201,7 +217,6 @@ describe("usage summaries", () => {
     const clerk = summary.groups.find((g) => g.label === "Clerk")!;
     expect(clerk).toMatchObject({ costUsd: 0.2, estimatedUsd: 0.2 });
     expect(summary.groups.find((g) => g.label === "Scout")!.estimatedUsd).toBeNull();
-    // an unpriced row is still counted as unpriced, never as a $0 estimate
     expect(summarizeUsage([rows[1]!], "bot").total).toMatchObject({ costUsd: null, estimatedUsd: null, unpriced: 1 });
   });
 });

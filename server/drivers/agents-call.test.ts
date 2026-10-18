@@ -8,7 +8,6 @@ function context(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     threadId: "thread-voice",
     depth: 0,
     externalRuntime: false,
-    coordinating: false,
     sharedComputers: false,
     client: {
       api: async () => ({}),
@@ -191,7 +190,6 @@ describe("memory_update", () => {
     const bot = "bot-memory-full";
     writeMemoryFile(bot, Array.from({ length: MEMORY_MAX_LINES }, (_, i) => `- 2026-09-01 · old ${i}\n`).join(""));
     const ctx = context({ botId: bot, client: harness(bot) });
-    // refusals of another kind (a stale passage) do not close it either
     for (let i = 0; i < 4; i += 1) {
       const stale = await callTool("memory_update", { action: "remove", old_text: "no such passage" }, ctx);
       expect(stale).toMatchObject({ isError: true });
@@ -250,5 +248,17 @@ describe("propose_team_memory", () => {
     expect(calls).toEqual([{ path: "/api/internal/team-memory", body: {
       fromBotId: "bot-voice", fromThreadId: "thread-voice", kind, name: "Fixture name", detail: "Unreviewed detail", aliases: ["Alias"],
     } }]);
+  });
+
+  it("reports a fact that applied on its own as applied, with no card to wait for", async () => {
+    const result = await callTool("propose_team_memory", { kind: "term", name: "OKR", detail: "The quarter's goals." }, context({
+      client: {
+        api: async () => ({ status: "applied", state: "applied", requestId: "entry-fixture", summary: "Term: OKR — The quarter's goals." }),
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.isError).not.toBe(true);
+    expect(result.text).toContain("Applied the team memory entry for OKR.");
+    expect(result.text).not.toContain("confirmation card");
   });
 });

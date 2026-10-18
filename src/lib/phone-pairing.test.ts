@@ -33,16 +33,13 @@ afterEach(() => {
 describe("where Connect your phone pairs", () => {
   it("pairs with this computer only in the desktop app's own window", () => {
     expect(phonePairingTarget({ companion: true, remoteClient: false, cloudHome: false })).toBe("computer");
-    // a remote server's page never gets the phone bridge; a browser has none
     expect(phonePairingTarget({ companion: false, remoteClient: false, cloudHome: false })).toBe("server");
-    // a desktop that is a client of another server pairs phones there
     expect(phonePairingTarget({ companion: true, remoteClient: true, cloudHome: false })).toBe("server");
   });
 
   it("pairs with the Cloud wherever the window shows the person's own Cloud", () => {
     expect(phonePairingTarget({ companion: false, remoteClient: false, cloudHome: true })).toBe("cloud");
     expect(phonePairingTarget({ companion: true, remoteClient: true, cloudHome: true })).toBe("cloud");
-    // the server answering says it is a Cloud home: its pairing is the Cloud's, whatever bridge this page has
     expect(phonePairingTarget({ companion: true, remoteClient: false, cloudHome: true })).toBe("cloud");
   });
 
@@ -51,10 +48,8 @@ describe("where Connect your phone pairs", () => {
     expect(currentPhonePairingTarget(false)).toBe("computer");
     vi.stubGlobal("window", { ogb: { companion: {}, remoteClient: { active: true } } });
     expect(currentPhonePairingTarget(false)).toBe("server");
-    // the reduced bridge a Cloud page gets: no companion
     vi.stubGlobal("window", { ogb: { cloudPlan: {} } });
     expect(currentPhonePairingTarget(true)).toBe("cloud");
-    // a browser
     vi.stubGlobal("window", {});
     expect(currentPhonePairingTarget(false)).toBe("server");
   });
@@ -74,12 +69,9 @@ describe("Connect your phone in the account menu", () => {
   it("on another server: to this server, only for a session that may make a pairing code", () => {
     expect(subtitle(connectPhoneEntry("server", access(admin)))).toBe("to this server");
     expect(subtitle(connectPhoneEntry("server", access(owner)))).toBe("to this server");
-    // chat and approvals only: the server refuses it a code
     expect(connectPhoneEntry("server", access(chatOnly))).toBeNull();
-    // a shared server that does not treat this machine as its owner
     expect(connectPhoneEntry("server", access({ kind: "loopback", trust: "service" }))).toBeNull();
     expect(connectPhoneEntry("server", access({ kind: "unauthenticated", error: "pair" }))).toBeNull();
-    // people sign in through the organization's Admin there: codes are off
     expect(connectPhoneEntry("server", access(admin, false))).toBeNull();
   });
 
@@ -185,7 +177,6 @@ describe("the person's Cloud as a destination on this computer", () => {
     for (const tier of [undefined, "personal", "pro", "max", "team"]) {
       expect(cloudPhoneDestination(paid({ entitlement: { plan: "pro", ...(tier ? { tier } : {}), status: "active", expiresAt: null, version: 1 } }))).toBe("ready");
     }
-    // the last checks failed: still the verified paid plan
     expect(cloudPhoneDestination(paid({ checking: true }))).toBe("ready");
   });
 

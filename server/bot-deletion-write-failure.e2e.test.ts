@@ -46,7 +46,6 @@ it("preserves conversations and scheduled work when deletion cannot save, then s
     const later = Date.now() + 86_400_000;
     const { routine } = await api("POST", "/api/routines", { name: "Retain this routine", botId: bot.id,
       prompt: "Prepare the fixture report.", enabled: true, schedule: { type: "interval", everyMinutes: 60, anchorAt: later } }, 201);
-    // The webhook's one-time credential is deliberately not retained in evidence.
     const { webhook } = await api("POST", "/api/webhooks", { name: "Retain this webhook", botId: bot.id,
       prompt: "Summarize the fixture event.", enabled: true }, 201);
     const { call: solo } = await api("POST", "/api/calendar-calls", { name: "Retain this solo call", botIds: [bot.id],

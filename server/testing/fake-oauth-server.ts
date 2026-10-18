@@ -1,7 +1,5 @@
-// A tiny OAuth 2.1 authorization server for tests: protected-resource and
-// authorization-server metadata, dynamic client registration, an /authorize
-// that approves at once (302 back to the redirect URI, like a person who
-// clicked Allow), a token endpoint that checks PKCE, and revocation.
+// A tiny OAuth 2.1 authorization server for tests: metadata, dynamic registration, an /authorize that
+// approves at once, a PKCE-checking token endpoint, and revocation.
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,6 +12,8 @@ export interface FakeOAuthOptions {
   beforeToken?: () => Promise<void>;
   /** omit registration_endpoint from the metadata */
   noRegistration?: boolean;
+  /** refuse to register a client for a redirect URI this matches */
+  refuseRedirect?: (redirectUri: string) => boolean;
   /** answer every refresh with invalid_grant */
   rejectRefresh?: boolean;
   /** /authorize answers ?error=access_denied instead of a code */
@@ -24,14 +24,16 @@ export interface FakeOAuthOptions {
   refreshStatus?: number;
   /** metadata claims this issuer instead of its own address */
   claimIssuer?: string;
-  /** apps registered in advance: client id → its secret, or null for a
-   * public app. A confidential app must prove its secret at /token. */
+  /** resource metadata lists the issuer with a trailing slash, as Google's does */
+  listIssuerWithSlash?: boolean;
+  /** /authorize returns its issuer as iss (RFC 9207) */
+  returnIss?: boolean;
+  /** apps registered in advance: client id → its secret, or null for a public app */
   preRegistered?: Record<string, string | null>;
   /** advertised token_endpoint_auth_methods_supported */
   tokenAuthMethods?: string[];
 }
 
-/** How the last /token or /revoke request identified its client. */
 export interface FakeClientAuth {
   method: "basic" | "post" | "none";
   clientId: string;
@@ -73,8 +75,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
   const fake: Partial<FakeOAuth> = { lastAuthorize: null, clientAuths, options };
   const preRegistered = options.preRegistered ?? {};
 
-  /** The client a token request authenticates as, or null when its secret
-   * is missing or wrong (RFC 6749 §2.3: one method per request). */
+  /** The authenticated client, or null when its secret is missing or wrong (RFC 6749 §2.3: one method per request). */
   const authenticate = (req: IncomingMessage, form: URLSearchParams): string | null => {
     const header = req.headers.authorization;
     let auth: FakeClientAuth;
@@ -113,7 +114,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
     void (async () => {
       const url = new URL(req.url ?? "/", issuer);
       if (req.method === "GET" && url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
-        return json(res, 200, { resource: `${issuer}/mcp`, authorization_servers: [issuer], scopes_supported: ["mcp"] });
+        return json(res, 200, { resource: `${issuer}/mcp`, authorization_servers: [options.listIssuerWithSlash ? `${issuer}/` : issuer], scopes_supported: ["mcp"] });
       }
       if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
         return json(res, 200, {
@@ -130,6 +131,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
         counts.register += 1;
         await options.beforeRegister?.();
         const body = JSON.parse(await readBody(req)) as { redirect_uris?: string[] };
+        if (body.redirect_uris?.some((uri) => options.refuseRedirect?.(uri))) return json(res, 400, { error: "invalid_redirect_uri" });
         const clientId = `client_${counts.register}`;
         clients.add(clientId);
         return json(res, 201, { client_id: clientId, redirect_uris: body.redirect_uris });
@@ -138,6 +140,7 @@ export async function startFakeOAuth(options: FakeOAuthOptions = {}): Promise<Fa
         fake.lastAuthorize = url.searchParams;
         const redirect = new URL(url.searchParams.get("redirect_uri") ?? "");
         redirect.searchParams.set("state", url.searchParams.get("state") ?? "");
+        if (options.returnIss) redirect.searchParams.set("iss", options.claimIssuer ?? issuer);
         const clientId = url.searchParams.get("client_id") ?? "";
         if (!clients.has(clientId) && !Object.hasOwn(preRegistered, clientId)) {
           redirect.searchParams.set("error", "unauthorized_client");

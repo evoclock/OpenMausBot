@@ -1,7 +1,3 @@
-// A held note explains why a bot stopped by naming the button that would
-// have let it continue: "… so only Full access can approve it automatically."
-// If the note and the selector ever disagree, the note points at a control
-// the reader cannot find — which is the one thing this copy must never do.
 import { describe, expect, it, afterEach } from "vitest";
 
 import { setLocale, t } from "@/lib/i18n";
@@ -31,8 +27,7 @@ describe("held notes name the buttons the selector shows", () => {
     setLocale("pt-br");
     expect(approvalModeOptions().map((option) => option.label)).toEqual([
       "Pedir aprovação",
-      // new level, not yet drafted: English fallback
-      "Auto-accept edits",
+      "Aceitar edições automaticamente",
       "Aprovar por mim",
       "Acesso total",
       "Personalizado (config.toml)",

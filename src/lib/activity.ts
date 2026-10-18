@@ -1,5 +1,3 @@
-// Settings → Activity: the shape GET /api/admin-activity answers with
-// (server/admin-activity.ts), and the pure pieces the screen renders from.
 import { t } from "./i18n";
 import { en, type LocaleKey } from "@/locales";
 
@@ -34,12 +32,10 @@ export type ActivityEntry =
 export interface ActivityFilters {
   who: string;
   what: ActivityWhat;
-  /** YYYY-MM-DD, inclusive; empty means the server's default (the last 30 days). */
   from: string;
   to: string;
 }
 
-/** The query both the list and the CSV link use. Empty filters are left out. */
 export function activityQuery(filters: ActivityFilters): string {
   const params = new URLSearchParams();
   if (filters.who.trim()) params.set("who", filters.who.trim());
@@ -50,7 +46,6 @@ export function activityQuery(filters: ActivityFilters): string {
   return query ? `?${query}` : "";
 }
 
-/** The server names non-people in English; show them in the reader's language. */
 export function whoLabel(who: string): string {
   if (who === "This computer") return t("activity.actor.loopback");
   if (who === "Local service") return t("activity.actor.worker");
@@ -62,7 +57,6 @@ function known(key: string): key is LocaleKey {
   return Object.hasOwn(en, key);
 }
 
-/** One line saying what happened, in the reader's language. */
 export function describeEntry(entry: ActivityEntry): string {
   if (entry.type === "approval") {
     const decisionKey = `activity.decision.${entry.what}`;
@@ -76,7 +70,6 @@ export function describeEntry(entry: ActivityEntry): string {
   return target ? `${action}: ${target}` : action;
 }
 
-/** A value from a row's before/after, short enough for one line. */
 export function formatValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "string") return value;
@@ -84,17 +77,12 @@ export function formatValue(value: unknown): string {
   return text.length > 160 ? `${text.slice(0, 157)}…` : text;
 }
 
-// The activity panel's shaping: rows come from the harness newest first
-// (server/activity.ts); the panel wants them under day headings with an
-// outcome the eye can sort by before reading.
 import type { ActivityOutcome, ActivityRow } from "../../shared/activity";
 
 export type { ActivityOutcome, ActivityRow };
 
 export interface ActivityDay {
-  /** "Today", "Yesterday", or a short date */
   label: string;
-  /** YYYY-MM-DD in local time, stable for keys */
   key: string;
   rows: ActivityRow[];
 }
@@ -115,7 +103,6 @@ function dayLabel(date: Date, now: Date): string {
   return date.getFullYear() === now.getFullYear() ? base : `${base} ${date.getFullYear()}`;
 }
 
-/** Group newest-first rows under their local day, keeping that order. */
 export function groupActivityByDay(rows: ActivityRow[], now: Date): ActivityDay[] {
   const days: ActivityDay[] = [];
   for (const row of rows) {
@@ -130,7 +117,6 @@ export function groupActivityByDay(rows: ActivityRow[], now: Date): ActivityDay[
 
 export type ChipTone = "ok" | "danger" | "accent" | "warn";
 
-/** One short word per outcome, plus the tone that colors it. */
 export function outcomeChip(outcome: ActivityOutcome): { text: string; tone: ChipTone } {
   switch (outcome) {
     case "ran":
@@ -148,7 +134,6 @@ export function outcomeChip(outcome: ActivityOutcome): { text: string; tone: Chi
   }
 }
 
-/** Short clock time for a row, local, no seconds: receipts read at a glance. */
 export function formatActivityTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "--:--";

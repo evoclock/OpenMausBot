@@ -1,11 +1,5 @@
-// A cloud computer's first start takes about a minute, longer than one
-// computer call may wait. The call that runs out is told the computer is
-// still starting (not that someone else has it), a later call works, and the
-// computer is created once. A start that stalls ends at the start budget with
-// one "didn't start" row instead of "still starting" until the watchdog.
-// The real server, the fake Claude CLI and a stub of the Admin's Boat relay,
-// with the call wait and the start budget shortened; disposable home, no
-// network.
+// The real server, the fake Claude CLI and a stub of the Admin's Boat relay, with the call wait and the start budget
+// shortened; disposable home, no network.
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server, type ServerResponse } from "node:http";
@@ -36,9 +30,10 @@ describe("a slow cloud computer start", () => {
   let relay: Server;
   const rows: Array<{ id: string; name?: string; state: string }> = [];
   const requests: string[] = [];
-  /** The relay keeps a new computer "provisioning" while this is set, and
-   * never answers a desktop link request while `desktop` is set. */
-  const hold = { provisioning: false, desktop: false };
+  /** The relay keeps a new computer "provisioning" while this is set, never
+   * answers a desktop link request while `desktop` is set, and cuts off this
+   * many computer listings before answering, as a dropped connection does. */
+  const hold = { provisioning: false, desktop: false, dropLists: 0 };
   const held: ServerResponse[] = [];
 
   const api = async (method: string, path: string, body?: unknown) => {
@@ -75,7 +70,7 @@ describe("a slow cloud computer start", () => {
     const env = sent.mcpConfig.mcpServers.computer.env;
     const response = await fetch(new URL("/api/internal/computer/mcp", env.OMB_HARNESS_URL), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${env.OMB_MCP_TOKEN}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${env.OMB_MCP_TOKEN_COMPUTER}` },
       body: JSON.stringify({ method: "tools/call", params: { name: "screenshot", arguments: {} } }),
     });
     const body = await response.json() as any;
@@ -101,6 +96,7 @@ describe("a slow cloud computer start", () => {
         const path = url.pathname.replace(/^\/relay\/api\/box\/v1/, "");
         requests.push(`${req.method} ${path}`);
         if (req.headers.authorization !== `Bearer ${INCLUDED}`) return send(401, { ok: false, code: "unauthorized" });
+        if (path === "/boxes" && req.method === "GET" && hold.dropLists > 0) { hold.dropLists--; return void req.socket.destroy(); }
         if (path === "/boxes" && req.method === "GET") return send(200, { ok: true, boxes: rows, pageInfo: { nextCursor: null } });
         if (path === "/boxes" && req.method === "POST") {
           const row = { id: `bx_${"23456789abcdefgh"[rows.length]}3456789`, state: "provisioning" };
@@ -154,10 +150,10 @@ describe("a slow cloud computer start", () => {
         PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         HOME: home, USERPROFILE: home, OMB_DATA_DIR: data, TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
-        OMB_BOX_API: `${relayBase}/own-key-must-not-be-used`,
+        OMB_BOAT_API: `${relayBase}/own-key-must-not-be-used`,
         OMB_CLOUD_BOAT_URL: `${relayBase}/relay/api/box/v1`,
         OMB_CLOUD_BOAT_TOKEN: INCLUDED,
-        OMB_CLOUD_COMPUTER_START_WAIT_MS: String(CALL_WAIT_MS),
+        OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
         OMB_CLOUD_COMPUTER_START_BUDGET_MS: String(START_BUDGET_MS),
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -181,7 +177,6 @@ describe("a slow cloud computer start", () => {
     hold.provisioning = true;
     const bot = await cloudBot("Slow starter");
     const sent = await startTurn(bot.id, "Open the cloud desktop");
-    // Still starting is what it is doing, and nobody else has it.
     expect(await screenshot(sent)).toEqual({ isError: true, content: [{ type: "text", text: STILL_STARTING }] });
     expect(creates()).toBe(1);
 
@@ -189,6 +184,25 @@ describe("a slow cloud computer start", () => {
     const later = await until(() => screenshot(sent), result => !result.isError, 20_000);
     expect(later.content[0]).toMatchObject({ type: "image" });
     expect(creates()).toBe(1);
+    writeFileSync(finishFile, "finish");
+    await until(() => task(bot.id), current => current?.busy === false);
+    expect(await failedRows(bot.id)).toEqual([]);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  }, 45_000);
+
+  it("a call that cannot reach the relay is told to try again, and a later call in the same turn claims the computer", async () => {
+    const bot = await cloudBot("Unreachable starter");
+    const before = creates();
+    hold.dropLists = 2;
+    const sent = await startTurn(bot.id, "Open the cloud desktop");
+    const first = await screenshot(sent);
+    expect(first.isError).toBe(true);
+    expect(first.content[0]?.text).toMatch(/^This turn could not reach the cloud computer just now \(.+\)\. This call was not performed; try it again in a moment\.$/);
+    expect(hold.dropLists).toBe(0);
+    expect(creates()).toBe(before);
+    const later = await until(() => screenshot(sent), result => !result.isError, 20_000);
+    expect(later.content[0]).toMatchObject({ type: "image" });
+    expect(creates()).toBe(before + 1);
     writeFileSync(finishFile, "finish");
     await until(() => task(bot.id), current => current?.busy === false);
     expect(await failedRows(bot.id)).toEqual([]);
@@ -219,8 +233,8 @@ describe("a slow cloud computer start", () => {
       expect(await screenshot(sent)).toEqual({ isError: true, content: [{ type: "text", text: STILL_STARTING }] });
       const [row] = await until(() => failedRows(bot.id), found => found.length > 0, START_BUDGET_MS + 15_000);
       expect(Date.now() - started).toBeGreaterThanOrEqual(START_BUDGET_MS - CALL_WAIT_MS - 1_000);
-      expect(row.tool.name).toMatch(/^error: the cloud computer didn't start in time\. /);
-      // The failure ended the turn, with that one row.
+      expect(row.tool.name).toBe("error: Stuck starter's cloud computer didn't start. Try again.");
+      expect(row.tool.place).toEqual({ state: "cc-no-start", params: { bot: "Stuck starter" }, source: "works-on" });
       await until(() => task(bot.id), current => current?.busy === false, 20_000);
       expect(await failedRows(bot.id)).toHaveLength(1);
       await api("DELETE", `/api/bots/${bot.id}`);

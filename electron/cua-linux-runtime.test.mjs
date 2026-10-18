@@ -262,9 +262,7 @@ describe("unavailable Linux CUA runtime", () => {
   });
 });
 
-// Windows does not provide the POSIX executable and Unix-socket semantics this
-// lifecycle contract exercises. Canonical short temp paths keep it portable
-// across Linux and macOS.
+// Windows lacks the POSIX executable and Unix-socket semantics this exercises; short canonical temp paths keep it portable.
 describe.skipIf(process.platform === "win32")("Linux CUA opt-in and lifecycle", () => {
   it("cleans only known private runtime files from a dead owner", () => {
     const root = temporaryDirectory();

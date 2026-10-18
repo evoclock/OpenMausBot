@@ -45,6 +45,55 @@ describe("skill import budget", () => {
   });
 });
 
+describe("skill fetch host pinning", () => {
+  it.each([
+    "https://evil.example.com/a/b/main/SKILL.md",
+    "http://raw.githubusercontent.com/a/b/main/SKILL.md",
+    "https://raw.githubusercontent.com:8443/a/b/main/SKILL.md",
+    "https://user:pass@raw.githubusercontent.com/a/b/main/SKILL.md",
+  ])("refuses a download_url that leaves the pinned raw host: %s", async (download_url) => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes("api.github.com")) {
+        return Response.json([{ type: "file", name: "SKILL.md", path: "SKILL.md", download_url }]);
+      }
+      return new Response("# evil");
+    }) as typeof fetch;
+    expect(await fetchSkillFromSource("a/b", fetcher)).toEqual({ error: expect.stringContaining("raw.githubusercontent.com") });
+    expect(vi.mocked(fetcher).mock.calls.map(([input]) => String(input))).not.toContain(download_url);
+  });
+
+  it("refuses a pasted plain-http raw link without fetching it", async () => {
+    const fetcher = vi.fn(async () => new Response("# A skill")) as typeof fetch;
+    expect(await fetchSkillFromSource("http://raw.githubusercontent.com/a/b/main/SKILL.md", fetcher))
+      .toEqual({ error: expect.stringContaining("instead of plain http") });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("refuses a raw link that redirects off GitHub instead of following it", async () => {
+    const raw = "https://raw.githubusercontent.com/a/b/main/SKILL.md";
+    const offhost = "https://evil.example.com/SKILL.md";
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === offhost) return new Response("# evil");
+      // Like the platform fetch: redirect "error" refuses, anything else follows the 302 to offhost.
+      if (init?.redirect === "error") throw new TypeError("fetch failed");
+      return fetcher(offhost, init);
+    }) as typeof fetch;
+    const result = await fetchSkillFromSource(raw, fetcher);
+    expect("skills" in result).toBe(false);
+    expect(vi.mocked(fetcher).mock.calls.map(([input]) => String(input))).not.toContain(offhost);
+  });
+
+  it("still imports from the pinned raw host, with redirects refused", async () => {
+    const fetcher = vi.fn(async () => new Response("# A skill")) as typeof fetch;
+    const raw = "https://raw.githubusercontent.com/a/b/main/SKILL.md";
+    expect(await fetchSkillFromSource(raw, fetcher)).toEqual({
+      skills: [{ source: raw, files: [{ path: "SKILL.md", content: "# A skill" }] }],
+    });
+    expect(fetcher).toHaveBeenCalledWith(raw, expect.objectContaining({ redirect: "error" }));
+  });
+});
+
 describe("skill sources", () => {
   it.each(["https://skills.sh/a/b/...", "https://skills.sh/a/b/---", "https://skills.sh/../b/skill"])(
     "refuses invalid skills.sh paths instead of importing every skill: %s", async (source) => {
@@ -150,5 +199,48 @@ describe("skill sources", () => {
     }) as typeof fetch;
     const result = await fetchSkillFromSource("https://skills.sh/vercel-labs/skills/find-skills", fetcher);
     expect(result).toMatchObject({ skills: [{ source: "github.com/vercel-labs/skills/skills/find-skills" }] });
+  });
+});
+
+describe("skill folder sibling reporting", () => {
+  it("returns non-markdown files and subfolders as path-only entries instead of dropping them", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/contents/skills/prove")) {
+        return Response.json([
+          file("SKILL.md"),
+          file("notes.md"),
+          file("run.sh"),
+          { type: "file", name: "big.bin", path: "skills/prove/big.bin" },
+          dir("skills/prove/scripts"),
+        ]);
+      }
+      if (url.includes("api.github.com")) return Response.json([dir("skills")]);
+      return new Response("# A skill");
+    }) as typeof fetch;
+    const result = await fetchSkillFromSource("https://github.com/a/b/tree/main/skills/prove", fetcher);
+    if ("error" in result) throw new Error(result.error);
+    const files = result.skills![0]!.files;
+    expect(files.find((entry) => entry.path === "SKILL.md")?.content).toBe("# A skill");
+    expect(files.find((entry) => entry.path === "notes.md")?.content).toBe("# A skill");
+    expect(files.filter((entry) => entry.content === "").map((entry) => entry.path)).toEqual(["run.sh", "big.bin", "scripts/"]);
+  });
+
+  it("still imports SKILL.md when earlier-sorting markdown fills the download cap", async () => {
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/contents/skills/wall")) {
+        const filler = Array.from({ length: 40 }, (_, i) => file(`a-${i}.md`));
+        return Response.json([...filler, file("SKILL.md")]);
+      }
+      if (url.includes("api.github.com")) return Response.json([dir("skills")]);
+      return new Response("# A skill");
+    }) as typeof fetch;
+    const result = await fetchSkillFromSource("https://github.com/a/b/tree/main/skills/wall", fetcher);
+    if ("error" in result) throw new Error(result.error);
+    const files = result.skills![0]!.files;
+    expect(files.find((entry) => entry.path === "SKILL.md")?.content).toBe("# A skill");
+    expect(files.filter((entry) => entry.path.endsWith(".md") && entry.content !== "").length).toBe(30);
+    expect(files.filter((entry) => entry.content === "").length).toBe(11);
   });
 });

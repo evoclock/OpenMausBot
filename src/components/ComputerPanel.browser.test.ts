@@ -47,8 +47,9 @@ describe("Browser panel installation access", () => {
 
   it("does not offer an install on unsupported hosts and still shows a ready engine", () => {
     expect(render({ features: { browser: true }, browserEngine: { kind: "unavailable", installable: false } })).not.toContain("Browser engine not installed");
-    // A ready browser waits for the owner check before opening a live stream.
-    expect(render({ features: { browser: true }, browserEngine: { kind: "engine" } })).toContain("Loading browser…");
+    const ready = render({ features: { browser: true }, browserEngine: { kind: "engine" } });
+    expect(ready).toContain("Opening the live browser…");
+    expect(ready).not.toMatch(/Loading browser…|Only admins/);
   });
 
   it("keeps Chrome setup failure and progress visible even when the binary exists", () => {
@@ -65,15 +66,9 @@ describe("Browser panel installation access", () => {
 
 describe("Computer panel on a narrow screen", () => {
   it("covers the window below md instead of docking a 400px column", () => {
-    // A phone reaches this panel through the browser (remote access). Docked
-    // at its stored width it pushed the chat to zero and ran off the right
-    // edge, where `body { overflow: hidden }` cut it off. Below md it takes
-    // the window like the settings and inspector panels do; the inline width
-    // still sizes it beside the chat on wider screens.
     const markup = render({});
     const aside = /<aside class="([^"]*)"/.exec(markup)!;
     expect(aside[1].split(" ")).toEqual(expect.arrayContaining(["max-md:absolute", "max-md:inset-0", "max-md:z-40", "max-md:w-full!"]));
-    // Nothing to drag against when the panel is the whole window.
     const separator = /<div role="separator"[^>]*class="([^"]*)"/.exec(markup)!;
     expect(separator[1].split(" ")).toContain("max-md:hidden");
   });
@@ -95,7 +90,7 @@ describe("Computer panel Works on", () => {
   it("lists neither on My Cloud, and says why", () => {
     const markup = computerTab({ cloudHome: true });
     expect(places(markup)).toEqual(["Auto", "Cloud computer", "Browser", "Off"]);
-    expect(markup).toContain("Choose where this bot works. To let it use your Mac, turn on Let My Cloud use this Mac");
+    expect(markup).toContain("Choose where this bot works. To let it use your computer, turn on Let My Cloud use this computer");
   });
 });
 

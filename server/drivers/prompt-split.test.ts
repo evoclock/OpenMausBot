@@ -60,7 +60,6 @@ describe("prompt-split receipts", () => {
     expect(readPromptSplitReceipt(scope, key)).toEqual(receipt);
     deletePromptSplitReceipt(scope, key);
     expect(readPromptSplitReceipt(scope, key)).toBeNull();
-    // deleting an unknown receipt is a no-op, not an error
     deletePromptSplitReceipt(scope, key);
     deletePromptSplitReceipt(scope, randomUUID());
   });
@@ -71,7 +70,6 @@ describe("prompt-split receipts", () => {
     const receipt = { ...promptSplitFingerprints("stable rules", "memory"), lastUsed: 167218 };
     writePromptSplitReceipt(scope, key, receipt);
     expect(readPromptSplitReceipt(scope, key)).toEqual(receipt);
-    // non-positive or non-numeric sizes read back as absent
     for (const invalid of [0, -4096, "167218", null, undefined]) {
       writePromptSplitReceipt(scope, key, { ...receipt, lastUsed: invalid } as unknown as PromptSplitReceipt);
       expect(readPromptSplitReceipt(scope, key)?.lastUsed).toBeUndefined();
@@ -145,7 +143,6 @@ describe("splitSessionPrompt", () => {
     expect(state.text).toBe("third");
     state = splitSessionPrompt("stable rules.", "memory", state.receipt, fullSystem, "fourth", false, 3);
     expect(state.text).toBe("fourth");
-    // three bare turns have passed: the next delivery re-anchors
     state = splitSessionPrompt("stable rules.", "memory", state.receipt, fullSystem, "fifth", false, 3);
     expect(state.text).toBe(fullSystem + "\n\nfifth");
     expect(state.receipt.turnsSinceFull).toBe(0);

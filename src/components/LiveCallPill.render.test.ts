@@ -27,7 +27,6 @@ function findElement(tree: ReactNode, match: (props: ElementProps) => boolean): 
   }
 }
 
-/** Render, and keep the element tree so a test can press its buttons. */
 function renderPill(props: Parameters<typeof LiveCallPill>[0]) {
   let tree: ReactNode = null;
   function Capture() {
@@ -38,7 +37,6 @@ function renderPill(props: Parameters<typeof LiveCallPill>[0]) {
 }
 
 function callAtlas() {
-  // the microphone prompt never answers: the call stays "starting"
   configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
   void startLiveCall({ botId: "atlas", threadId: "thread-atlas" });
 }
@@ -72,7 +70,6 @@ describe("LiveCallPill", () => {
 
     findElement(tree(), (props) => props["aria-label"] === "Mute")?.props.onClick?.();
     expect(liveMedia().muted).toBe(true);
-    // hung up before the harness knew the call: nothing to wait for
     findElement(tree(), (props) => props["aria-label"] === "Hang up")?.props.onClick?.();
     expect(liveMedia().phase).toBe("idle");
   });
@@ -80,7 +77,6 @@ describe("LiveCallPill", () => {
   it("stays out of the way while the call's own chat is on screen", () => {
     callAtlas();
     expect(renderPill({ onOpen: vi.fn(), currentBotId: "atlas" }).markup).toBe("");
-    // the same bot showing another of its threads is elsewhere
     fixture.bots = [{ ...atlas, threadId: "thread-other" }];
     expect(renderPill({ onOpen: vi.fn(), currentBotId: "atlas" }).markup).toContain("On a Live call with Atlas");
   });

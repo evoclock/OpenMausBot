@@ -20,8 +20,7 @@ async function fixture(t) {
 }
 const payload = result => JSON.parse(result.content[0].text);
 
-/** What this host's filesystem treats as one directory. APFS and NTFS fold
- * case, APFS also folds Unicode normalization, ext4 folds neither. */
+/** APFS and NTFS fold case, APFS also folds Unicode normalization, ext4 folds neither. */
 async function spellings(dir) {
   const probe = path.join(dir, "Probe-\u00c9");
   await mkdir(probe);
@@ -31,9 +30,7 @@ async function spellings(dir) {
   return folded;
 }
 
-/** A workspace that pairs, connects, hands out one operation and keeps the
- * result. Polls past the queued work fail so the loop backs off instead of
- * spinning; closing the controller ends the backoff. */
+/** Polls past the queued work fail, so the loop backs off instead of spinning; closing the controller ends the backoff. */
 function stubWorkspace() {
   const sessionId = randomUUID();
   const environmentId = randomUUID();
@@ -287,8 +284,7 @@ test("the picker refuses the home directory, anything above it, and volume roots
     }
   }
   await refuse(path.parse(dir).root);
-  // /home may be macOS autofs, a Linux home ancestor, or an unrelated ordinary
-  // folder on a custom-home host. Only an actual mount root is always refused.
+  // /home may be macOS autofs, a Linux home ancestor, or an ordinary folder; only an actual mount root is always refused.
   if (process.platform !== "win32") {
     for (const candidate of ["/home", "/System/Volumes/Data"]) {
       try {
@@ -304,8 +300,7 @@ test("the picker fails closed when the home boundary cannot be inspected", async
   const home = path.join(parent, "person");
   await mkdir(home, { recursive: true });
   t.mock.method(os, "homedir", () => home);
-  // These errors stand in for an unavailable mounted home or a permission
-  // failure; all filesystem contents and candidates remain in the fixture.
+  // These errors stand in for an unavailable mounted home or a permission failure.
   for (const method of ["realpath", "stat"]) {
     for (const inaccessible of [home, parent]) {
       if (method === "realpath" && inaccessible === parent) continue;

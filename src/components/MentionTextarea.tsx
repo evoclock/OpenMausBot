@@ -3,11 +3,7 @@ import { useCallback, useLayoutEffect, useRef, type RefObject, type TextareaHTML
 import { type MentionPeer } from "@/lib/mentions";
 import { MentionText } from "./MentionText";
 
-/** A native textarea retains selection, undo, IME and accessibility. Its
- * aria-hidden mirror paints mentions without changing wrapping or caret offsets. */
 export function MentionTextarea({ inputRef, peers, everyone = false, wrapperClassName, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement> & {
-  /** Classes for the flex child around the editor: the composer uses it to
-   * move the editor onto its own line when the row is too narrow. */
   wrapperClassName?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
   peers: readonly MentionPeer[];
@@ -36,8 +32,7 @@ export function MentionTextarea({ inputRef, peers, everyone = false, wrapperClas
   useLayoutEffect(() => {
     let width = inputRef.current?.clientWidth;
     const observer = new ResizeObserver(() => {
-      // Width changes can wrap an unchanged draft onto more lines. Observe
-      // width only so setting the measured height cannot create a resize loop.
+      // Observe width only, so setting the measured height cannot create a resize loop.
       const nextWidth = inputRef.current?.clientWidth;
       if (nextWidth !== width) { width = nextWidth; resize(); }
       else sync();

@@ -52,6 +52,16 @@ const boundedSecret = (value, maximum = 8_192) =>
     ? value
     : null;
 
+const reportableAppVersion = (value) => {
+  const version = stringValue(value)?.trim() ?? "";
+  if (version.length < 1 || version.length > 64) return null;
+  for (const character of version) {
+    const point = character.codePointAt(0);
+    if (point < 32 || point === 127) return null;
+  }
+  return version;
+};
+
 const MAX_RETRY_AFTER_MS = 24 * 60 * 60 * 1_000;
 
 export class ControlPlaneError extends Error {
@@ -98,9 +108,7 @@ function statusErrorCode(status) {
   return "request_failed";
 }
 
-/** Production accepts HTTPS only. A loopback HTTP origin remains available
- * for an explicitly configured development Worker. Paths, credentials, and
- * query strings are rejected so every request stays under the audited API. */
+/** HTTPS only, or loopback HTTP for a configured dev Worker; no path, credentials or query, so every request stays under the audited API. */
 export function normalizeControlPlaneURL(value) {
   const input = stringValue(value)?.trim() ?? "";
   if (!input) return "";
@@ -202,11 +210,8 @@ export function createControlPlaneClient({
   ) => {
     const headers = new Headers({ accept: "application/json" });
     if (token) headers.set("authorization", `Bearer ${token}`);
-    // Node's fetch sends `Sec-Fetch-Mode: cors` even though Electron is a
-    // native client. Better Auth 1.7 treats that Fetch Metadata as a
-    // browser-shaped request and requires a trusted Origin. Our exact,
-    // validated control-plane origin is already trusted by the Worker; send
-    // it only to Better Auth routes instead of weakening server CSRF checks.
+    // Node's fetch sends `Sec-Fetch-Mode: cors`, which Better Auth 1.7 treats as a browser request needing a trusted Origin.
+    // Send the validated origin to Better Auth routes only, rather than weakening the server's CSRF checks.
     if (path.startsWith("/api/auth/")) headers.set("origin", origin);
     if (body !== undefined) {
       headers.set("content-type", "application/json");
@@ -283,8 +288,7 @@ export function createControlPlaneClient({
         method: "POST",
         body: { email, type: "sign-in" },
       });
-      // The server deliberately gives the same result for known and unknown
-      // addresses. Preserve that enumeration-safe contract in the UI.
+      // The server answers known and unknown addresses alike; keep that enumeration-safe contract.
       return { email };
     },
 
@@ -300,9 +304,7 @@ export function createControlPlaneClient({
         method: "POST",
         body: { email, otp, name: email.split("@", 1)[0] },
       });
-      // Better Auth's response JSON includes its raw database token. The
-      // signed bearer plugin intentionally publishes a different credential
-      // in this header; only that signed value may cross our API boundary.
+      // Better Auth's JSON carries its raw database token; only the signed bearer from this header may cross our API boundary.
       const accountToken = boundedSecret(response.headers.get("set-auth-token"));
       const user = validatedUser(payload.user);
       if (!accountToken || !user || user.email !== email) {
@@ -346,8 +348,7 @@ export function createControlPlaneClient({
             };
           }
         } catch (error) {
-          // A transient outage must not rotate a perfectly usable identity.
-          // Only a definitive 401 falls through to account recovery.
+          // A transient outage must not rotate a usable identity; only a definitive 401 falls through to recovery.
           if (!(error instanceof ControlPlaneError) || error.status !== 401) throw error;
         }
       }
@@ -380,16 +381,18 @@ export function createControlPlaneClient({
       };
     },
 
-    async ensureEndpoint(installationCredential) {
+    async ensureEndpoint(installationCredential, { appVersion } = {}) {
       if (
         typeof installationCredential !== "string" ||
         !INSTALLATION_CREDENTIAL.test(installationCredential)
       ) {
         throw new ControlPlaneError("signed_out", 401);
       }
+      const version = reportableAppVersion(appVersion);
       const { payload } = await request("/v1/installations/self/endpoint", {
         method: "POST",
         token: installationCredential,
+        ...(version === null ? {} : { body: { appVersion: version } }),
       });
       const endpoint = validatedEndpoint(payload.endpoint);
       const connectorToken = boundedSecret(payload.connectorToken, 16_384);
@@ -397,9 +400,7 @@ export function createControlPlaneClient({
       return { endpoint, connectorToken };
     },
 
-    /** The server's view of this installation's endpoint, or null when it
-     * has none (never allocated, or removed by owner cleanup or idle
-     * reclaim). Never returns or requests a connector token. */
+    /** Never returns or requests a connector token. */
     async getEndpoint(installationCredential) {
       if (
         typeof installationCredential !== "string" ||

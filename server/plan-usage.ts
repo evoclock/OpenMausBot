@@ -1,7 +1,4 @@
-// Subscription allowance for the engines OpenMausBot already signs in
-// (Claude, Codex, Grok). Parsers are pure. The fetcher takes fetch and a
-// credential reader so tests never touch the network or a real login file.
-// Access tokens stay in the request header only — never in the JSON result.
+// Access tokens stay in the request header only, never in the JSON result.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
@@ -27,8 +24,6 @@ export interface PlanExtra {
   resetsAt: string | null;
 }
 
-/** A model- or product-scoped slice of the plan. `windows` are that slice's
- * own 5-hour, weekly, or other allowance — not a share of the account total. */
 export interface PlanModelUsage {
   name: string;
   windows: PlanExtra[];
@@ -100,7 +95,6 @@ export interface CredentialSource {
   readText: (path: string) => string | null;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
-  /** macOS login keychain, read-only. Tests inject this so `security` is never spawned. */
   readClaudeKeychain?: (service: string) => string | null | Promise<string | null>;
 }
 
@@ -418,7 +412,6 @@ function titleWords(suffix: string): string {
   return words.map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()).join(" ");
 }
 
-/** Opus, Sonnet, and Haiku only. `seven_day_oauth_apps` and other windows stay extra lines. */
 function claudeModelWindow(key: string): { name: string; window: string } | null {
   const weekly = key.startsWith("seven_day_");
   const fiveHour = key.startsWith("five_hour_");
@@ -460,7 +453,6 @@ function readDurationWindow(value: unknown): DurationWindow | null {
   return { used, seconds, resetsAt: isoOrNull(record.reset_at ?? record.resetAt) };
 }
 
-/** Primary and secondary windows, or one flat window when those keys are absent. */
 function durationWindows(node: unknown): DurationWindow[] {
   const record = asRecord(node);
   if (!record) return [];

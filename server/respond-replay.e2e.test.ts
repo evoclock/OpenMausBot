@@ -1,22 +1,4 @@
-// A settled approval card must stay settled. POST /api/threads/:id/respond
-// delivers the answer to the engine and the card records it; a replayed or
-// raced second call for the same requestId finds no live request and takes
-// the "unavailable" path. That path exists to tell the truth about a card
-// nobody could reach (the engine went away) — fired over an already-answered
-// card it used to append a false "Couldn't deliver that answer" activity
-// message under the correctly-answered card, for a double-tap, a second tab,
-// or a client retry.
-//
-// The real server runs against the fake ACP CLI in "permission" mode (every
-// turn asks to run `echo hi`):
-//
-//   1. allow a live card once — it settles, exactly one decision is logged,
-//      and no "Couldn't deliver" message appears;
-//   2. respond again with the same requestId — still ok, and the transcript
-//      gains no "Couldn't deliver" message;
-//   3. respond with a requestId that was never issued — the message DOES
-//      appear, so the same guard still tells the truth about a genuinely
-//      unknown request.
+// The real server runs against the fake ACP CLI in "permission" mode: every turn asks to run `echo hi`.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -64,7 +46,6 @@ async function start() {
     try {
       if ((await fetch(`${BASE}/api/health`)).ok) return;
     } catch {
-      /* not up yet */
     }
     if (Date.now() > deadline) throw new Error(`server never came up:\n${log}`);
     await new Promise((r) => setTimeout(r, 150));
@@ -115,7 +96,7 @@ posixOnly("a replayed respond for a settled card", () => {
     const created = await api("POST", "/api/bots", { name: "Replayed" });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const bot = created.body.bot as { id: string; threadId: string };
-    const patched = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "grok", model: "fake-model" } });
+    const patched = await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "grok", model: "fake-model" }, approvalMode: "ask" });
     expect(patched.status).toBe(200);
 
     const sent = await api("POST", `/api/bots/${bot.id}/messages`, { text: "run it", threadId: bot.threadId });
@@ -132,17 +113,13 @@ posixOnly("a replayed respond for a settled card", () => {
     expect(settled?.card.answered).toBe("allow");
     expect(await undelivered(bot.threadId)).toHaveLength(0);
 
-    // The replay: a double-tap, a second tab, or a retried request. The route
-    // stays honest — ok, nothing delivered — but the transcript must not cry
-    // failure under a card that already shows its answer.
     const replay = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId, behavior: "allow" });
     expect(replay.status, JSON.stringify(replay.body)).toBe(200);
     expect(replay.body.outcome).toBe("unavailable");
     expect(await undelivered(bot.threadId)).toHaveLength(0);
     expect(await userDecisionsFor(requestId)).toHaveLength(1);
 
-    // Control: a requestId that was never issued is a genuine miss, and the
-    // message still says so — the replay guard did not silence it.
+    // Control: a requestId that was never issued is a genuine miss, and the message still says so.
     const unknown = await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: "req-never-issued", behavior: "allow" });
     expect(unknown.status, JSON.stringify(unknown.body)).toBe(200);
     expect(unknown.body.outcome).toBe("unavailable");

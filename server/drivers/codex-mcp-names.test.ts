@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { codexConfigMcpServerNames, mcpServerNamesInToml, mountedMcpServerName } from "./codex-mcp-names.ts";
+import { codexConfigMcp, codexConfigMcpServerNames, codexConfigRunsServer, mcpServerNamesInToml, mountedMcpServerName } from "./codex-mcp-names.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { force: true, recursive: true }); });
@@ -55,3 +55,30 @@ describe("mountedMcpServerName", () => {
     expect(mountedMcpServerName("fibery", new Set(["fibery", "fibery_openmausbot"]))).toBe("fibery_openmausbot2");
   });
 });
+
+describe("codexConfigRunsServer", () => {
+  const configFor = (toml: string) => {
+    const home = mkdtempSync(join(tmpdir(), "omb-codex-runs-"));
+    dirs.push(home);
+    writeFileSync(join(home, "config.toml"), toml);
+    return codexConfigMcp({ CODEX_HOME: home });
+  };
+
+  it("knows a server config.toml already starts, as one brought in from there, and nothing else", () => {
+    const config = configFor([
+      "[mcp_servers.sentry]", 'command = "npx"', 'args = ["-y", "@sentry/mcp-server", 8080]', "[mcp_servers.sentry.env]", 'SENTRY_TOKEN = "t"',
+      "[mcp_servers.figma]", 'url = "https://MCP.figma.com/mcp"', "[mcp_servers.figma.http_headers]", 'X-Team = "a"',
+      "[mcp_servers.off]", 'command = "off-tool"', "enabled = false",
+    ].join("\n"));
+    const sentry = { command: "npx", args: ["-y", "@sentry/mcp-server", "8080"], env: { SENTRY_TOKEN: "t" } };
+    expect(codexConfigRunsServer(config, "sentry", sentry)).toBe(true);
+    expect(codexConfigRunsServer(config, "sentry", { ...sentry, args: ["-y", "@sentry/mcp-server"] })).toBe(false);
+    expect(codexConfigRunsServer(config, "sentry", { ...sentry, env: { SENTRY_TOKEN: "other" } })).toBe(false);
+    expect(codexConfigRunsServer(config, "other-name", sentry)).toBe(false);
+    expect(codexConfigRunsServer(config, "figma", { type: "http", url: "https://mcp.figma.com/mcp", headers: { "X-Team": "a" } })).toBe(true);
+    expect(codexConfigRunsServer(config, "figma", { type: "http", url: "https://mcp.figma.com/mcp", headers: {} })).toBe(false);
+    expect(codexConfigRunsServer(config, "off", { command: "off-tool", args: [], env: {} })).toBe(false);
+    expect(codexConfigRunsServer(configFor("[mcp_servers.sentry\ncommand = 1"), "sentry", sentry)).toBe(false);
+  });
+});
+

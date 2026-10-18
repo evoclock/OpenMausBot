@@ -37,14 +37,12 @@ describe("snooze expiry wake-up", () => {
     vi.stubGlobal("window", {
       setTimeout: (callback: () => void, delay: number) => { scheduled = { at: Date.now() + delay, fire: callback }; return 1; },
       clearTimeout: vi.fn(),
-      // the production list also runs the shared relative-time clock; its
-      // interval is covered by SidebarThreadRow.relative-now.test.ts
+      // The production list also runs the shared relative-time clock, covered by its own test.
       setInterval: vi.fn(() => 0),
       clearInterval: vi.fn(),
     });
     vi.stubGlobal("fetch", vi.fn());
-    // the shared relative-time clock also listens for visibility changes;
-    // its behavior is covered by SidebarThreadRow.relative-now.test.ts
+    // The shared relative-time clock also listens for visibility changes, covered by its own test.
     vi.stubGlobal("document", { visibilityState: "visible", addEventListener: vi.fn(), removeEventListener: vi.fn() });
   });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -118,8 +116,6 @@ describe("snooze expiry wake-up", () => {
     expect(hidden).toContain("Current chat");
     expect(hidden).not.toContain("Napping");
 
-    // The production list itself must schedule the wake-up: without the
-    // useSnoozeExpiry call in BotThreadList no effect sets a timer.
     for (const effect of fixture.effects) effect();
     expect(scheduled?.at).toBe(now + 60_001);
 

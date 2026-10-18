@@ -1,21 +1,10 @@
-// PATH augmentation for GUI launches — the fix for "CLI not found" when
-// the app is opened from Finder (issues #8, #12).
-//
-// A macOS app launched from Finder inherits a bare PATH
-// (/usr/bin:/bin:...): no ~/.local/bin (the claude installer default),
-// no /opt/homebrew/bin, and no nvm/volta/asdf shims — those only exist
-// in interactive shells. The terminal sees the CLIs; the packaged app
-// doesn't. So every spawn of an agent CLI goes through augmentedPath():
-// the inherited PATH, plus the well-known install locations that exist
-// on this machine, plus (async, best-effort) whatever PATH the user's
-// real login shell reports.
+// A macOS app launched from Finder inherits a bare PATH (no ~/.local/bin, /opt/homebrew/bin or nvm/volta/asdf shims),
+// so every agent CLI spawn goes through augmentedPath().
 import { execFile } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, extname, join } from "node:path";
 
-/** nvm keeps every node version's bin dir separately; newest first so a
- * CLI installed under the latest node wins. */
 function nvmBinDirs(): string[] {
   try {
     const base = join(homedir(), ".nvm", "versions", "node");
@@ -28,12 +17,7 @@ function nvmBinDirs(): string[] {
   }
 }
 
-/** A sealed test fixture finds CLIs only where it was granted them: its own
- * PATH, OMB_EXTRA_PATH, app-managed dirs, and install dirs under its own
- * temporary home. The machine-wide install dirs and the login shell's PATH
- * would hand it this computer's real CLIs — a Homebrew `codex` made the
- * fixture's ChatGPT plan engine "available" on a developer Mac (#2035).
- * Only the verification launcher (scripts/control-omb.ts) sets it. */
+/** A sealed test fixture sees only its own PATH, OMB_EXTRA_PATH, app-managed dirs and its temporary home, never this machine's CLIs. */
 function sealedFixture(): boolean {
   return process.env.OMB_TEST_SEALED_PATH === "1";
 }
@@ -47,7 +31,6 @@ function knownDirs(): string[] {
     join(home, ".grok", "bin"), // x.ai installer
     join(home, ".opencode", "bin"), // opencode installer
     join(home, ".claude", "local"), // claude "local install"
-    // Machine-wide rather than under the (possibly temporary) home.
     ...(sealedFixture() ? [] : [
       "/opt/homebrew/bin", // brew, Apple silicon
       "/usr/local/bin", // brew Intel / classic installs
@@ -62,23 +45,18 @@ function knownDirs(): string[] {
   ];
 }
 
-/** Windows equivalents of knownDirs. A GUI app inherits the user PATH at
- * launch, but only at launch: a CLI installed while the app is running is
- * invisible until it restarts, because Windows never pushes PATH changes
- * into a live process. Scanning the standard install locations recovers
- * those without a restart — `~/.grok/bin` (the x.ai installer) and
- * `%APPDATA%\npm` (global npm shims), plus `%LOCALAPPDATA%\agy\bin` and
- * `%LOCALAPPDATA%\cursor-agent`, cover every engine we ship an install
- * command for. */
+/** Windows never pushes PATH changes into a live process, so CLIs installed after launch are found by scanning install dirs. */
 function windowsKnownDirs(): string[] {
   const home = homedir();
   const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
   const localAppData = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
+  const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
   return [
     join(appData, "npm"), // npm -g shims: claude, codex
+    join(home, ".kimi-code", "bin"), // recover Kimi installs after a GUI launch too
     join(home, ".grok", "bin"), // x.ai installer
     join(localAppData, "agy", "bin"), // Antigravity installer
-    // Cursor installer: cursor-agent.* and its `agent` copies (MOCA-272)
+    // Cursor installer: cursor-agent.* and its `agent` copies
     join(localAppData, "cursor-agent"),
     join(home, ".local", "bin"), // claude native installer
     join(home, ".claude", "local"),
@@ -86,7 +64,8 @@ function windowsKnownDirs(): string[] {
     join(home, ".bun", "bin"),
     join(home, ".deno", "bin"),
     join(home, "go", "bin"),
-    join(process.env.ProgramFiles ?? "C:\\Program Files", "Docker", "Docker", "resources", "bin"), // Docker Desktop installer
+    join(programFiles, "Docker", "Docker", "resources", "bin"), // Docker Desktop installer
+    join(programFiles, "RedHat", "Podman"), // Podman installer, also run by Podman Desktop
   ];
 }
 
@@ -94,17 +73,7 @@ let cached: string | null = null;
 let probed = false;
 let loginShellPath: string | null = null;
 
-/** Drop the memoized PATH so the next augmentedPath() rescans. Called when
- * the app re-probes engines, so "check again" can find something installed
- * since launch instead of answering from the PATH we booted with. `probed`
- * must reset too: the login-shell probe merges rc-file PATH entries (e.g.
- * ~/.kimi-code/bin exported from .zshrc) into the cache asynchronously,
- * and without resetting it a rescan would rebuild the cache without those
- * entries and never re-probe — "check again" would permanently lose
- * anything only the login shell's rc file knows about. */
-// Directories the app manages itself (its own npm prefix for engines it
-// installs from Settings). They go ahead of everything else so an engine
-// installed there wins over an older copy elsewhere on PATH.
+// App-managed dirs (its own npm prefix) go first, so an engine installed there wins over an older copy.
 const registeredDirs: string[] = [];
 
 export function registerPathDir(dir: string): void {
@@ -113,31 +82,23 @@ export function registerPathDir(dir: string): void {
   resetPathCache();
 }
 
+/** `probed` resets too, or a rescan would drop rc-file PATH entries and never probe the login shell again. */
 export function resetPathCache(): void {
   cached = null;
   probed = false;
 }
 
-/** Current best PATH, synchronously. Cheap after the first call. */
 export function augmentedPath(): string {
   if (cached === null) {
     cached = mergePaths([
       ...registeredDirs.filter((d) => existsSync(d)),
       ...(process.env.OMB_EXTRA_PATH ? process.env.OMB_EXTRA_PATH.split(delimiter) : []),
       ...(process.env.PATH ? process.env.PATH.split(delimiter) : []),
-      // Keep the last successful login-shell result while a rescan starts a
-      // fresh asynchronous probe. Otherwise resetPathCache() would make
-      // rc-only CLIs disappear again for the response that triggered it.
+      // Keep the last login-shell result while a rescan re-probes, or rc-only CLIs vanish for the response that triggered it.
       ...(loginShellPath ? loginShellPath.split(delimiter) : []),
-      // Both platforms scan their standard install locations; only the
-      // login-shell probe below stays unix-only, since Windows has no
-      // equivalent rc file to source.
       ...(process.platform === "win32" ? windowsKnownDirs() : knownDirs()).filter((d) => existsSync(d)),
     ]);
   }
-  // belt-and-braces: fold in the login shell's PATH once, in the
-  // background — catches anything the known-dirs list doesn't (custom
-  // rc exports). Never blocks a spawn; the next one benefits.
   if (!probed && !process.env.VITEST && !sealedFixture() && process.platform !== "win32") {
     probed = true;
     probeLoginShellPath();
@@ -151,8 +112,7 @@ function mergePaths(parts: string[]): string {
 
 function probeLoginShellPath(): void {
   const shell = process.env.SHELL || "/bin/zsh";
-  // -l -i: nvm and friends live in .zshrc/.bashrc, which only interactive
-  // shells read. A marker isolates $PATH from any rc-file noise.
+  // -l -i: nvm and friends live in .zshrc/.bashrc, which only interactive shells read; a marker isolates $PATH from rc noise.
   execFile(
     shell,
     ["-l", "-i", "-c", 'printf "__OMB_PATH__%s" "$PATH"'],
@@ -167,7 +127,6 @@ function probeLoginShellPath(): void {
   );
 }
 
-/** Test hook — the cache is process-wide otherwise. */
 export function resetPathCacheForTests(): void {
   cached = null;
   probed = false;
@@ -175,26 +134,17 @@ export function resetPathCacheForTests(): void {
   registeredDirs.length = 0;
 }
 
-/** The user's home directory as this platform defines it. Windows keeps the
- * real profile in USERPROFILE; a HOME that leaks in from a POSIX-flavored
- * shell is not where Windows CLIs keep their state, so USERPROFILE wins there
- * and HOME wins everywhere else. */
+/** Windows CLIs keep state under USERPROFILE; a HOME leaking in from a POSIX-flavoured shell is not it. */
 export function userHome(env: Record<string, string | undefined> = process.env): string {
   return process.platform === "win32"
     ? env.USERPROFILE || env.HOME || homedir()
     : env.HOME || env.USERPROFILE || homedir();
 }
 
-/** `<user home>/.<name>` — the per-harness state directory every CLI keeps
- * (`.qwen`, `.grok`, `.codex`…), Windows-correct everywhere. */
 export function harnessHome(name: string, env: Record<string, string | undefined> = process.env): string {
   return join(userHome(env), `.${name}`);
 }
 
-/** Every `name` binary on the augmented PATH as absolute paths, in PATH
- * order (first = what a bare name would run). Used by the Engines panel's
- * "detected" dropdown and the /api/cli-candidates endpoint. A path-ish
- * name is echoed back as-is — it already IS a location. */
 export function findCliCandidates(name: string): string[] {
   if (!name || /[\n\r]/.test(name)) return [];
   if (/[/\\]/.test(name) || /^[a-zA-Z]:/.test(name)) return [name];
@@ -213,29 +163,16 @@ export function findCliCandidates(name: string): string[] {
   return out;
 }
 
-// Windows CLI resolution ───────────────────────────────────────────────
-// PATH alone is not enough on Windows. libuv ignores PATHEXT, so
-// spawn("claude") never finds claude.cmd — and since Node's
-// CVE-2024-27980 fix, spawning a .cmd without shell:true throws
-// synchronously anyway. shell:true is not an option here: the drivers
-// pass raw JSON in argv (claude's --mcp-config), which cmd would mangle.
-// Windows also has no #! support, so a node-shebang script (every fake
-// CLI in server/testing) is unspawnable as itself.
-//
-// So resolve the real file ourselves, PATHEXT-aware, and turn what we
-// find into a spawn that needs no shell: npm's .cmd shims are parsed
-// down to the .exe or node script they wrap, and shebang scripts become
-// `node <script>`. An unknown shim is deliberately left unspawnable instead
-// of crossing the repository's no-shell security boundary.
+// Windows: libuv ignores PATHEXT, Node refuses to spawn a .cmd without shell:true since CVE-2024-27980, and there is no #!.
+// shell:true is out (cmd would mangle the JSON drivers pass in argv), so npm .cmd shims resolve to what they wrap and node
+// shebang scripts to `node <script>`; an unknown shim stays unspawnable rather than cross the no-shell security boundary.
 
 export interface ResolvedSpawn {
   command: string;
   args: string[];
 }
 
-/** Split a `cli` string into [command, ...fixedArgs] on unquoted whitespace —
- * a mini tokenizer, never a shell. Quotes group segments (paths with spaces,
- * fixed args with spaces); no escapes, no substitution, nothing evaluated. */
+/** A mini tokenizer, never a shell: quotes group segments; no escapes, no substitution, nothing evaluated. */
 export function splitCliString(cli: string): string[] {
   const out: string[] = [];
   let cur = "";
@@ -265,11 +202,9 @@ function isFile(p: string): boolean {
   }
 }
 
-/** PATHEXT-aware `which`. A path-ish cli is probed where it points. */
 function whichWin(cli: string, env?: NodeJS.ProcessEnv): string | null {
   const exts = ((env ?? process.env).PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  // an extensionless name is not runnable on Windows, so PATHEXT wins over
-  // the bare file — npm installs both `claude` (a sh script) and `claude.cmd`
+  // npm installs both `claude` (a sh script) and `claude.cmd`; an extensionless name is not runnable on Windows.
   const probe = (base: string) => {
     const order = extname(base) ? [base, ...exts.map((e) => base + e)] : [...exts.map((e) => base + e), base];
     return order.find(isFile) ?? null;
@@ -284,21 +219,16 @@ function whichWin(cli: string, env?: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-/** node.exe to run a script with: the one npm's shim would pick, else PATH,
- * else this executable only when it really is Node. In a packaged app,
- * process.execPath is Electron and must never be mistaken for node.exe. */
+/** In a packaged app process.execPath is Electron and must never be mistaken for node.exe. */
 function nodeExe(near: string, env?: NodeJS.ProcessEnv): string | null {
   const local = join(near, "node.exe");
   if (isFile(local)) return local;
-  // Ask for the executable explicitly so a custom PATHEXT ordering cannot
-  // make a stray node.cmd hide the real node.exe beside it.
   const onPath = whichWin("node.exe", env);
   if (onPath && extname(onPath).toLowerCase() === ".exe") return onPath;
   return (process.versions as Record<string, string | undefined>).electron ? null : process.execPath;
 }
 
-/** npm/pnpm .cmd shims all spell their target as "%dp0%\..." (or
- * "%~dp0\..."). Whatever of those exists on disk is what the shim runs. */
+/** npm/pnpm .cmd shims spell their target as "%dp0%\..." (or "%~dp0\..."). */
 function parseCmdShim(shim: string, env?: NodeJS.ProcessEnv): ResolvedSpawn | null {
   let text: string;
   try {
@@ -307,10 +237,7 @@ function parseCmdShim(shim: string, env?: NodeJS.ProcessEnv): ResolvedSpawn | nu
     return null;
   }
   const dir = dirname(shim);
-  // npm's own npm.cmd / npx.cmd, installed beside node.exe, name their entry
-  // in a variable next to a helper script that is not the CLI:
-  // SET "NPX_CLI_JS=%~dp0\node_modules\npm\bin\npx-cli.js". The launcher's
-  // switch to a globally upgraded npm is not followed; this node's npm runs.
+  // npm's own npm.cmd/npx.cmd name their entry as SET "NPX_CLI_JS=%~dp0\…"; a launcher switch to a global npm is not followed.
   const npmEntry = /^SET "NP[MX]_CLI_JS=%~dp0\\([^"]+)"/im.exec(text);
   const targets = [...(npmEntry ? [npmEntry] : []), ...text.matchAll(/"%~?dp0%?\\?([^"]+)"/g)]
     .map((m) => join(dir, m[1]))
@@ -324,8 +251,6 @@ function parseCmdShim(shim: string, env?: NodeJS.ProcessEnv): ResolvedSpawn | nu
   return exe ? { command: exe, args: [] } : null;
 }
 
-/** `#!/usr/bin/env node` → `node <script>`. Only node: nothing else has a
- * meaningful Windows equivalent worth guessing at. */
 function parseNodeShebang(file: string, env?: NodeJS.ProcessEnv): ResolvedSpawn | null {
   let head = "";
   let fd: number | null = null;
@@ -341,7 +266,6 @@ function parseNodeShebang(file: string, env?: NodeJS.ProcessEnv): ResolvedSpawn 
       try {
         closeSync(fd);
       } catch {
-        /* best-effort descriptor cleanup */
       }
     }
   }
@@ -350,15 +274,10 @@ function parseNodeShebang(file: string, env?: NodeJS.ProcessEnv): ResolvedSpawn 
   return node ? { command: node, args: [file] } : null;
 }
 
-/**
- * How to actually spawn `cli` with `args` on this platform. Identity
- * everywhere but win32 — POSIX already resolves PATH and #! itself.
- */
-/** Resolve a single command word (no tokenizer) — the platform spawn rules. */
+/** One command word's platform spawn rules: identity except on win32, since POSIX resolves PATH and #! itself. */
 function resolveWord(cli: string, args: string[], env?: NodeJS.ProcessEnv): ResolvedSpawn {
   if (process.platform !== "win32") return { command: cli, args };
   const file = whichWin(cli, env);
-  // not found: hand back the name so spawn reports its own ENOENT
   if (!file) return { command: cli, args };
   const ext = extname(file).toLowerCase();
   if (ext === ".cmd" || ext === ".bat") {
@@ -371,23 +290,13 @@ function resolveWord(cli: string, args: string[], env?: NodeJS.ProcessEnv): Reso
 }
 
 export function resolveCliSpawn(cli: string, args: string[], env?: NodeJS.ProcessEnv): ResolvedSpawn {
-  // An EXISTING FILE wins over the tokenizer: paths with spaces come from
-  // our own candidate list unquoted ("/Applications/My Tools/claude"), and
-  // splitting those would shred them. Only a bare word (no spaces) or an
-  // explicitly-quoted/wrapper string reaches the split below.
+  // An existing file wins over the tokenizer: candidate paths with spaces arrive unquoted.
   const trimmed = cli.trim();
   if (trimmed.includes(" ") && existsSync(trimmed)) return resolveWord(trimmed, args, env);
-  // A `cli` value may carry fixed leading arguments — wrapper scripts like
-  // `/usr/local/bin/ag claude agp` are one string in the Engines panel. ONE
-  // tokenizer pass, then resolve the head directly (never re-tokenized: a
-  // quoted token may itself contain spaces, so feeding it back through the
-  // splitter would shred it). Fixed args go BEFORE invocation args — a
-  // wrapper's subcommand must lead (`ag claude agp --help`), or the wrapper
-  // swallows the flag itself.
+  // One tokenizer pass; the head is never re-split, and fixed args go first so a wrapper's subcommand leads.
   const split = splitCliString(cli);
   if (split.length > 1 || split[0] !== trimmed) {
     const [head, ...fixed] = split;
-    // empty input → hand the raw string to spawn so IT reports the ENOENT
     if (!head) return { command: cli, args };
     return resolveWord(head, [...fixed, ...args], env);
   }

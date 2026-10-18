@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RoomTurnDeadline,
   RoomTurnStallRegistry,
+  effectiveRoomTurnTimeoutMinutes,
+  parseConversationTurnTimeout,
   roomTurnTimeoutMessage,
   roomTurnTimeoutMs,
 } from "./room-turn-timeout.ts";
@@ -45,15 +47,12 @@ describe("room turn timeout", () => {
     const deadline = new RoomTurnDeadline(20, onTimeout);
     deadline.start();
 
-    // fifteen real minutes of work, then an approval card opens
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     deadline.setWaitingOnHuman(true);
 
-    // however long the person takes, none of it counts
     await vi.advanceTimersByTimeAsync(30 * 60_000);
     expect(onTimeout).not.toHaveBeenCalled();
 
-    // answered: only the remaining five work-minutes are left
     deadline.setWaitingOnHuman(false);
     await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
     expect(onTimeout).not.toHaveBeenCalled();
@@ -70,14 +69,14 @@ describe("room turn timeout", () => {
     deadline.start();
 
     await vi.advanceTimersByTimeAsync(4 * 60_000);
-    deadline.setWaitingOnHuman(true); // first card
+    deadline.setWaitingOnHuman(true);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
-    deadline.setWaitingOnHuman(true); // a second card while deciding again
-    deadline.setWaitingOnHuman(false); // first answered — still holding
+    deadline.setWaitingOnHuman(true);
+    deadline.setWaitingOnHuman(false);
     await vi.advanceTimersByTimeAsync(10 * 60_000);
     expect(onTimeout).not.toHaveBeenCalled();
 
-    deadline.setWaitingOnHuman(false); // last answer → resume with 6m left
+    deadline.setWaitingOnHuman(false);
     await vi.advanceTimersByTimeAsync(6 * 60_000 - 1);
     expect(onTimeout).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -91,13 +90,11 @@ describe("room turn timeout", () => {
     const deadline = new RoomTurnDeadline(5, onTimeout);
     deadline.start();
 
-    // a stalled event loop delivers the card event past the deadline, before
-    // the timer callback had its turn — the exhausted budget must still fire
+    // A stalled event loop delivers the card event past the deadline, before the timer callback ran.
     vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
     deadline.setWaitingOnHuman(true);
     expect(onTimeout).toHaveBeenCalledOnce();
 
-    // and nothing afterwards re-arms or double-fires
     deadline.setWaitingOnHuman(false);
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(onTimeout).toHaveBeenCalledOnce();
@@ -111,7 +108,7 @@ describe("room turn timeout", () => {
 
     deadline.setWaitingOnHuman(false);
     await vi.advanceTimersByTimeAsync(2 * 60_000);
-    deadline.setWaitingOnHuman(false); // stale cleanup after an interrupt
+    deadline.setWaitingOnHuman(false);
 
     await vi.advanceTimersByTimeAsync(3 * 60_000 - 1);
     expect(onTimeout).not.toHaveBeenCalled();
@@ -128,8 +125,8 @@ describe("room turn timeout", () => {
 
     await vi.advanceTimersByTimeAsync(1 * 60_000);
     deadline.setWaitingOnHuman(true);
-    deadline.stop(); // the turn settled while the card was still open
-    deadline.setWaitingOnHuman(false); // late resolve must not re-arm
+    deadline.stop();
+    deadline.setWaitingOnHuman(false);
 
     await vi.advanceTimersByTimeAsync(60 * 60_000);
     expect(onTimeout).not.toHaveBeenCalled();
@@ -179,6 +176,18 @@ describe("room turn timeout", () => {
     stalls.register("room-thread", nextTurn);
     expect(stalls.stall("room-thread")).toBe(true);
     expect(nextTurn).toHaveBeenCalledOnce();
+  });
+
+  it("lets one conversation replace the group ceiling and clears back to it", () => {
+    expect(effectiveRoomTurnTimeoutMinutes(10, undefined)).toBe(10);
+    expect(effectiveRoomTurnTimeoutMinutes(10, null)).toBe(10);
+    expect(effectiveRoomTurnTimeoutMinutes(10, 30)).toBe(30);
+    expect(effectiveRoomTurnTimeoutMinutes(10, 0)).toBe(10);
+    expect(effectiveRoomTurnTimeoutMinutes(10, 1.5)).toBe(10);
+    expect(parseConversationTurnTimeout(30)).toEqual({ ok: true, minutes: 30 });
+    expect(parseConversationTurnTimeout(null)).toEqual({ ok: true, minutes: null });
+    expect(parseConversationTurnTimeout(1441).ok).toBe(false);
+    expect(parseConversationTurnTimeout("30").ok).toBe(false);
   });
 
   it("formats singular and plural timeout messages", () => {

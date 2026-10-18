@@ -1,8 +1,3 @@
-// A Live call seen from elsewhere in the app: the green phone badge on the
-// bot's sidebar row, a pill at the bottom of the sidebar while this window's
-// call runs in a chat that is not on screen, and the same as a chip in the
-// chat header for windows too narrow to show the sidebar. The call bar
-// itself (LiveCallBar) lives in the call's own chat.
 import { Mic, MicOff, Phone, PhoneOff } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
@@ -11,16 +6,11 @@ import { hangUpLiveCall, isLiveCallRunning, liveCallChord, setLiveMuted, useLive
 import { useStore } from "@/state/store";
 import type { LiveCallState } from "../../shared/wire";
 
-/** Pure: whether a bot's row shows the green phone badge — this window is
- * calling it, or the harness reports a call on it (a phone, another window). */
 export function liveBadgeFor(botId: string, media: LiveMediaState, server: LiveCallState | null): boolean {
   if (media.botId === botId && isLiveCallRunning(media.phase)) return true;
   return Boolean(server && server.status !== "ended" && server.botId === botId);
 }
 
-/** This window's call, when it runs in a chat that is not on screen. The
- * bot's `threadId` is the thread its chat shows, so another thread of the
- * same bot counts as elsewhere too. */
 function useCallElsewhere(currentBotId: string | null) {
   const { state } = useStore();
   const media = useLiveMedia();
@@ -30,12 +20,9 @@ function useCallElsewhere(currentBotId: string | null) {
   return { media, bot: onScreen ? undefined : bot, threadId: media.threadId };
 }
 
-/** Bottom of the sidebar while this window is on a Live call with another chat open. */
 export function LiveCallPill({ onOpen, currentBotId, iconOnly = false }: {
-  /** open the call's chat (its bot and thread) */
   onOpen: (botId: string, threadId: string) => void;
   currentBotId: string | null;
-  /** the icons-only sidebar: a column of round buttons instead of a line */
   iconOnly?: boolean;
 }) {
   const { media, bot, threadId } = useCallElsewhere(currentBotId);
@@ -103,7 +90,6 @@ export function LiveCallPill({ onOpen, currentBotId, iconOnly = false }: {
   );
 }
 
-/** The same, for windows too narrow to show the sidebar: a chip in the chat header. */
 export function LiveCallChip({ currentBotId, onOpen }: { currentBotId: string; onOpen: (botId: string, threadId: string) => void }) {
   const { bot, threadId } = useCallElsewhere(currentBotId);
   if (!bot || !threadId) return null;

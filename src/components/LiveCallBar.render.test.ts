@@ -24,7 +24,6 @@ const bot: Bot = {
 
 const render = (element: ReturnType<typeof createElement>) =>
   renderToStaticMarkup(createElement(StoreProvider, null, element));
-/** Rendered by the person's own Cloud (its config answers `cloudHome`). */
 const renderOnCloud = (element: ReturnType<typeof createElement>) => {
   const config = { cloudHome: true, live: { configured: true, voice: "marin", readTypedReplies: true, idleMinutes: 5 } } as AppState["config"];
   const value = { state: { ...initialState, config }, dispatch: vi.fn(), flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} };
@@ -59,7 +58,6 @@ describe("LiveCallBar", () => {
     configureLiveMedia({
       getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
       createPeer: () => peer as unknown as RTCPeerConnection,
-      // the session answer never comes: the call stays connecting
       request: () => new Promise(() => {}),
       playRemote: async () => { throw new Error("autoplay blocked"); },
     });
@@ -81,9 +79,6 @@ describe("LiveCallBar", () => {
   });
 
   it("takes clicks itself, inside the composer dock that lets them through", () => {
-    // ChatView's composer dock is pointer-events-none so a blank band beside
-    // its cards reaches the transcript; without its own auto the bar's
-    // buttons would never receive a click.
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
@@ -91,8 +86,6 @@ describe("LiveCallBar", () => {
     expect(markup).toMatch(/^<div role="region"[^>]* class="pointer-events-auto /);
   });
 
-  // A blocked microphone's notice carries one action: Open in browser where
-  // this app refused the page, Try again where the person can allow it.
   it.each([
     ["refused", "The app didn&#x27;t let this page use the microphone. Open it in your web browser to make the Live call.", "Open in browser", "Try again"],
     ["allowed", "Allow microphone access for this app in your computer&#x27;s privacy settings, then try again.", "Try again", "Open in browser"],
@@ -132,7 +125,6 @@ describe("LiveCallSettings", () => {
     expect(markup).toContain(`A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on your computer.`);
     expect(markup).toMatch(/<option value="5" selected="">5<\/option>/);
     expect(markup).toContain("Change key");
-    // nothing to remove without a key
     expect(markup).not.toContain("Remove key");
     expect(markup).toMatch(/role="dialog" tabindex="-1"/);
   });
@@ -167,14 +159,12 @@ describe("LiveKeySetup", () => {
   it("says what the key is for, in the app's language", () => {
     const markup = render(createElement(LiveKeySetup, { onSaved: vi.fn() }));
     expect(markup).toContain("Live calls use OpenAI GPT-Live");
-    // what leaves the computer, where Live is set up
     expect(markup).toContain(`A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on your computer.`);
     expect(markup).toContain('aria-label="OpenAI API key for Live calls"');
     expect(markup).toContain("Save and start the call");
     expect(render(createElement(LiveKeySetup, { onSaved: vi.fn(), compact: true }))).toContain(">Save<");
   });
 
-  // Pasted on the Cloud's page, the key is saved on the Cloud.
   it("says the key stays on the Cloud when the chat is on the person's Cloud", () => {
     const markup = renderOnCloud(createElement(LiveKeySetup, { onSaved: vi.fn() }));
     expect(markup).toContain(CLOUD_DISCLOSURE);

@@ -1,73 +1,27 @@
-// A bot's memory on an OMB Cloud home, as far as a lent Mac is concerned
-// (docs/cloud-pro.md, "Let my Cloud use this Mac").
-//
-// MEMORY.md is loaded into every turn of a bot, its topic files and daily
-// log feed recall, and the instruction files in its working folders
-// (CLAUDE.md, AGENTS.md, .mcp.json, .claude/settings.json, skills) are read
-// by its engine on every turn, the owner's lending turns among them. So a line put
-// there by a conversation the owner did not write (a guest's chat, a room, a
-// webhook run) would steer a turn that can reach the Mac. The harness's own
-// memory writers already refuse such conversations (server/index.ts); this
-// catches everything else, a bot writing the files with its own tools
-// included:
-//
-// - while a turn that is not provably the owner's runs for a bot, that bot's
-//   memory is "pending" (whatever the owner changed before it is adopted
-//   first);
-// - when the files change while pending, the memory is "changed by someone
-//   else" and the bot's turns cannot use the Mac until the owner reviews it
-//   in the Memory panel: one click, bound to the exact files they were
-//   shown;
-// - any other change (the owner's own turns, the owner's Memory edits,
-//   upkeep and tidy) is adopted as the owner's;
-// - a write the harness makes for the owner (trustedWrite) is adopted even
-//   while such a turn runs, as long as nothing else changed the memory first.
-//   A foreign write racing it within the same moment is the one case this
-//   cannot tell apart.
-//
-// A change is judged by each file's type and content, a link by its target.
-// It cannot stop a shell a guest directs from writing later (after the
-// pending window), or from editing this record: a guest who can drive a
-// Full-access bot on the Cloud already controls the machine.
+// Known open risks: a foreign write racing trustedWrite in the same moment cannot be told apart, and a
+// guest-driven shell can still write after the pending window or edit this record (Full access owns the machine).
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, opendirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
 
-/** Instruction files an engine reads from its working folder. */
 export const WORKING_FOLDER_FILES = [".mcp.json", ".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md"] as const;
-/** Folders of skills, agents and commands an engine discovers in its working
- * folder: each entry, and a skill's SKILL.md. */
 export const WORKING_FOLDER_DIRS = [".claude/skills", ".claude/agents", ".claude/commands", ".agents/skills"] as const;
-/** The two lists above by first path segment, as the walker looks for them:
- * each name at the top of a working folder, with the names inside it (none
- * for a file there, like .mcp.json). These lists alone decide what is watched. */
 const WORKING_FOLDER_TOP = new Map<string, string[]>();
 for (const path of [...WORKING_FOLDER_FILES, ...WORKING_FOLDER_DIRS]) {
   const [top, inner] = path.split("/") as [string, string?];
   WORKING_FOLDER_TOP.set(top, [...WORKING_FOLDER_TOP.get(top) ?? [], ...(inner ? [inner] : [])]);
 }
-/** Instruction files an engine reads from its working folder and every
- * folder above it (Claude Code's project memory; Codex's AGENTS.md). */
+/** Read from the working folder and every folder above it (Claude Code's project memory; Codex's AGENTS.md). */
 export const ANCESTOR_FILES = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md"] as const;
-/** At most this many entries of one skills, agents or commands folder are
- * read. A fuller folder is judged as a whole: any entry added, removed or
- * renamed in it is a change (see `listing`), and so is any edit to an entry
- * or its SKILL.md (by identity, size and times: see `fullFolder`). */
 export const FOLDER_ENTRY_CAP = 200;
-/** A working folder with more top-level entries than this is not listed;
- * its instruction files are looked up by name instead. */
 const ROOT_ENTRY_CAP = 5_000;
 
-/** What one path is, for the fingerprint: absent (undefined), a link (by
- * target), a regular file (by content), or something else (by type). Cached
- * by identity, size and change time (which no process can set back), so
- * unchanged logs are not reread. */
+/** Cached by identity, size and ctime, which no process can set back. */
 const contentCache = new Map<string, { key: string; hash: string }>();
 function describe(file: string): string | undefined {
   let stat;
-  // No exception for the usual case, an absent file: it costs more than the look-up.
   try { stat = lstatSync(file, { bigint: true, throwIfNoEntry: false }); } catch { return undefined; }
   if (!stat) return undefined;
   if (stat.isSymbolicLink()) {
@@ -84,16 +38,7 @@ function describe(file: string): string | undefined {
   return hash;
 }
 
-/** A folder's entry names, read at most once per change of the folder
- * itself: adding, removing or renaming an entry moves its modification and
- * change times (a file edited in place does not, which is why each file is
- * still looked at by `describe`). At most `cap` names are read; `overflow`
- * says there were more, and `key` changes whenever the entries do. A folder
- * that could not be read is not remembered, and reads as too full to list
- * (its files are then looked up by name).
- * undefined: not a folder (absent, never created, a file or a link). With
- * `through`, a link to a folder is listed as the folder it resolves to, and
- * `link` says so. */
+/** Adding, removing or renaming an entry moves a folder's mtime and ctime; editing a file in place does not. */
 type Listing = { key: string; names: ReadonlySet<string>; overflow: boolean; link?: true };
 const listingCache = new Map<string, Listing>();
 function listing(dir: string, cap: number, through = false): Listing | undefined {
@@ -135,9 +80,6 @@ function isLink(path: string): boolean {
   try { return lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() === true; } catch { return false; }
 }
 
-/** A folder too full to list entry by entry (FOLDER_ENTRY_CAP), as one
- * value: its entries, and the identity, size and times of each entry and its
- * SKILL.md, so an edit in place is a change too. Nothing is read. */
 function fullFolder(dir: string): string {
   const all = listing(dir, Infinity, true);
   if (!all) return "absent";
@@ -151,11 +93,6 @@ function fullFolder(dir: string): string {
   return hash.digest("hex");
 }
 
-/** Every file that shapes a bot's turns, by name, as `describe` sees it:
- * MEMORY.md, memory/*, memory/log/*, and the instruction files in each
- * working folder and the folders above it. Only names that exist are looked
- * at, a folder that was never created costs one failed look-up, and each
- * folder is listed once per change of its entries. */
 export function memoryFiles(workspace: string, workingFolders: readonly string[] = [], alsoAbove: readonly string[] = []): Record<string, string> {
   const files: Record<string, string> = {};
   const add = (name: string, file: string) => {
@@ -167,12 +104,8 @@ export function memoryFiles(workspace: string, workingFolders: readonly string[]
   for (const name of [...listing(join(workspace, "memory"), Infinity)?.names ?? []].sort()) if (name !== "log") add(`memory/${name}`, join(workspace, "memory", name));
   add("memory/log", join(workspace, "memory", "log"));
   for (const name of [...listing(join(workspace, "memory", "log"), Infinity)?.names ?? []].sort()) add(`memory/log/${name}`, join(workspace, "memory", "log", name));
-  /** The names among `wanted` present in `dir` (all of them, unlisted, when
-   * the folder is too full to list). */
   const present = (dir: string, wanted: readonly string[], listed = listing(dir, ROOT_ENTRY_CAP)) =>
     listed ? wanted.filter((name) => listed.overflow || listed.names.has(name)) : [];
-  /** A skills, agents or commands folder (or a link to one: its target is
-   * recorded too, and its entries are read through it). */
   const capped = (dir: string) => {
     const listed = listing(dir, FOLDER_ENTRY_CAP, true);
     if (!listed || listed.link) add(dir, dir);
@@ -186,7 +119,6 @@ export function memoryFiles(workspace: string, workingFolders: readonly string[]
   const listedRoots = new Map<string, Listing>();
   const ancestors = new Set<string>();
   for (const folder of new Set([workspace, ...workingFolders].map((dir) => resolve(dir)))) {
-    // A working folder that is a link is read through it.
     const top = listing(folder, ROOT_ENTRY_CAP, true);
     if (top) {
       listedRoots.set(folder, top);
@@ -194,8 +126,6 @@ export function memoryFiles(workspace: string, workingFolders: readonly string[]
         const path = join(folder, name);
         const wanted = WORKING_FOLDER_TOP.get(name)!;
         if (!wanted.length) { add(path, path); continue; }
-        // A link (or a file) in place of the folder is judged by what it
-        // is, and a link's files by name through it.
         const inner = listing(path, ROOT_ENTRY_CAP);
         if (!inner) add(path, path);
         if (!inner && !isLink(path)) continue;
@@ -205,14 +135,11 @@ export function memoryFiles(workspace: string, workingFolders: readonly string[]
         }
       }
     }
-    // Up to the first folder already walked: its parents are there too.
     for (let dir = folder; !ancestors.has(dir); dir = dirname(dir)) {
       ancestors.add(dir);
       if (dirname(dir) === dir) break;
     }
   }
-  // Folders a conversation will work below once it runs (`alsoAbove`): the
-  // instruction files there and above reach its first turn.
   for (const folder of alsoAbove) {
     for (let dir = resolve(folder); !ancestors.has(dir); dir = dirname(dir)) {
       ancestors.add(dir);
@@ -223,45 +150,32 @@ export function memoryFiles(workspace: string, workingFolders: readonly string[]
     const top = listedRoots.get(dir);
     for (const name of top ? present(dir, ANCESTOR_FILES, top) : ANCESTOR_FILES) add(join(dir, name), join(dir, name));
   }
-  // "memory" and "memory/log" name the folders themselves: only a link
-  // swapped in for one counts.
   for (const folder of ["memory", "memory/log"]) if (files[folder]?.startsWith("other:")) delete files[folder];
   return files;
 }
 
-/** A bot as the tracker sees it: each conversation's folder is the one its
- * turns use (store.ts pinTaskCwd), pinned when it first runs: before that
- * it has none (the bot's folder, else a task folder not yet created). */
 export interface LendingBot {
   id: string;
   cwd?: string | null;
   tasks: readonly { threadId: string; cwd?: string | null }[];
 }
 
-/** memoryFiles for one bot: its workspace, its own folder, the folder of
- * every conversation that has run, and the folders above the task folders
- * of those that have not yet. A conversation that never ran has no folder
- * to look in (its first turn creates it). A bot that no longer exists has
- * nothing left to judge, and its workspace must not be recreated to look. */
 export function botMemoryFiles(bot: LendingBot | undefined, dirs: { workspace: (botId: string) => string; taskWorkspaces: string }): Record<string, string> {
   if (!bot) return {};
   const folders = bot.tasks.flatMap((task) => typeof task.cwd === "string" ? [task.cwd] : []);
   return memoryFiles(dirs.workspace(bot.id), [...new Set([...(bot.cwd ? [bot.cwd] : []), ...folders])], [join(dirs.taskWorkspaces, bot.id)]);
 }
 
-/** One hash over a set of files, for the stored record and the review token. */
 export function fingerprintOf(files: Record<string, string>): string {
   const hash = createHash("sha256");
   for (const name of Object.keys(files).sort()) hash.update(`${name}\u0000${files[name]}\u0000`);
   return hash.digest("hex");
 }
 
-/** What the record keeps of each file: enough to say which ones changed. */
 function digests(files: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(files).map(([name, described]) => [name, createHash("sha256").update(described).digest("hex").slice(0, 24)]));
 }
 
-/** The files that differ between two snapshots (as digests). */
 export function changedFiles(before: Record<string, string> | undefined, after: Record<string, string>): string[] {
   if (!before) return Object.keys(after).sort();
   return [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((name) => before[name] !== after[name]).sort();
@@ -276,26 +190,20 @@ const record = z.object({
 const recordsFile = z.object({
   version: z.literal(1),
   bots: z.record(z.string().max(128), record),
-  /** The record could not be read once: the bots that existed then (and
-   * have no record since) are flagged. `true` is every bot there is. */
   unknownFlagged: z.union([z.literal(true), z.array(z.string().max(128)).max(100_000)]).optional(),
 }).strict();
 type Record_ = z.infer<typeof record>;
 
 export interface LendingMemoryDeps {
   file: string;
-  /** The bot's files now (memoryFiles). */
   files: (botId: string) => Record<string, string>;
-  /** The bots that exist now: the ones a lost record leaves flagged. */
   knownBots: () => readonly string[];
   log?: (line: string) => void;
 }
 
 export function createLendingMemory({ file, files: snapshot, knownBots, log = () => {} }: LendingMemoryDeps) {
   let bots: { [botId: string]: Record_ } = {};
-  // Fail closed: a damaged, linked or oversized record would otherwise wipe
-  // every flag. Every bot that existed when it was found damaged starts
-  // flagged instead; a bot created later starts clean.
+  // Fail closed: a damaged, linked or oversized record flags every bot that existed when it was found.
   let unknownFlagged = new Set<string>();
   // Read on first use, when the fleet it may need to name exists.
   let loaded = false;
@@ -318,7 +226,7 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
     if (damaged) {
       unknownFlagged = new Set(knownBots().filter((botId) => !bots[botId]));
       log("lending: the record of bots' memory could not be read; every bot's memory needs the owner's review before it can use the lent Mac");
-      try { save(); } catch { /* flagged in memory for this run; the damaged file says so again next time */ }
+      try { save(); } catch {}
     }
   };
   const save = () => writeFileAtomic(file, JSON.stringify({ version: 1, bots, ...(unknownFlagged.size ? { unknownFlagged: [...unknownFlagged] } : {}) }), { mode: 0o600 });
@@ -328,10 +236,6 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
     const known = unknownFlagged.delete(botId);
     if (known || JSON.stringify(next) !== before) save();
   };
-  // A snapshot taken this tick is reused for the rest of it by checks that
-  // only look (a Mac action, the Memory panel). Anything that starts or ends
-  // a judgement (a foreign turn starting or ending, a review, a write for the
-  // owner) takes a fresh one.
   const memo = new Map<string, { files: Record<string, string>; hash: string }>();
   const fresh = (botId: string) => {
     const files = snapshot(botId);
@@ -341,14 +245,10 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
     return snap;
   };
   const now = (botId: string, cached = false) => (cached && memo.get(botId)) || fresh(botId);
-  /** A bot seen for the first time: trusted as it is, unless the record was lost. */
   const first = (botId: string, current: { files: Record<string, string>; hash: string }, pending: boolean): Record_ =>
     ({ trusted: current.hash, files: current.files, ...(unknownFlagged.has(botId) ? { flagged: true as const } : {}), ...(pending ? { pending: true as const } : {}) });
   const needs = (botId: string) => bots[botId]?.flagged === true || (!bots[botId] && unknownFlagged.has(botId));
   return {
-    /** A turn that is not provably the owner's starts for this bot. What the
-     * owner changed before it is adopted first; from here on, changes are
-     * judged as someone else's. */
     noteForeignTurn(botId: string) {
       load();
       const current = bots[botId];
@@ -357,8 +257,6 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
       const snap = now(botId);
       set(botId, { trusted: snap.hash, files: snap.files, pending: true });
     },
-    /** Judge the files now. `foreignRunning`: such a turn still runs.
-     * `cached`: a check that only looks may reuse this tick's snapshot. */
     reconcile(botId: string, foreignRunning: boolean, opts: { cached?: boolean } = {}): { changedBySomeoneElse: boolean } {
       load();
       const current = bots[botId];
@@ -378,18 +276,12 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
       if (current.pending && !foreignRunning) set(botId, { trusted: current.trusted, ...(current.files ? { files: current.files } : {}) });
       return { changedBySomeoneElse: false };
     },
-    /** What the owner reviews: whether it is needed, a token for exactly the
-     * files as they are now, and which files differ from the last trusted
-     * state. */
     reviewInfo(botId: string): { needed: boolean; token: string; changed: string[] } {
       load();
       const snap = now(botId, true);
       return { needed: needs(botId), token: snap.hash, changed: changedFiles(bots[botId]?.files, snap.files) };
     },
-    /** Whether the owner has a change to review (no file access). */
     needsReview(botId: string): boolean { load(); return needs(botId); },
-    /** The owner looked at the memory and accepts it exactly as it was shown
-     * (`token`). A token that no longer matches the files is refused. */
     review(botId: string, foreignRunning: boolean, token: string): { ok: boolean } {
       load();
       const snap = now(botId);
@@ -397,9 +289,6 @@ export function createLendingMemory({ file, files: snapshot, knownBots, log = ()
       set(botId, { trusted: snap.hash, files: snap.files, ...(foreignRunning ? { pending: true as const } : {}) });
       return { ok: true };
     },
-    /** A write the harness makes on the owner's behalf. Adopted as the
-     * owner's when the memory was still exactly as trusted just before it;
-     * otherwise left for reconcile to judge. */
     trustedWrite<T>(botId: string, write: () => T): T {
       load();
       const current = bots[botId];

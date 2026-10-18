@@ -1,5 +1,3 @@
-// The entry grammar read back, the expiry rule, the narrow fact identity
-// (the regressions #1362/#1363's review asked for), and the topic index.
 import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -39,7 +37,6 @@ describe("memory entry grammar", () => {
       "a hand-written line",
     ];
     expect(parseMemoryEntries(lines.join("\n")).map((e) => [e.line, e.end])).toEqual([[0, 6], [6, 10], [10, 13], [13, 14], [15, 16]]);
-    // a block never runs over the next dated line: a fence it leaves open claims nothing
     const loose = ["- 2026-09-01 · Code blocks start with ```", "- 2026-09-02 · next", "- 2026-09-03 · Deploy:", "```sh", "railway up", "```"];
     expect(parseMemoryEntries(loose.join("\n")).map((e) => [e.line, e.end])).toEqual([[0, 1], [1, 2], [2, 6]]);
   });
@@ -96,7 +93,6 @@ describe("topic headers and the index", () => {
     });
     expect(parseTopicHeader("---\naliases:\n  - food\n  - lunch\ntags: dining\n---\n").aliases).toEqual(["food", "lunch", "dining"]);
     expect(parseTopicHeader("no frontmatter here")).toEqual({ aliases: [] });
-    // the panel's old new-topic text put a heading first
     expect(parseTopicHeader("# Dining\n\n---\naliases: [Bhel, Irani Cafe]\n---\n- Loves pasta\n")).toEqual({ title: "Dining", aliases: ["Bhel", "Irani Cafe"] });
     expect(parseTopicHeader("# Dining\n\n- Loves pasta\n")).toEqual({ title: "Dining", aliases: [] });
   });
@@ -110,7 +106,6 @@ describe("topic headers and the index", () => {
       "- memory/dining.md — Dining (also: food)",
       "- memory/archive.md — older notes moved out of MEMORY.md, kept for the record",
     ]);
-    // one label from code: an archive the old tidy-up wrote keeps a header that undersells it
     expect(renderTopicIndex([{ name: "archive.md", header: { title: "Archive", description: "expired notes moved out by the tidy-up", aliases: [] } }]))
       .toBe("- memory/archive.md — older notes moved out of MEMORY.md, kept for the record");
     const many = Array.from({ length: TOPIC_INDEX_MAX_TOPICS + 5 }, (_, i) => ({ name: `t${String(i).padStart(2, "0")}.md`, header: { aliases: [] } }));

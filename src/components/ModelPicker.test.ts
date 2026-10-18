@@ -4,11 +4,10 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AppState, Bot, InstanceInfo } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
+import { Select } from "./Select";
 
-// The picker reads the engine catalog off the store, and the store module
-// touches window/localStorage at import time — the same shape
-// ComputerPanel.browser.test.ts uses to render a store-backed component
-// under vitest's "node" environment.
+// The store module touches window and localStorage at import time, so it is stubbed to render under the node
+// environment.
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
@@ -17,7 +16,7 @@ const fixture = vi.hoisted(() => {
 vi.mock("@/state/store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/state/store")>()),
   useStore: () => ({
-    state: { instances: fixture.instances, modelVariantSessions: fixture.modelVariantSessions },
+    state: { instances: fixture.instances, bots: [], modelVariantSessions: fixture.modelVariantSessions },
     dispatch: fixture.dispatch,
     refreshInstances: vi.fn(),
     refreshModels: vi.fn(),
@@ -57,7 +56,6 @@ function bot(effort?: EffortLevel): Bot {
   };
 }
 
-/** Every effort button as rendered, with the state a screen reader announces. */
 function levelButtons(markup: string): Array<{ label: string; pressed: boolean }> {
   return [...markup.matchAll(/<button[^>]*aria-pressed="(true|false)"[^>]*>([^<]+)</g)].map((match) => ({
     label: match[2],
@@ -75,7 +73,7 @@ describe("EffortRow", () => {
     fixture.instances = [engine(["none", "low", "high"])];
     const row = EffortRow({ bot: bot("high"), threadId: "independent-thread", updateBotDefault: true, compact: true })!;
     const select = Children.toArray(row.props.children).at(-1) as ReactElement<{ value: string; onChange: (event: ChangeEvent<HTMLSelectElement>) => void }>;
-    expect(select.type).toBe("select");
+    expect(select.type).toBe(Select);
     expect(select.props.value).toBe("high");
     for (const value of ["none", ""]) {
       select.props.onChange({ target: { value } } as ChangeEvent<HTMLSelectElement>);
@@ -105,9 +103,7 @@ describe("EffortRow", () => {
   });
   it("renders nothing for an engine that declares no effort levels", () => {
     expect(renderEffort([engine()])).toBe("");
-    // an engine that declares an empty list is the same promise as none
     expect(renderEffort([engine([])])).toBe("");
-    // and so is a bot whose engine is not in the catalog at all
     expect(renderEffort([])).toBe("");
   });
 
@@ -115,8 +111,6 @@ describe("EffortRow", () => {
     const markup = renderEffort([engine(["low", "medium", "high"])]);
 
     expect(levelButtons(markup).map((button) => button.label)).toEqual(["Default", "Low", "Medium", "High"]);
-    // the server rejects a level its engine does not offer, so one that is
-    // never shown is one that can never be persisted
     expect(markup).not.toContain(">X-High<");
     expect(markup).not.toContain(">Max<");
   });
@@ -267,13 +261,10 @@ describe("ModelPicker trigger", () => {
     return renderToStaticMarkup(createElement(ModelPicker, { bot: bot(effort) }));
   };
 
-  /** The visible effort suffix, not the tooltip that also names the level. */
   const effortChip = (markup: string) =>
     markup.match(/<span data-model-effort[^>]*>(.*?)<\/span>/s)?.[1].replace(/<!--.*?-->/g, "").trim();
 
-  /** The trigger's native tooltip as plain text, split into its lines. React
-   * HTML-escapes the apostrophe and may encode the newline numerically; both
-   * are undone here so the assertions read as the user sees them. */
+  /** React HTML-escapes the apostrophe and may encode the newline numerically; both are undone here. */
   const tooltipLines = (markup: string): string[] => {
     const encoded = markup.match(/<button[^>]*\stitle="([^"]*)"/s)?.[1];
     if (encoded === undefined) return [];
@@ -333,8 +324,6 @@ describe("ModelPicker trigger", () => {
     }));
     expect(markup).toMatch(/<span data-model-account[^>]*>Work · <\/span>/);
     expect(markup).not.toMatch(/<span data-model-account[^>]*>Personal/);
-    // The account remains a compact-only sibling of the hidden model label,
-    // and its button no longer squeezes into the icon-only 30px square.
     expect(markup).toMatch(/<span data-model-account-compact="true" class="hidden max-w-20 truncate @max-4xl\/chathead:inline">Work<\/span><span class="[^"]*@max-4xl\/chathead:hidden"/);
     expect(markup).not.toContain("@max-4xl/chathead:size-[30px]");
   });
@@ -349,12 +338,10 @@ describe("OpenAI sign-ins in the rail", () => {
     const markup = renderToStaticMarkup(createElement(ModelEngineRail, {
       instances: [codex, plan, apiKey], selectedInstance: plan, onSelect: () => {},
     }));
-    // one folded sign-in button, pressed for either of its engines, plus the key engine
     expect(markup.match(/aria-label="OpenAI"/g)).toHaveLength(2);
     expect(markup).toContain('aria-label="OpenAI" aria-pressed="true"');
     expect(markup).not.toContain('aria-label="Codex"');
     expect(markup).not.toContain('aria-label="ChatGPT plan"');
-    // only the key engine carries the key badge
     expect(markup.match(/data-rail-key-badge/g)).toHaveLength(1);
   });
 

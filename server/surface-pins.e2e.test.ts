@@ -1,9 +1,6 @@
-// Surface-pin provenance end to end: a person's pin survives a Works on
-// change, the machine's recorded pin yields, and the boot repair preserves
-// unknown pins from before provenance existed. Real server, fake engine, and a
-// restartable fixture home so tests can seed bots.json between boots — the
-// sourceless pin shapes only exist on disk.
+// A restartable fixture home lets tests seed bots.json between boots: the sourceless pin shapes only exist on disk.
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,8 +56,7 @@ describe("surface pin provenance against the real server", () => {
     try { return JSON.parse(readFileSync(dumpFile, "utf8")); } catch { return null; }
   }, Boolean);
   const mountedComputer = (sent: any) => sent.mcpConfig.mcpServers.computer;
-  // The first screen tools/call, exactly as the mounted proxy issues it
-  // (issue #1650: a claim and its pin land on use, not on mount).
+  // The first screen tools/call, exactly as the mounted proxy issues it: a claim and its pin land on use, not on mount.
   const gate = (c: any) => fetch(c.env.OMB_CONTROL_URL, {
     headers: { authorization: `Bearer ${c.env.OMB_CONTROL_TOKEN}` },
   }).then(response => response.json() as Promise<any>);
@@ -89,7 +85,7 @@ describe("surface pin provenance against the real server", () => {
         APPDATA: join(home, "appdata"), LOCALAPPDATA: join(home, "localappdata"),
         TEMP: home, TMP: home, TMPDIR: home,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui, OMB_TEST_VM_STATE: stateFile,
-        OMB_BOX_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
+        OMB_BOAT_API: boatApi, OMB_USER_DATA: join(home, "user-data"),
       }, stdio: ["ignore", "pipe", "pipe"],
     });
     child = proc;
@@ -124,16 +120,15 @@ describe("surface pin provenance against the real server", () => {
     boatServer = createServer(async (req, res) => {
       res.setHeader("content-type", "application/json");
       const path = new URL(req.url ?? "/", "http://box.fixture").pathname;
-      if (boatDown && path.startsWith("/boxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
-      if (path === "/boxes") return res.end(JSON.stringify({ boxes: [] }));
+      if (boatDown && path.startsWith("/sandboxes")) { res.statusCode = 503; return res.end(JSON.stringify({ error: "Fixture Boat unavailable" })); }
+      if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: [] }));
       return res.end("{}");
     });
     await new Promise<void>(resolve => boatServer.listen(0, "127.0.0.1", resolve));
     boatApi = `http://127.0.0.1:${(boatServer.address() as { port: number }).port}`;
     writeFileSync(join(data, "config.json"), JSON.stringify({ instances: { claude: {
       driver: "claudeAgent", config: { cli: join(ROOT, "server/testing/fake-claude-cli.ts") },
-      // A turn on the cloud computer uses it: its first computer call is
-      // what reaches the Boat, as with a real model.
+      // The first computer call is what reaches the Boat, as with a real model.
       environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
     } } }));
   });
@@ -168,10 +163,7 @@ describe("surface pin provenance against the real server", () => {
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Work slowly.", threadId: task.threadId });
     await busy(bot.id, task.threadId);
-    // The turn's first screen call claims the ready VM — a mount alone
-    // records nothing (issue #1650)…
     expect(await gate(mountedComputer(await dump()))).toEqual({ held: false, helpOpen: false });
-    // The running Auto turn records where it landed with explicit provenance.
     await until(() => savedTask(bot.id, task.threadId)?.surface === "vm", Boolean);
     const refused = await api("PATCH", `/api/bots/${bot.id}/tasks/${task.threadId}`, { surface: "vm" });
     expect(refused.status).toBe(409);
@@ -194,12 +186,11 @@ describe("surface pin provenance against the real server", () => {
     ])).map(({ task }) => task);
     await apiOk("PATCH", `/api/bots/${bot.id}/tasks/${personMismatch.threadId}`, { surface: "local" });
     await stop();
-    // Seed positively identified machine pins; missing provenance is unknown.
     editSavedBot(bot.id, saved => {
       Object.assign(saved.tasks.find((task: any) => task.threadId === autoMismatch.threadId), { surface: "local", surfaceSource: "auto" });
       Object.assign(saved.tasks.find((task: any) => task.threadId === autoMatch.threadId), { surface: "vm", surfaceSource: "auto" });
     });
-    await start(); // Works on is still Auto: the boot repair must leave them alone.
+    await start();
     expect(output).not.toContain("auto-pinned");
     expect(savedTask(bot.id, autoMismatch.threadId)?.surface).toBe("local");
     await apiOk("PATCH", `/api/bots/${bot.id}`, { computer: "vm" });
@@ -252,10 +243,10 @@ describe("surface pin provenance against the real server", () => {
       saved.computer = "vm";
       saved.tasks.find((entry: any) => entry.threadId === task.threadId).surfaceSource = "auto";
     });
-    await start(); // The boot repair moved the thread to the bot's Works on.
+    await start();
     expect(output.match(/auto-pinned thread/g)).toHaveLength(1);
     await stop();
-    await start(); // Known auto pins are repaired only once.
+    await start();
     expect(output).not.toContain("auto-pinned thread");
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Work where you should.", threadId: task.threadId });
@@ -277,14 +268,11 @@ describe("surface pin provenance against the real server", () => {
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Use the available computer.", threadId: task.threadId });
     expect(mountedComputer(await dump()).args.some((arg: string) => arg.includes("container-mcp"))).toBe(true);
-    // …and a turn that has only mounted the VM pins nothing yet: the first
-    // screen tools/call takes the seat and records the pin (issue #1650).
     expect(savedTask(bot.id, task.threadId)).not.toHaveProperty("surface");
     expect(await gate(mountedComputer(await dump()))).toEqual({ held: false, helpOpen: false });
     await until(() => savedTask(bot.id, task.threadId)?.surface === "vm", Boolean);
     expect(savedTask(bot.id, task.threadId)).toMatchObject({ surface: "vm", surfaceSource: "auto" });
     expect(await threadState(bot.id, task.threadId)).not.toHaveProperty("surfaceSource");
-    // Clients see only that this pin is the machine's own record.
     expect(await threadState(bot.id, task.threadId)).toMatchObject({ surface: "vm", surfaceAuto: true });
     expect(savedTask(bot.id, task.threadId)).not.toHaveProperty("surfaceAuto");
     writeFileSync(finishFile, "finish");
@@ -322,15 +310,12 @@ describe("surface pin provenance against the real server", () => {
       mcpCommand: "/fixture/cua-driver", mcpArgs: ["mcp"], mcpEnv: {},
     }), { mode: 0o600 });
     try {
-      // Validate the fixture on every host before waiting for a provider.
-      // The obsolete "bundled" shape is refused, so no dump can ever arrive.
-      // Windows cannot emulate the POSIX ownership check used on macOS.
+      // Validate the fixture on every host before waiting for a provider; Windows cannot emulate the POSIX ownership check.
       const platforms: NodeJS.Platform[] = process.platform === "win32" ? ["win32"] : ["darwin", "win32"];
       for (const platform of platforms) {
         expect(readCuaConnection({ platform, userData: dirname(cuaDescriptor), home }))
           .toMatchObject({ command: "/fixture/cua-driver", platform, scope: "local-computer" });
       }
-      // The incident's other half: the person's pin still wins the mount.
       // Linux requires a separately validated native runtime descriptor.
       if (process.platform !== "linux") {
         resetTurn();
@@ -349,15 +334,11 @@ describe("surface pin provenance against the real server", () => {
     await stop();
   });
 
-  // A place that fails never sticks (the Hosted desktop incident): the
-  // machine's own pin to it is cleared so the next message runs on Auto,
-  // while a person's pin stays and the failure names the composer control.
   it("clears a select_computer pin to a cloud computer that fails, and keeps a person's pin", async () => {
     await start();
     const { bot } = await apiOk("POST", "/api/bots", { name: "Failed place bot" });
     const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, {});
     await apiOk("PUT", "/api/config", { box: { token: "box_fixture" } });
-    // The last row a person reads; a turn's digest comes after it.
     const lastRow = async () => {
       const { messages } = await apiOk("GET", `/api/threads/${task.threadId}/messages?limit=30`);
       return String(messages.filter((message: any) => message.kind !== "digest").at(-1)?.tool?.name ?? "");
@@ -369,16 +350,14 @@ describe("surface pin provenance against the real server", () => {
     const selected = await fetch(base + "/api/internal/computer/select", { method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ surface: "cloud" }) });
     expect(await selected.json()).toMatchObject({ status: "pending", surface: "cloud" });
-    // The Boat goes down before the continuation's first computer call.
     boatDown = true;
     writeFileSync(finishFile, "finish");
     await until(() => lastRow(), row => row.startsWith("error:"));
     await idle(bot.id, task.threadId);
-    expect(await lastRow()).toMatch(/^error: .*This conversation is back on Auto; send your message again\.$/);
+    expect(await lastRow()).toBe("error: Cloud computers can't start right now. It isn't anything you did. This conversation is back on Auto. Send your message again.");
     const cleared = savedTask(bot.id, task.threadId)!;
     expect(cleared.surface).toBeUndefined();
     expect(cleared.surfaceSource).toBeUndefined();
-    // The next message runs on Auto, with the Boat still down.
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Carry on where you can.", threadId: task.threadId });
     const next = await dump();
@@ -387,14 +366,42 @@ describe("surface pin provenance against the real server", () => {
     await idle(bot.id, task.threadId);
     expect(await lastRow()).not.toMatch(/^error:/);
 
-    // A person's pin to the same failing place stays, and says how to clear it.
     await apiOk("PATCH", `/api/bots/${bot.id}/tasks/${task.threadId}`, { surface: "cloud" });
     resetTurn();
     await apiOk("POST", `/api/bots/${bot.id}/messages`, { text: "Use the cloud computer.", threadId: task.threadId });
     await until(() => lastRow(), row => row.startsWith("error:"));
     await idle(bot.id, task.threadId);
-    expect(await lastRow()).toMatch(/^error: .*Clear this conversation's place in the composer to continue\.$/);
+    expect(await lastRow()).toBe("error: Cloud computers can't start right now. It isn't anything you did. Clear this conversation's place in the composer to continue.");
     expect(savedTask(bot.id, task.threadId)).toMatchObject({ surface: "cloud", surfaceSource: "user" });
+    boatDown = false;
+    await apiOk("DELETE", `/api/bots/${bot.id}`);
+    await stop();
+  });
+
+  it("never takes a relayed line's conversation for where the person writes, when select_computer continues its turn", async () => {
+    await start();
+    const { bot } = await apiOk("POST", "/api/bots", { name: "Relayed place bot" });
+    // An Ask thread, as a Slack relay's guarded send expects.
+    const { task } = await apiOk("POST", `/api/bots/${bot.id}/tasks`, { approvalMode: "ask" });
+    await apiOk("PUT", "/api/config", { box: { token: "box_fixture" } });
+    const lastRow = async () => {
+      const { messages } = await apiOk("GET", `/api/threads/${task.threadId}/messages?limit=30`);
+      return String(messages.filter((message: any) => message.kind !== "digest").at(-1)?.tool?.name ?? "");
+    };
+    resetTurn();
+    await apiOk("POST", `/api/bots/${bot.id}/messages/guarded`, {
+      threadId: task.threadId, sendId: randomUUID(), text: "Check the dashboard on the cloud computer.", expectedActiveLeafId: null,
+    });
+    const sent = await dump();
+    const token = sent.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
+    const selected = await fetch(base + "/api/internal/computer/select", { method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ surface: "cloud" }) });
+    expect(await selected.json()).toMatchObject({ status: "pending", surface: "cloud" });
+    boatDown = true;
+    writeFileSync(finishFile, "finish");
+    await until(() => lastRow(), row => row.startsWith("error:"));
+    await idle(bot.id, task.threadId);
+    expect(savedTask(bot.id, task.threadId)).not.toHaveProperty("askedAt");
     boatDown = false;
     await apiOk("DELETE", `/api/bots/${bot.id}`);
     await stop();

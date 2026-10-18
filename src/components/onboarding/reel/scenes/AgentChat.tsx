@@ -1,9 +1,3 @@
-// The "every chat is a real agent" scene, after Recall's "Chat With Your
-// Knowledge" bento: a message goes out, the bot thinks with bouncing dots,
-// then a reply streams in and the whole exchange lifts to make room. What
-// makes it OpenMausBot is the tool chip in the reply: the bot ran a real
-// command on this machine before answering, which is the promise the
-// guided first conversation then keeps.
 import { useEffect, useState } from "react";
 import { Check, TerminalSquare } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -16,7 +10,6 @@ const AGENT_CHAT_MS = 5400;
 const ASK = "Can you check whether the deploy script still passes its tests?";
 const REPLY = "Ran the suite on this machine: 42 tests, all green. One warning about a deprecated flag in deploy.sh, want me to fix it?";
 
-/** Phases, in ms from play: the ask lands, dots think, the reply streams. */
 const THINK_AT = 700;
 const REPLY_AT = 2000;
 const CHARS_PER_S = 48;
@@ -48,8 +41,6 @@ export function AgentChat({ playing, onCue, onEnded, label }: SceneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, still]);
 
-  // stream the reply a few characters at a time; a plain interval keeps it
-  // off the animation thread and trivially cancellable
   useEffect(() => {
     if (phase !== "reply" || still) return;
     const step = Math.max(1, Math.round(CHARS_PER_S / 20));
@@ -77,7 +68,6 @@ export function AgentChat({ playing, onCue, onEnded, label }: SceneProps) {
           replied ? "-translate-y-6" : "translate-y-4",
         )}
       >
-        {/* the ask, from the right */}
         <div className="flex items-end justify-end gap-2.5">
           <div className="animate-rise max-w-[300px] rounded-2xl rounded-br-md bg-bubble-user px-3.5 py-2.5 text-[13px] leading-snug text-ink shadow-md shadow-black/15">
             {ASK}
@@ -87,7 +77,6 @@ export function AgentChat({ playing, onCue, onEnded, label }: SceneProps) {
           </div>
         </div>
 
-        {/* the bot: dots while it works, then the reply grows out of it */}
         <div className="flex items-start gap-2.5">
           <div className="shrink-0 drop-shadow-[0_6px_14px_rgba(0,0,0,0.35)]">
             <MausAvatar

@@ -1,26 +1,17 @@
-// The USAGE ledger: one row per settled turn, append-only, month by month
-// under <data>/usage/, so "what did this workspace spend, by bot, by model,
-// by person, by day" is answerable after a restart and exportable for an
-// invoice. The per-task tally (store.ts addTaskUsage) is a running total
-// that lives and dies with the task; this is the durable record.
-//
-// Same discipline as the decision log: 0600 files, serialized appends per
-// directory, fire-and-forget. Bookkeeping must never fail the turn it is
-// booking. Rows carry who asked and what it cost, never message text.
+// Append-only usage rows under <data>/usage/ (0600): bookkeeping never fails the turn, and rows never carry message text.
 import { readFileSync } from "node:fs";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { CostSource } from "./model-prices.ts";
 import { billableFor, type PriceList } from "./prices.ts";
 
-/** Who asked for the turn. A person is named by the email they signed in
- * with when the server knows it (email sign-in), else by their device
- * label; `owner` is the machine itself (loopback, the desktop app). */
+/** `helper`: a job the helper model wrote for `botId`, kept apart from `bot` so its cost reads on its own. */
 export type UsageTrigger =
   | { kind: "user"; email?: string; label?: string }
   | { kind: "owner" }
   | { kind: "routine"; routineId?: string; label?: string }
-  | { kind: "bot"; botId?: string };
+  | { kind: "bot"; botId?: string }
+  | { kind: "helper"; botId?: string; job?: string };
 
 export interface UsageRow {
   at: string;
@@ -33,18 +24,8 @@ export interface UsageRow {
   input: number;
   output: number;
   cachedInput?: number;
-  /** Bytes of the system prompt the driver was handed, split at the
-   * volatile boundary: stable bytes ride the cacheable prefix, volatile
-   * bytes are re-delivered in the turn that changed them. Present only
-   * when the server assembled a split prompt for the turn. */
   promptBytes?: { stable: number; volatile: number };
-  /** What the turn cost. As the engine reported it (real on a metered key,
-   * an equivalent on a subscription), or, for an engine that reports tokens
-   * but no price, estimated from list prices (server/model-prices.ts) or the
-   * operator's own. Null when neither applies: an unpriced model. */
   costUsd: number | null;
-  /** Where costUsd came from. Absent on rows written before estimates
-   * existed, which read as reported when they carry a cost. */
   costSource?: CostSource;
   trigger: UsageTrigger;
 }
@@ -59,14 +40,9 @@ export interface UsageGroup {
   input: number;
   output: number;
   cachedInput: number;
-  /** Sum of the rows with a cost, reported or estimated; null when none had one. */
   costUsd: number | null;
-  /** The part of costUsd that is an estimate; null when none of it is. */
   estimatedUsd: number | null;
-  /** Rows in this group with no cost at all (an unpriced model). */
   unpriced: number;
-  /** What the operator charges for the group, from the price list; null
-   * without a list or when nothing in the group is priced. */
   billableUsd: number | null;
 }
 
@@ -93,8 +69,6 @@ const promptBytesOf = (value: unknown): { stable: number; volatile: number } | n
     : null;
 };
 
-/** The UTC month a row belongs to, `YYYY-MM`: the name of its month file.
- * The decision, admin-activity and decider logs use the same layout. */
 export function monthKey(at: Date): string {
   return `${at.getUTCFullYear()}-${String(at.getUTCMonth() + 1).padStart(2, "0")}`;
 }
@@ -103,16 +77,10 @@ export function usageFileFor(dataDir: string, at: Date): string {
   return join(dataDir, DIR, `${monthKey(at)}.jsonl`);
 }
 
-/** Identifies one row: a thread runs one turn at a time, so a bot cannot
- * settle two turns on the same thread in the same millisecond. Lets the
- * spend cap tell a booked row it already counted from memory apart from the
- * same row read back from the file. */
 export function usageRowKey(row: Pick<UsageRow, "at" | "threadId" | "botId">): string {
   return `${row.at}|${row.threadId}|${row.botId}`;
 }
 
-/** Append one settled turn. Fire-and-forget (see the module comment): the
- * returned promise never rejects, and says whether the row reached disk. */
 export function appendUsage(dataDir: string, row: Omit<UsageRow, "at"> & { at?: string }): Promise<boolean> {
   const { promptBytes: rawPromptBytes, ...rest } = row;
   const promptBytes = promptBytesOf(rawPromptBytes);
@@ -125,7 +93,6 @@ export function appendUsage(dataDir: string, row: Omit<UsageRow, "at"> & { at?: 
     ...(promptBytes ? { promptBytes } : {}),
     costUsd: finiteOrNull(row.costUsd),
   };
-  // A cost is labelled with where it came from; an unpriced row carries no label.
   if (record.costUsd === null) delete record.costSource;
   else record.costSource = row.costSource === "estimated" ? "estimated" : "reported";
   const previous = writeQueues.get(dataDir) ?? Promise.resolve();
@@ -133,7 +100,6 @@ export function appendUsage(dataDir: string, row: Omit<UsageRow, "at"> & { at?: 
   const queued = attempt.then(
     () => undefined,
     () => {
-      /* bookkeeping must never take down the turn */
     },
   );
   writeQueues.set(dataDir, queued);
@@ -148,7 +114,6 @@ async function write(dataDir: string, record: UsageRow): Promise<void> {
   await appendFile(usageFileFor(dataDir, new Date(record.at)), JSON.stringify(record) + "\n", { mode: 0o600 });
 }
 
-/** Test/shutdown seam: wait until everything queued for this directory is on disk. */
 export async function flushUsageLedger(dataDir: string): Promise<void> {
   await writeQueues.get(dataDir);
 }
@@ -176,7 +141,6 @@ function monthsBetween(from: Date, to: Date): string[] {
   return keys;
 }
 
-/** Every row whose time falls inside the range, oldest first. */
 export function readUsage(dataDir: string, range: { from: Date; to: Date }): UsageRow[] {
   const rows: UsageRow[] = [];
   const from = range.from.getTime();
@@ -196,16 +160,12 @@ export function readUsage(dataDir: string, range: { from: Date; to: Date }): Usa
         const at = Date.parse(value.at);
         if (at >= from && at <= to) rows.push(value);
       } catch {
-        /* a line torn mid-write: skip the fragment, keep the rest */
       }
     }
   }
   return rows;
 }
 
-/** A date range from query strings: `YYYY-MM-DD` each, `to` inclusive to
- * the end of its day (UTC). Defaults to the current month to date. Null
- * for anything malformed, reversed, or longer than a year. */
 export function parseUsageRange(from: string | null | undefined, to: string | null | undefined, now = new Date()): { from: Date; to: Date } | null {
   const day = /^(\d{4})-(\d{2})-(\d{2})$/;
   const parse = (value: string, endOfDay: boolean): Date | null => {
@@ -222,8 +182,6 @@ export function parseUsageRange(from: string | null | undefined, to: string | nu
   return { from: start, to: end };
 }
 
-/** A stable key and a display label for who asked. Labels for the
- * non-person kinds are English fallbacks; the app localizes by key. */
 export function triggerKey(trigger: UsageTrigger): string {
   switch (trigger.kind) {
     case "user":
@@ -232,6 +190,8 @@ export function triggerKey(trigger: UsageTrigger): string {
       return "owner";
     case "routine":
       return `routine:${trigger.routineId ?? trigger.label ?? "unknown"}`;
+    case "helper":
+      return "helper";
     default:
       return "bot";
   }
@@ -245,6 +205,8 @@ export function triggerLabel(trigger: UsageTrigger): string {
       return "This computer";
     case "routine":
       return `Routine: ${trigger.label ?? trigger.routineId ?? "unknown"}`;
+    case "helper":
+      return "Helper model";
     default:
       return "Bot to bot";
   }
@@ -261,8 +223,6 @@ function groupOf(row: UsageRow, groupBy: UsageGroupBy): { key: string; label: st
     case "day":
       return { key: `day:${row.at.slice(0, 10)}`, label: row.at.slice(0, 10) };
     case "routine":
-      // Turns a routine started are grouped by routine; everything else
-      // (people, the owner, other bots) shares one "manual" bucket.
       return row.trigger.kind === "routine"
         ? { key: triggerKey(row.trigger), label: row.trigger.label ?? row.trigger.routineId ?? "unknown" }
         : { key: "manual", label: "Not from a routine" };
@@ -275,7 +235,6 @@ function emptyGroup(key: string, label: string): UsageGroup {
   return { key, label, turns: 0, input: 0, output: 0, cachedInput: 0, costUsd: null, estimatedUsd: null, unpriced: 0, billableUsd: null };
 }
 
-/** Where a row's cost came from, for rows old and new; null when it has none. */
 export function costSourceOf(row: Pick<UsageRow, "costUsd" | "costSource">): CostSource | null {
   if (finiteOrNull(row.costUsd) === null) return null;
   return row.costSource === "estimated" ? "estimated" : "reported";
@@ -296,7 +255,6 @@ function add(group: UsageGroup, row: UsageRow, prices: PriceList | null): void {
   if (billable !== null) group.billableUsd = (group.billableUsd ?? 0) + billable;
 }
 
-/** Totals per group, money first then volume; days stay chronological. */
 export function summarizeUsage(rows: UsageRow[], groupBy: UsageGroupBy, prices: PriceList | null = null): UsageSummary {
   const groups = new Map<string, UsageGroup>();
   const total = emptyGroup("total", "total");
@@ -325,13 +283,11 @@ export function summarizeUsage(rows: UsageRow[], groupBy: UsageGroupBy, prices: 
 export function csvCell(value: string | number | null): string {
   if (value === null) return "";
   const text = String(value);
-  // A leading formula character is neutralised so a spreadsheet never
-  // executes a bot name or an email address.
+  // A leading formula character is neutralised, so a spreadsheet never executes a bot name or an email.
   const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
   return /[",\n\r]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
 }
 
-/** One line per turn, spreadsheet-ready; a billable column when a price list is given. */
 export function usageCsv(rows: UsageRow[], prices: PriceList | null = null): string {
   const header = ["time", "bot", "model", "engine", "triggered_by", "input_tokens", "output_tokens", "cached_input_tokens", "cost_usd", "cost_source", ...(prices ? ["billable_usd"] : []), "thread"];
   const lines = [header.join(",")];

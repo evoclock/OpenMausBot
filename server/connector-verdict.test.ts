@@ -5,6 +5,7 @@ import {
   COMPOSIO_MULTI_EXECUTE_TOOL,
   connectorCallFromFrame,
   connectorRefusalText,
+  connectorScopeRefusalText,
   connectorUnrecognizedText,
   evaluateConnectorTools,
   serviceSlugFor,
@@ -26,7 +27,6 @@ describe("connectorCallFromFrame", () => {
     expect(connectorCallFromFrame({ jsonrpc: "2.0", id: 2, method: "tools/list" })).toEqual({ kind: "passthrough" });
     expect(connectorCallFromFrame(null)).toEqual({ kind: "passthrough" });
     expect(connectorCallFromFrame("notifications/initialized")).toEqual({ kind: "passthrough" });
-    // Discovery and connection meta-tools keep their existing flows.
     expect(connectorCallFromFrame(toolsCall("COMPOSIO_SEARCH_TOOLS", { query: "gmail" }))).toEqual({ kind: "passthrough" });
     expect(connectorCallFromFrame(toolsCall("COMPOSIO_GET_TOOL_SCHEMAS", { tools: ["GMAIL_SEND_EMAIL"] })))
       .toEqual({ kind: "passthrough" });
@@ -52,7 +52,6 @@ describe("connectorCallFromFrame", () => {
       tools: [{ tool_slug: "GMAIL_SEND_EMAIL", arguments: {} }],
       sync_response_to_workbench: false,
     }))).toEqual({ kind: "tools", invoked: COMPOSIO_MULTI_EXECUTE_TOOL, names: ["GMAIL_SEND_EMAIL"] });
-    // The legacy single-object form still names exactly one tool.
     expect(connectorCallFromFrame(multiExecute({ tool_slug: "GMAIL_SEND_EMAIL", arguments: {} })))
       .toEqual({ kind: "tools", invoked: COMPOSIO_MULTI_EXECUTE_TOOL, names: ["GMAIL_SEND_EMAIL"] });
   });
@@ -65,7 +64,6 @@ describe("connectorCallFromFrame", () => {
     expect(connectorCallFromFrame(multiExecute({ tools: [{ tool_slug: 42, arguments: {} }] })).kind).toBe("unrecognized");
     expect(connectorCallFromFrame(multiExecute("send the email")).kind).toBe("unrecognized");
     expect(connectorCallFromFrame(multiExecute(null)).kind).toBe("unrecognized");
-    // A direct name that is not a Composio tool name cannot be checked.
     expect(connectorCallFromFrame(toolsCall("gmail_send_email", {})).kind).toBe("unrecognized");
     expect(connectorCallFromFrame({ jsonrpc: "2.0", id: 3, method: "tools/call", params: {} }).kind)
       .toBe("unrecognized");
@@ -109,9 +107,7 @@ describe("evaluateConnectorTools", () => {
   });
 
   it("treats inherited object keys as no grant", () => {
-    // CONSTRUCTOR_X resolves to the "constructor" service; without the
-    // own-property check the prototype's constructor poses as a grant and
-    // grant.tools.includes throws a 500 into the relay.
+    // CONSTRUCTOR_X resolves to "constructor": without the own-property check the prototype's constructor poses as a grant and the relay 500s.
     const verdict = evaluateConnectorTools(["CONSTRUCTOR_X", "TOSTRING_Y"], {});
     expect(verdict.allowed).toBe(false);
     expect(verdict.denials).toEqual([
@@ -149,7 +145,6 @@ describe("evaluateConnectorTools", () => {
       allowed: true,
       rule: "connectorTools.bland_ai",
     });
-    // bland_ai claims BLAND_AI_* before bland's star grant can widen it.
     expect(evaluateConnectorTools(["BLAND_AI_SEND_SMS"], grants, ["bland", "bland_ai"]).denials).toEqual([
       { tool: "BLAND_AI_SEND_SMS", service: "bland_ai", onGrantedService: true },
     ]);
@@ -182,7 +177,6 @@ describe("refusal text", () => {
     const text = connectorRefusalText(verdict.denials);
     expect(text).toContain("SLACK_CREATE_CHANNEL");
     expect(text).toContain("Ask the person");
-    // Enumerating what the bot could have called teaches it to probe.
     expect(text).not.toContain("SLACK_POST_MESSAGE");
     expect(text).not.toContain("GMAIL");
   });
@@ -201,6 +195,17 @@ describe("refusal text", () => {
     const text = connectorUnrecognizedText(COMPOSIO_MULTI_EXECUTE_TOOL, "the tools list was empty");
     expect(text).toContain(COMPOSIO_MULTI_EXECUTE_TOOL);
     expect(text).toContain("the tools list was empty");
+    expect(text).toContain("tools: [{ tool_slug, arguments }]");
     expect(text).toContain("Ask the person");
+  });
+
+  it("tells a scoped bot its call was unreadable before it blames access", () => {
+    const unreadable = connectorCallFromFrame(toolsCall(COMPOSIO_MULTI_EXECUTE_TOOL, { tool_calls: [{ tool_slug: "GMAIL_FETCH_EMAILS" }] }));
+    const text = connectorScopeRefusalText(unreadable, "app", "Scout", "Composio", "Proxy execute");
+    expect(text).toContain("could not read");
+    expect(text).not.toContain("has not been given access");
+    const tools = connectorCallFromFrame(toolsCall("GMAIL_SEND_EMAIL", {}));
+    expect(connectorScopeRefusalText(tools, "app", "Scout", "Gmail", "Send email")).toContain("Scout has not been given access to Gmail");
+    expect(connectorScopeRefusalText(tools, "write", "Scout", "Gmail", "Send email")).toContain("Gmail is read-only for Scout, and Send email would write to it");
   });
 });

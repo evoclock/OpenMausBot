@@ -5,10 +5,8 @@ import { useStore } from "@/state/store";
 import { sharedComputersEnabled } from "@/lib/feature-flags";
 import { LendingActivityList } from "./LendingActivity";
 
-/** Grants are edited locally and confirmed by a native dialog, never by the hosted page. */
+/** Security: grants are edited locally and confirmed by a native dialog, never by the hosted page. */
 export function ComputerSharingSettings({ workspace, onClose }: { workspace: { id: string; name: string; origin: string }; onClose: () => void }) {
-  // `state` below is this grant's desktop status; appState is the workspace
-  // config, which says whether this server offers computer sharing at all.
   const { state: appState } = useStore();
   const offered = sharedComputersEnabled(appState.config);
   const bridge = offered ? window.ogb?.computerSharing : undefined;
@@ -30,8 +28,6 @@ export function ComputerSharingSettings({ workspace, onClose }: { workspace: { i
     panel.current?.scrollIntoView({ block: "start" });
     void bridge?.state(workspace.id).then(next => { if (mounted.current) apply(next); })
       .catch(() => { if (mounted.current) setError("Could not load computer access. Reopen this page to try again."); });
-    // Connection status and the activity log change independently of an
-    // unsaved permissions draft.
     const refresh = () => {
       void bridge?.state(workspace.id).then(next => { if (mounted.current) setState(next); }).catch(() => {});
       void bridge?.activity?.(workspace.id).then(next => { if (mounted.current) setActivity(next); }).catch(() => {});

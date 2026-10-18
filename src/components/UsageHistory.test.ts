@@ -74,6 +74,8 @@ describe("usage history helpers", () => {
     expect(usageGroupLabel("user", group("user:x@y.test", "x@y.test"))).toBe("x@y.test");
     expect(usageGroupLabel("user", group("owner", "This computer"))).toBe("This computer");
     expect(usageGroupLabel("user", group("routine:r9", "Routine: Weekly"))).toBe("Routine: Weekly");
+    // a trigger this build has no name for keeps the server's label (helper-model calls)
+    expect(usageGroupLabel("user", group("helper", "Helper model"))).toBe("Helper model");
     expect(usageGroupLabel("bot", group("bot:b1", "Scout"))).toBe("Scout");
     expect(usageExportHref({ from: "2026-09-01", to: "2026-09-30" })).toBe("/api/usage.csv?from=2026-09-01&to=2026-09-30");
   });

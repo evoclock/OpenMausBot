@@ -3,7 +3,7 @@
 Run the focused regression tests and the isolated HTTP workflow:
 
 ```sh
-pnpm exec vitest run server/peer-approval.test.ts server/delegations.test.ts server/peer-approval.e2e.test.ts
+pnpm exec vitest run server/peer-approval.test.ts server/runtime-coordinator.test.ts server/peer-approval.e2e.test.ts
 ```
 
 The HTTP test uses `launchVerificationServer` and `control-omb` with disposable
@@ -18,12 +18,13 @@ The checks cover:
 - User approval permits work; denial, expiry, and cancellation block it.
 - Deleted peers and interrupted threads cancel approvals without attributing
   a decision to the user; late answers cannot revive settled requests.
-- Routine `ask_bot` distinguishes an explicit denial from an unanswered card.
-- A routine delegation expires without dispatching its target. Its durable
-  receipt and HTTP readback preserve the approval outcome and decision source.
+- Every hand-off asks first (`coordinate_bots`, from a routine turn or a
+  chat): the refusal names
+  each teammate's outcome (`approvals[]`: denied by the user, or expired
+  without an answer) and its source, and writes no assignment on the job
+  runtime — nothing can dispatch it later (docs/runtime-contract.md §2, §9).
 - Ordinary chat's multi-target `coordinate_bots` preserves mixed denial/expiry
   results and sends no work when any required approval fails.
-- Receipt metadata survives reload, while old receipts remain readable.
 - A peer hidden and renamed while its approval is open is never dispatched;
   the failure receipt does not disclose its newly private name.
 

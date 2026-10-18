@@ -1,13 +1,6 @@
-// The one `openmausbot://pair` link builder. The desktop's phone setup, the
-// headless server's pairing endpoint and `openmausbot pair` all print this
-// link; the Android and iOS scanners read it (android/core Connection.kt
-// `PairingInvite.parse`, ios CompanionCore Client.swift `PairingInvite.parse`).
-//
-// Every value is written with encodeURIComponent, so a space is `%20`. The
-// desktop used URLSearchParams until Oct 2026, which writes a space as `+`;
-// neither phone read that back as a space, and "Miguel's computer" showed up
-// as "Miguel's+computer". The phones now also read `+` as a space, for links
-// from desktops still running the old builder.
+// The one `openmausbot://pair` link builder, read by the Android and iOS
+// scanners (`PairingInvite.parse`). Every value is written with
+// encodeURIComponent, so a space is `%20`.
 
 export type CompanionEndpointKind = "hosted" | "tailnet" | "lan" | "bonjour";
 
@@ -24,12 +17,10 @@ export interface PhonePairingLinkOptions {
   port?: number;
   /** The high-entropy one-time credential the scanner redeems. */
   token: string;
-  /** The six digits the desktop shows. Kept in the link so an older mobile
-   * build can still pair during a staggered rollout; servers have none. */
+  /** The six digits the desktop shows; servers have none. */
   code?: string;
   name?: string;
-  /** Every host the phone could dial later, best first. Older mobile builds
-   * walk this list; current ones read `endpoints`. */
+  /** Every host the phone could dial later, best first. */
   hosts?: string[];
   /** Complete base URLs, encoded apart from `address`/`hosts` so HTTPS and
    * port 443 stay unambiguous. */
@@ -45,10 +36,9 @@ export const MAX_PAIRING_HOSTS = 8;
 
 const ENDPOINT_KINDS = new Set<CompanionEndpointKind>(["hosted", "tailnet", "lan", "bonjour"]);
 
-/** Keep the QR contract strict even though its input came from our own
- * sidecar. A public URL with credentials or a path is not a companion base
- * URL, and filtering it is safer than teaching the phone to reinterpret it.
- * Sorted by priority, deduplicated by origin, capped. */
+/** Strict even for our own sidecar's input: a public URL with credentials or a
+ * path is not a companion base URL. Sorted by priority, deduplicated by origin,
+ * capped. */
 export function qrEndpoints(endpoints: CompanionEndpoint[] | undefined): CompanionEndpoint[] {
   const seen = new Set<string>();
   const valid: CompanionEndpoint[] = [];
@@ -88,8 +78,6 @@ export function qrEndpoints(endpoints: CompanionEndpoint[] | undefined): Compani
       seen.add(parsed.origin);
       valid.push({ url: parsed.origin, kind: endpoint.kind, priority: endpoint.priority });
     } catch {
-      // One malformed advisory route must not invalidate an otherwise usable
-      // pairing QR. It is simply omitted from the route walk.
     }
   }
 
@@ -165,9 +153,8 @@ export function phonePairingLink({
   const fields: Array<[string, string]> = [["address", dial], ["token", token]];
   if (code !== undefined) fields.push(["code", code]);
   if (name?.trim()) fields.push(["name", name.trim()]);
-  // Comma-joined, which no hostname or IP literal can contain. Filtered
-  // rather than refused: a bad candidate costs the phone one failed dial,
-  // and dropping the whole link over it would break pairing entirely.
+  // Comma-joined, which no hostname or IP literal can contain. A bad candidate
+  // is filtered, not fatal: it costs the phone one failed dial.
   const candidates = (hosts ?? [])
     .map((candidate) => candidate.trim())
     .filter((candidate) => candidate && !/[\s/?#,[\]]/.test(candidate))

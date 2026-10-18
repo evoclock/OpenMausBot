@@ -10,8 +10,7 @@ import {
 } from "./approval-summary";
 import type { OptionCardData } from "@/state/store";
 
-// The subtitle the computer writes for two held Linear comments
-// (server/index.ts, outbound hold): heading, then raw arguments.
+// The subtitle the computer writes for two held Linear comments: heading, then raw arguments.
 const linearSubtitle = [
   "Linear · Create linear comment",
   '{"issueId":"2f04bc73","body":"**In flight** — open PR"}… [arguments truncated]',
@@ -111,5 +110,13 @@ describe("composioActionPhrase", () => {
     expect(composioActionPhrase("Bash")).toBeUndefined();
     expect(composioActionPhrase("computer_batch")).toBeUndefined();
     expect(composioActionPhrase("LINEAR")).toBeUndefined();
+  });
+});
+
+describe("outboundSummary for code run on the app's side", () => {
+  it("says code runs on Composio instead of naming a send", () => {
+    const card = { subtitle: 'Composio · Proxy execute\n{"code_to_execute":"print(1)"}',
+      outboundRequest: { tool: "COMPOSIO_PROXY_EXECUTE", app: "Composio", calls: [{ app: "Composio", label: "Proxy execute" }] } };
+    expect(outboundSummary(card)).toEqual({ headline: "Run code on Composio?", summary: "", opaque: true });
   });
 });

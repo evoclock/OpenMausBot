@@ -63,7 +63,6 @@ describe("bot presets", () => {
     const withRole = vi.fn().mockResolvedValueOnce({ bot }).mockResolvedValueOnce({ bot: { ...roleProfilePatch(role) } });
     await createBotWithRole(role, withRole, { people: ["ada@example.test"] });
     expect(JSON.parse(withRole.mock.calls[0]![1].body)).toEqual({ name: role.name, title: role.title, description: role.description, visibility: { people: ["ada@example.test"] } });
-    // "everyone" is the default: nothing extra is sent
     const open = vi.fn().mockResolvedValue({ bot });
     await createBotWithRole(undefined, open, "everyone");
     expect(open).toHaveBeenCalledExactlyOnceWith("/api/bots", { method: "POST" });

@@ -10,7 +10,7 @@ describe("per-bot tool selection", () => {
   it("keeps legacy tools available when no selection exists", () => {
     expect(allowsTool(undefined, { kind: "native", name: "bash" })).toBe(true);
     expect(allowsTool(undefined, { kind: "mcp", server: "computer", name: "click" })).toBe(true);
-    expect(allowsTool({}, { kind: "mcp", server: "agents", name: "ask_bot" })).toBe(true);
+    expect(allowsTool({}, { kind: "mcp", server: "agents", name: "coordinate_bots" })).toBe(true);
   });
 
   it("gives a drafter only its selected native tools", () => {
@@ -84,11 +84,11 @@ describe("per-bot tool selection", () => {
     expect(canUseMcpServer({ allow: [] }, "agents")).toBe(false);
     expect(canUseMcpServer({ allow: ["native:read"] }, "agents")).toBe(false);
     expect(canUseMcpServer({ allow: ["mcp:fastmail:search_mail"] }, "agents")).toBe(false);
-    expect(canUseMcpServer({ allow: ["mcp:agents:ask_bot"], deny: ["mcp:agents:ask_bot"] }, "agents")).toBe(false);
-    expect(canUseMcpServer({ allow: ["mcp:agents:*"], deny: ["mcp:agents:ask_bot"] }, "agents")).toBe(true);
+    expect(canUseMcpServer({ allow: ["mcp:agents:coordinate_bots"], deny: ["mcp:agents:coordinate_bots"] }, "agents")).toBe(false);
+    expect(canUseMcpServer({ allow: ["mcp:agents:*"], deny: ["mcp:agents:coordinate_bots"] }, "agents")).toBe(true);
     expect(canUseMcpServer({ deny: ["mcp:agents:*"] }, "agents")).toBe(false);
-    expect(canUseMcpServer({ allow: ["mcp:agents:unknown"] }, "agents", ["ask_bot", "list_bots"])).toBe(false);
-    expect(canUseMcpServer({ allow: ["mcp:agents:ask_bot"] }, "agents", ["ask_bot", "list_bots"])).toBe(true);
+    expect(canUseMcpServer({ allow: ["mcp:agents:unknown"] }, "agents", ["coordinate_bots", "list_bots"])).toBe(false);
+    expect(canUseMcpServer({ allow: ["mcp:agents:coordinate_bots"] }, "agents", ["coordinate_bots", "list_bots"])).toBe(true);
     expect(canUseMcpServer(undefined, "agents", [])).toBe(false);
   });
 

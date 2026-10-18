@@ -11,10 +11,11 @@ OpenMausBot is designed around a local owner, explicit capabilities, and narrow 
 - The harness owns agent processes and listens on loopback.
 - The renderer receives configured-or-not credential state, not secret values.
 - Provider-specific credentials are injected only into the process that needs them.
-- Risky actions become approval cards rather than implicit permission.
+- Bots start at Full access, as in T3 Code: each engine runs in its own most permissive mode. Choose **Ask for approval** on a bot or thread to turn risky actions into approval cards. Real questions and missing credentials always come to you.
 - Local computer control is a separate opt-in and per-bot selection.
 - Paired phones use a default-deny API allowlist and per-device bearer tokens.
 - Cloud and VPS backends are validated before reuse.
+- Usage analytics are optional. In the desktop app, the switch in Settings turns them off, and a server's page its window shows starts with them off too (once that server runs the same version); in a browser, each server's page has its own switch. They send counts and fixed words, never keys, names, addresses or content; [Usage analytics](/docs/security/analytics) lists every event.
 
 ## Your responsibility
 

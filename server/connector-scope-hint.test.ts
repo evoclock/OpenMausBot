@@ -47,4 +47,62 @@ describe("connector scope hint (MOCA-273)", () => {
     const unreadable = encode("ACCESS_TOKEN_SCOPE_INSUFFICIENT but not JSON");
     expect(withScopeHint(unreadable, "application/json", ["GMAIL_CREATE_FILTER"])).toBe(unreadable);
   });
+
+  it("does not name an app it does not know", () => {
+    const hint = scopeHint([]);
+    expect(hint).toContain("The app refused this");
+    expect(hint).not.toContain("This app");
+  });
+});
+
+describe("connector scope hint only for failed calls (#2467)", () => {
+  const pitfall = '[GMAIL_FETCH_EMAILS] HTTP 403 "insufficient authentication scopes" persists until the connection is re-authorized with required Gmail scopes.';
+  const toolResult = (id: number, payload: unknown, isError = false) => ({
+    jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(payload) }], isError },
+  });
+  const search = toolResult(3, {
+    successful: true,
+    error: null,
+    data: {
+      results: [{ tool_slug: "GMAIL_FETCH_EMAILS", known_pitfalls: [pitfall] }],
+      toolkit_connection_statuses: [{ toolkit: "gmail", has_active_connection: true, status_message: "Connection is active and ready to use" }],
+    },
+  });
+
+  it("leaves a successful COMPOSIO_SEARCH_TOOLS answer that quotes the 403 as a pitfall untouched", () => {
+    const json = encode(search);
+    expect(withScopeHint(json, "application/json", [])).toBe(json);
+    const sse = encode(`event: message\ndata: ${JSON.stringify(search)}\n\n`);
+    expect(withScopeHint(sse, "text/event-stream", [])).toBe(sse);
+  });
+
+  it("leaves a batch untouched when every tool in it succeeded", () => {
+    const batch = encode(toolResult(4, {
+      successful: true,
+      data: { results: [{ tool_slug: "GMAIL_FETCH_EMAILS", response: { successful: true, data: { note: pitfall }, error: null } }] },
+    }));
+    expect(withScopeHint(batch, "application/json", ["GMAIL_FETCH_EMAILS"])).toBe(batch);
+  });
+
+  it("annotates a refusal nested in a batch and names the tool that failed", () => {
+    const batch = toolResult(5, {
+      successful: false,
+      data: {
+        results: [
+          { tool_slug: "GMAIL_CREATE_FILTER", response: { successful: true, data: { id: "f1" }, error: null } },
+          { tool_slug: "GMAIL_ADD_FORWARDING_ADDRESS", response: { successful: false, data: {}, error: "403 Forbidden: ACCESS_TOKEN_SCOPE_INSUFFICIENT" } },
+        ],
+      },
+    });
+    const out = JSON.parse(decode(withScopeHint(encode(batch), "application/json", ["GMAIL_CREATE_FILTER", "GMAIL_ADD_FORWARDING_ADDRESS"])));
+    expect(out.result.content).toHaveLength(2);
+    expect(out.result.content[1].text).toContain("gmail.settings.sharing");
+    expect(out.result.content[1].text).not.toContain("gmail.settings.basic");
+  });
+
+  it("annotates a failed call that reports its 403 in an error field", () => {
+    const failed = toolResult(6, { successful: false, data: { message: "Request had insufficient authentication scopes." }, error: "Forbidden" });
+    const out = JSON.parse(decode(withScopeHint(encode(failed), "application/json", ["GMAIL_CREATE_FILTER"])));
+    expect(out.result.content[1].text).toContain("gmail.settings.basic");
+  });
 });

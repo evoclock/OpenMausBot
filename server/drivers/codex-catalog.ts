@@ -1,8 +1,5 @@
-// Codex model catalog — official ChatGPT rows stay in the main picker;
-// everything the user already wired in ~/.codex (providers, profiles,
-// cached catalogs, live /v1/models) is tagged `custom` so ModelPicker
-// can hide it behind Custom. `codex app-server` thread/start takes
-// `model` + `modelProvider` separately; picker ids encode both.
+// Codex model catalog: official ChatGPT rows stay in the main picker; everything wired in ~/.codex is
+// tagged `custom`. `codex app-server` thread/start takes `model` and `modelProvider` separately.
 import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -30,8 +27,7 @@ export const STATIC_CODEX_MODELS: ModelCatalog = {
   ],
 };
 
-/** Built-in ChatGPT / OpenAI provider id. Official picker rows force this
- *  so a user's local `model_provider = "omlx"` does not swallow GPT-5.6. */
+/** Official rows force this provider, so a local `model_provider = "omlx"` cannot swallow GPT-5.6. */
 export const OFFICIAL_CODEX_PROVIDER = "openai";
 
 const SEP = "::";
@@ -51,9 +47,7 @@ export function decodeCodexSelection(id: string | null | undefined): {
   if (sep > 0) {
     return { model: id.slice(sep + SEP.length), modelProvider: id.slice(0, sep) };
   }
-  // Every official app-server picker row has a bare id. Custom providers are
-  // always provider-qualified above, so a newly released cloud model must not
-  // silently fall through to the user's configured local provider.
+  // A bare id is official: a new cloud model must not fall through to the user's local provider.
   return { model: id, modelProvider: MODEL_ID.test(id) ? OFFICIAL_CODEX_PROVIDER : null };
 }
 
@@ -64,10 +58,7 @@ interface CodexAppServerModel {
   isDefault?: unknown;
 }
 
-/** Ask the installed Codex CLI for the ChatGPT model catalog it can actually
- * use. This is the authoritative subscription catalog and changes more often
- * than OpenMausBot releases, so consume every page instead of hard-coding the
- * current set forever. */
+/** The installed Codex CLI's own ChatGPT catalog, every page: it changes more often than our releases. */
 export function readCodexAppServerModelCatalog(
   cli: string,
   env: Record<string, string | undefined>,
@@ -357,15 +348,13 @@ async function probeProviderModels(
   }
 }
 
-/** Local slugs Codex already knows, plus the three official cloud rows. */
 export async function readCodexModelCatalog(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
   cli?: string,
 ): Promise<ModelCatalog> {
   const official = (cli ? await readCodexAppServerModelCatalog(cli, env) : null) ?? STATIC_CODEX_MODELS;
-  // Match the identity boundary: an explicitly relative CODEX_HOME or user
-  // home must not load a catalog from a different directory.
+  // A relative CODEX_HOME or user home must not load a catalog from another directory.
   const home = codexHome(env);
   if (!home) return mergeLocalInject(official, env, fetchImpl);
   const mainText = readText(join(home, "config.toml"));
@@ -379,9 +368,7 @@ export async function readCodexModelCatalog(
   const remember = (provider: string | undefined, model: string | undefined) => {
     if (!provider || !model) return;
     if (!PROVIDER_ID.test(provider) || !MODEL_ID.test(model)) return;
-    // A local provider may expose the same slug as an official OpenAI model.
-    // Keep that provider-qualified row; otherwise selecting the configured
-    // default would decode the bare slug back to the OpenAI provider.
+    // A local provider may serve an official slug: keep its row provider-qualified.
     if (
       provider === OFFICIAL_CODEX_PROVIDER &&
       official.options.some((option) => option.id === model)

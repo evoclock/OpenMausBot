@@ -1,11 +1,8 @@
 #!/usr/bin/env node
-// Reads the skin blocks out of src/styles.css and measures every text/surface
-// pair the components actually produce. Run it after touching a palette:
+// Measures every text/surface pair of the skins in src/styles.css, parsed from
+// the CSS itself. Run it after touching a palette:
 //
 //   pnpm check:contrast
-//
-// It parses the CSS rather than taking a second copy of the values, so the
-// check can never pass against a palette that is no longer the shipped one.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -21,12 +18,8 @@ function declarations(body) {
   return tokens;
 }
 
-/** The tokens every skin starts from: the `@theme` defaults plus the bare
- * `:root` block. A skin that does not redefine one of these still SHIPS it,
- * so the check has to measure it — otherwise a token upstream adds is
- * inherited untested by every skin, and the run stays green while a light
- * skin wears a dark skin's focus ring. That is exactly what happened when
- * upstream introduced --color-focus. */
+/** The `@theme` defaults plus the bare `:root` block: a skin that does not
+ * redefine one of these still ships it, so it is measured. */
 function parseBase(source) {
   const base = {};
   for (const [, body] of source.matchAll(/(?:@theme|:root)\s*\{([^}]*)\}/g)) {
@@ -87,17 +80,12 @@ function contrast(fgHex, bgHex) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-// Pairs taken from what the components render, not from what looks plausible:
-// body copy sits on all five surfaces, the filled accent/danger buttons carry
-// their own ink token, and the status colours are used as text on cards.
+// Pairs taken from what the components render.
 const SURFACES = ["--color-app", "--color-panel", "--color-raised", "--color-raised-hover", "--color-card", "--color-inset", "--color-composer", "--color-menu"];
 const PAIRS = [
   ...SURFACES.map((s) => ["--color-ink", s, 4.5]),
   ...SURFACES.map((s) => ["--color-ink-secondary", s, 4.5]),
-  // Quiet text (timestamps, hints, placeholders) has its own token rather
-  // than an opacity on the secondary ink: `text-ink-secondary/70` measured
-  // 2.6:1 on Linen and was never checked here. It is body-size text, so it
-  // is held to the same 4.5:1 on the same surfaces.
+  // Quiet text is body-size, so it is held to the same 4.5:1.
   ...SURFACES.map((s) => ["--color-ink-tertiary", s, 4.5]),
   ["--color-bubble-user-ink", "--color-bubble-user", 4.5],
   ["--color-accent-ink", "--color-accent", 4.5],
@@ -113,29 +101,19 @@ const PAIRS = [
   ["--color-hairline", "--color-app", 1.5],
   ["--color-accent", "--color-app", 3],
   ["--color-scrollbar", "--color-app", 1.5],
-  // The focus ring sits outside the control (outline-offset: 2px), so it
-  // lands on whatever surface is behind it — a skin that inherits another
-  // skin's ring keeps a colour that was never checked against its ground.
-  // WCAG 1.4.11 asks 3:1 of a non-text indicator.
+  // The focus ring sits outside the control (outline-offset: 2px), on whatever
+  // surface is behind it. WCAG 1.4.11 asks 3:1 of a non-text indicator.
   ["--color-focus", "--color-app", 3],
   ["--color-focus", "--color-panel", 3],
   ["--color-focus", "--color-card", 3],
-  // A focused text field paints its own border in the ring colour (the
-  // browser outline is off for fields), so the ring also has to clear the
-  // fills the fields themselves use.
+  // A focused text field paints its border in the ring colour, so the ring
+  // must also clear the field fills.
   ["--color-focus", "--color-inset", 3],
   ["--color-focus", "--color-raised", 3],
   ["--color-focus", "--color-control", 3],
-  // Surface against surface. Text contrast alone will not catch a skin that
-  // gives two surfaces the same value: Atelier and Lagoon both defined
-  // `raised` as the pure white they use for a card, so every chip, hover fill
-  // and answered row painted in `raised` on a card was invisible while this
-  // file stayed green. A surface is not text — it only has to be seen at all —
-  // so the bar is a just-perceptible step rather than a WCAG ratio.
-  //
-  // `control` is measured against every surface it can land on, which is the
-  // whole list: a tone chosen to clear the card and the panel drifted into
-  // `inset` instead, and the badges inside an inset row went invisible again.
+  // Surface against surface: two surfaces with one value hide everything painted
+  // on one over the other. A surface only has to be seen, so the bar is a
+  // just-perceptible step, not a WCAG ratio. `control` can land on any surface.
   ["--color-control", "--color-card", 1.06],
   ["--color-control", "--color-panel", 1.06],
   ["--color-control", "--color-app", 1.04],
@@ -163,8 +141,7 @@ for (const [id, tokens] of skins) {
   const unmeasurable = [];
   let measured = 0;
   for (const [fg, bg, min] of PAIRS) {
-    // A pair we cannot measure is reported, never silently skipped: an
-    // unmeasured pair used to be counted as a passing one.
+    // A pair we cannot measure is reported, never skipped.
     if (!tokens[fg] || !tokens[bg]) {
       missing.push(!tokens[fg] ? fg : bg);
       continue;

@@ -16,7 +16,6 @@ vi.mock("@trycua/cua-driver/embedded", () => ({
     uniffiDestroy = vi.fn();
   },
 }));
-// Neither macOS permission imports nor ad-hoc daemon launches belong on Windows.
 vi.mock("@trycua/cua-driver/electron", () => { throw new Error("macOS permissions loaded on Windows"); });
 vi.mock("node:child_process", () => ({ execFile: vi.fn(() => { throw new Error("unowned launch"); }) }));
 vi.mock("node:net", () => ({ default: { createConnection: vi.fn(() => { throw new Error("foreign pipe probed"); }) } }));

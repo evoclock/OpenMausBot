@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { OUTBOUND_DEFAULT_CAP, connectorCallsIn, isOutboundTool, normalizeOutboundPolicy, outboundCallsIn } from "./outbound.ts";
+import { OUTBOUND_DEFAULT_CAP, connectorCallsIn, isOutboundTool, isReadOnlyTool, normalizeOutboundPolicy, outboundCallsIn } from "./outbound.ts";
 
 describe("isOutboundTool", () => {
   it("flags tools that send, reply, post, publish, invite, share, or move money", () => {
@@ -49,6 +49,25 @@ describe("isOutboundTool", () => {
     ]) {
       expect(isOutboundTool(name), name).toBe(false);
     }
+  });
+});
+
+describe("isReadOnlyTool", () => {
+  it("recognizes exact MCP reads without treating other non-outbound actions as reads", () => {
+    for (const name of [
+      "mcp__linear__list_issues",
+      "mcp__linear__list_comments",
+      "mcp__linear__get_issue",
+      "GMAIL_SEARCH_MESSAGES",
+    ]) expect(isReadOnlyTool(name), name).toBe(true);
+
+    for (const name of [
+      "mcp__linear__save_issue",
+      "mcp__linear__delete_issue",
+      "mcp__linear__create_comment",
+      "mcp__computer__click",
+      "Bash",
+    ]) expect(isReadOnlyTool(name), name).toBe(false);
   });
 });
 

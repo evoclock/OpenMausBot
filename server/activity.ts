@@ -1,16 +1,6 @@
-// A bot's activity log: what it did, in plain words, with the outcome.
-//
-// Nothing here is captured for the log's sake. Two records already on disk
-// between them know everything a receipt needs: the per-thread runtime
-// events (harness/bus.ts) say what ran and whether it finished, and the
-// fleet-wide decision log (decision-log.ts) says what was asked, with which
-// arguments, and who allowed it. This module reads both back and folds
-// them into one row per thing that happened.
-//
-// Connector calls pass through the harness relay, whose approval and scope
-// decisions share the decision log. Read those alongside native tool runs.
 import { join } from "node:path";
 
+import { bridgedCallName } from "./agents-bridge-names.ts";
 import { readDecisions, type DecisionKind, type DecisionRow } from "./decision-log.ts";
 import { isRuntimeEvent, readRecentLines } from "./thread-events.ts";
 
@@ -27,6 +17,7 @@ const TOOLKIT_NAMES: Record<string, string> = {
   GOOGLEDRIVE: "Google Drive",
   GOOGLEDOCS: "Google Docs",
   HUBSPOT: "HubSpot",
+  HIGHLEVEL: "HighLevel",
   LINKEDIN: "LinkedIn",
   YOUTUBE: "YouTube",
   TWITTER: "X",
@@ -34,7 +25,6 @@ const TOOLKIT_NAMES: Record<string, string> = {
   ONEDRIVE: "OneDrive",
 };
 
-/** The agent's own built-in tools, phrased as what they did. */
 const BUILTIN_LABELS: Record<string, string> = {
   Bash: "Ran a command",
   Read: "Read a file",
@@ -53,8 +43,6 @@ const BUILTIN_LABELS: Record<string, string> = {
   TodoWrite: "Updated its task list",
 };
 
-/** "save_issue" → "Save issue", "TaskUpdate" → "Task update",
- * "CREATE_AN_ISSUE" → "Create an issue". */
 function humanize(raw: string): string {
   const spaced = raw
     .replace(/_+/g, " ")
@@ -72,7 +60,6 @@ function toolkitName(slug: string): string {
 /** Composio names its tools TOOLKIT_ACTION_WORDS, all upper case. */
 const COMPOSIO_TOOL = /^([A-Z][A-Z0-9]+)_([A-Z0-9_]+)$/;
 
-/** Turn a raw tool name into the app it touched and the action, in words. */
 export function describeTool(name: string): { app: string | null; label: string } {
   const builtin = BUILTIN_LABELS[name];
   if (builtin) return { app: null, label: builtin };
@@ -83,6 +70,7 @@ export function describeTool(name: string): { app: string | null; label: string 
     if (server === "composio") return describeTool(action);
     if (server === "computer") return { app: "Computer", label: humanize(action) };
     if (server === "agents") return { app: "Team", label: humanize(action) };
+    if (server === "highlevel") return { app: "HighLevel", label: humanize(action.replace(/^HIGHLEVEL_/, "")) };
     if (server.startsWith("claude_ai_")) {
       return { app: server.slice("claude_ai_".length).replace(/_/g, " "), label: humanize(action) };
     }
@@ -95,16 +83,9 @@ export function describeTool(name: string): { app: string | null; label: string 
   return { app: null, label: humanize(name) };
 }
 
-/** How many decision rows to read back before filtering to one bot. The
- * file is rotation-capped, so this is a ceiling on parse work, not a
- * window that quietly drops history. */
 const DECISION_SCAN = 20_000;
-/** Runtime events read per thread, newest first; the reader tail-walks. */
 const EVENTS_PER_THREAD = 2_000;
-/** An approval is folded into the tool run it unblocked when the run
- * started inside this window around the decision. A verdict is written
- * as the request opens; the run follows it, occasionally by a clock skew's
- * worth in the other direction. */
+/** A verdict is written as the request opens and the run follows, occasionally a clock skew's worth earlier. */
 const MATCH_BEFORE_MS = 5_000;
 const MATCH_AFTER_MS = 30_000;
 
@@ -114,6 +95,8 @@ const OUTCOME_OF_DECISION: Record<DecisionKind, ActivityOutcome> = {
   "user-approved": "allowed",
   "review-would-approve": "allowed",
   "user-denied": "denied",
+  // A person reverted a change that had applied on its own.
+  "user-undone": "denied",
   "review-would-deny": "denied",
   "card-shown": "waiting",
 };
@@ -123,8 +106,7 @@ function describeRow(base: Omit<ActivityRow, "app" | "label">): ActivityRow {
   return { ...base, app, label };
 }
 
-/** One row per request: the decision log writes a row when a card is shown
- * and another when it is answered, and the receipt wants the answer. */
+/** The decision log writes a row when a card is shown and another when it is answered; the receipt wants the answer. */
 function foldDecisions(rows: DecisionRow[]): ActivityRow[] {
   const byRequest = new Map<string, DecisionRow[]>();
   rows.forEach((row, index) => {
@@ -164,7 +146,8 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
           at: event.createdAt,
           threadId,
           ...(event.turnId ? { turnId: event.turnId } : {}),
-          tool: event.title ?? "unknown",
+          // A bridged call reads as the tool it ran, only where the title itself names the agents server.
+          tool: bridgedCallName(event.title ?? "unknown", event.input, { serverNamed: true }),
           outcome: "running",
         }),
       );
@@ -176,9 +159,6 @@ function readToolRuns(eventsDir: string, threadId: string): ActivityRow[] {
   return [...runs.values()];
 }
 
-/** The bot's activity, newest first: every tool run in the threads named,
- * and every decision the broker logged for the bot, with an approval folded
- * into the run it unblocked wherever the two can be matched. */
 export function readBotActivity(input: {
   dataDir: string;
   eventsDir: string;

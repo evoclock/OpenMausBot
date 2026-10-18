@@ -1,8 +1,3 @@
-// A member's failed turn in a room is the same stored row a 1:1 failure is
-// (server/index.ts runtime.error → "error: …" with setup/claudeUpdate; a room
-// copy only adds `from`). These pin that the room reads it the same way: one
-// sentence and the one next action, never the engine's raw words in a
-// truncated tool pill.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -56,7 +51,6 @@ describe("a member's failed turn in a room", () => {
     expect(markup).toContain("Sign in to Claude");
     expect(markup).not.toContain('data-testid="tool-activity"');
     expect(markup).not.toContain("truncate font-mono");
-    // the engine's own words stay one click away, never as the headline
     const details = markup.indexOf("<details");
     expect(details).toBeGreaterThan(-1);
     expect(markup.indexOf("Not logged in")).toBeGreaterThan(details);

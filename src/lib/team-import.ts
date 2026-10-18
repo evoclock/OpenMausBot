@@ -17,27 +17,18 @@ export interface PendingTeamImport {
   conversations?: number;
   archivedBots?: number;
   warnings?: string[];
-  /** Package version (packages only). v2 adds everything below. */
   version?: number;
-  /** The team the import creates (numbered if the name is taken). */
   teamName?: string;
-  /** The team's shared instructions. */
   brief?: string;
-  /** Per member, a data URL for the bot's picture, or null. */
   pictures?: Array<string | null>;
-  /** Skills offered by the package but not added to any bot. */
   offeredSkills?: string[];
-  /** Connection slots: address and the number of values to fill in. */
   connections?: Array<{ label: string; url: string; values: number }>;
-  /** Starter note files across all bots. */
   notes?: number;
-  /** Preset bot names; they appear in New bot. */
   presets?: string[];
-  /** Skills and presets, no team (a library package). */
   library?: boolean;
 }
 
-/** Small client-side preview only; the server remains the trust boundary. */
+/** Client-side preview only; the server remains the trust boundary. */
 export function teamImportPreview(manifest: unknown): PendingTeamImport {
   if (typeof manifest === "string") manifest = markdownPackage(manifest);
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
@@ -109,8 +100,6 @@ function markdownPackage(markdown: string): unknown {
   return { format: "openmaus.package", version: 1, package: pkg };
 }
 
-/** A v2 file is read with the same parser the server imports with, so the
- * preview already names any problem in the file's own words. */
 function sharedTeamPreview(document: PackageDocument, manifest: unknown): PendingTeamImport {
   const pkg = document.package;
   if (!pkg.agents.length) return libraryPreview(document, manifest);
@@ -143,8 +132,6 @@ function sharedTeamPreview(document: PackageDocument, manifest: unknown): Pendin
   };
 }
 
-/** Skills and preset bots, no team: the presets go to New bot. A file with
- * skills only has nothing to add here (the server says the same). */
 function libraryPreview(document: PackageDocument, manifest: unknown): PendingTeamImport {
   const pkg = document.package;
   if (!pkg.presets?.length) throw new Error("This file has no bots or preset bots to add. Its skills can be added from your organization's shelf.");
@@ -161,7 +148,6 @@ function libraryPreview(document: PackageDocument, manifest: unknown): PendingTe
     routines: 0,
     apps: [],
     skills: [],
-    // A preset brings its own skills; the rest are only offered.
     offeredSkills: (pkg.skills?.entries ?? []).filter((skill) => !pkg.presets!.some((preset) => preset.skills?.includes(skill.name))).map((skill) => skill.name),
     presets: pkg.presets.map((preset) => preset.name),
   };

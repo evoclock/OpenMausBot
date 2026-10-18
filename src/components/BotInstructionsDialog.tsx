@@ -5,6 +5,7 @@ import { BookOpen, X } from "lucide-react";
 import { BotAvatar } from "./Avatar";
 import { normalizeState } from "@/lib/mascot";
 import type { Bot } from "@/state/store";
+import { t } from "@/lib/i18n";
 
 export function BotInstructionsDialog({ bot, onClose, inline = false }: { bot: Bot; onClose: () => void; inline?: boolean }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -76,7 +77,7 @@ export function BotInstructionsDialog({ bot, onClose, inline = false }: { bot: B
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-accent-text">
                 <BookOpen size={15} />
-                <span className="text-[11px] font-semibold uppercase tracking-[0.08em]">Bot instructions</span>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.08em]">{t("botIdentity.dialog.title")}</span>
               </div>
               <h2 id="bot-instructions-title" className="mt-0.5 truncate text-[20px] font-semibold tracking-[-0.01em] text-ink">
                 {bot.name}
@@ -87,7 +88,7 @@ export function BotInstructionsDialog({ bot, onClose, inline = false }: { bot: B
           <button
             type="button"
             onClick={close}
-            aria-label="Close bot instructions"
+            aria-label={t("botIdentity.dialog.close")}
             className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <X size={19} />
@@ -102,16 +103,16 @@ export function BotInstructionsDialog({ bot, onClose, inline = false }: { bot: B
           ) : (
             <div className="rounded-xl border border-dashed border-hairline bg-inset px-5 py-12 text-center">
               <BookOpen size={22} className="mx-auto text-ink-tertiary" />
-              <p className="mt-3 text-[13px] font-medium text-ink">No instructions yet</p>
-              <p className="mt-1 text-[12px] text-ink-secondary">Add them from this bot’s profile.</p>
+              <p className="mt-3 text-[13px] font-medium text-ink">{t("botIdentity.dialog.empty")}</p>
+              <p className="mt-1 text-[12px] text-ink-secondary">{t("botIdentity.dialog.emptyHelp")}</p>
             </div>
           )}
         </div>
 
         <footer className="flex items-center justify-between gap-4 border-t border-hairline/40 px-6 py-4 text-[11.5px] text-ink-secondary sm:px-8">
-          <span>Included in this bot’s context on every turn.</span>
+          <span>{t("botIdentity.dialog.contextHelp")}</span>
           <button type="button" onClick={close} className="rounded-lg bg-control px-3.5 py-2 text-[13px] font-medium text-ink hover:bg-raised-hover">
-            Done
+            {t("common.done")}
           </button>
         </footer>
       </div>

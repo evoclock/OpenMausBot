@@ -1,28 +1,19 @@
-// Whether Windows will let a phone on this Wi-Fi reach the sidecar at all.
-//
 // Windows Defender Firewall drops inbound connections on a network Windows
-// calls Public unless a rule allows the program there, and Windows 11 calls a
-// newly joined Wi-Fi Public. The per-user installer adds no rule, and the
-// "allow access" prompt Windows shows when the sidecar first listens is easy
-// to dismiss or to answer for Private networks only. Then every address a
-// phone tries on a Public network times out, however right the address in the
-// QR is. Changing the rule needs an administrator; this file only finds the
-// Public network, so the Wi-Fi pairing panel can say what to change.
+// calls Public (Windows 11 calls a newly joined Wi-Fi Public) unless a rule
+// allows the program, and the per-user installer adds none. This only finds
+// the Public network, so the pairing panel can say what to change.
 import { execFile } from "node:child_process";
 
-/** One line per connected network: "<InterfaceAlias>\t<NetworkCategory>".
- * The alias is the adapter name `os.networkInterfaces()` reports ("Wi-Fi",
- * "Ethernet 2"); the category is Public, Private or DomainAuthenticated.
- * Output is UTF-8 so a localized alias survives the pipe. No quote
- * characters: the script travels as one argv entry, and Windows' quoting
- * rules then have nothing inside it to escape. */
+/** One line per connected network: "<InterfaceAlias>\t<NetworkCategory>". The
+ * alias is the adapter name `os.networkInterfaces()` reports. UTF-8 output so a
+ * localized alias survives the pipe; no quote characters, since the script
+ * travels as one argv entry. */
 const SCRIPT =
   "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " +
   "Get-NetConnectionProfile | ForEach-Object { $_.InterfaceAlias + [char]9 + $_.NetworkCategory }";
 
-/** The adapters Windows has on a Public network, from the lines `SCRIPT`
- * prints. Anything unreadable is simply not Public: this only ever adds a
- * hint, so a wrong "no" costs nothing and a wrong "yes" would mislead. */
+/** Anything unreadable is not Public: this only adds a hint, so a wrong "no"
+ * costs nothing and a wrong "yes" would mislead. */
 export function publicNetworkAliases(output: string): Set<string> {
   const aliases = new Set<string>();
   for (const line of output.split(/\r?\n/)) {
@@ -46,11 +37,8 @@ const getNetConnectionProfile = (): Promise<string> =>
  * who switches the network to Private sees the hint go within this long. */
 const MAX_AGE_MS = 15_000;
 
-/** A read that never waits: it returns the last answer and, when that is
- * stale, asks Windows again in the background. Asking is a PowerShell
- * process, so a state request must not block on it; the pairing panel polls
- * every second and picks the answer up on its next read. Off Windows it never
- * asks and the set stays empty. */
+/** Never waits: returns the last answer and, when stale, asks Windows again in
+ * the background (a PowerShell process). Off Windows the set stays empty. */
 export function createPublicNetworkCheck({
   platform = process.platform,
   run = getNetConnectionProfile,
@@ -81,5 +69,4 @@ export function createPublicNetworkCheck({
   };
 }
 
-/** The sidecar's one check, read by `companionState`. */
 export const publicNetworks = createPublicNetworkCheck();

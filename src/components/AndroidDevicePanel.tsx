@@ -2,27 +2,47 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Circle, Loader2, RotateCcw, ShieldCheck, Smartphone, Usb } from "lucide-react";
 import { usePageVisible } from "@/lib/page-visible";
 import { t } from "@/lib/i18n";
+import { Select } from "./Select";
 import type { AndroidDeviceInput, AndroidDeviceStatus, AndroidUsbDevice } from "@/types/ogb";
 
 type UnitPoint = { x: number; y: number };
 
 const EMPTY_STATUS: AndroidDeviceStatus = { available: false, devices: [] };
 
-export function useAndroidUsbDevices() {
+export type AndroidUsbDevicesStatus = AndroidDeviceStatus & {
+  /** A check has finished, successfully or not; read `reasonCode` before trusting an empty list. */
+  scanned: boolean;
+};
+
+export function useAndroidUsbDevices(): AndroidUsbDevicesStatus {
   const bridge = window.ogb?.androidDevice;
   const [status, setStatus] = useState<AndroidDeviceStatus>(EMPTY_STATUS);
+  const [scanned, setScanned] = useState(false);
   const pageVisible = usePageVisible();
 
   useEffect(() => {
-    // every tick is an adb subprocess — nothing to learn while hidden
-    if (!bridge || !pageVisible) return;
+    if (!bridge) {
+      setScanned(true);
+      return;
+    }
+    // Every tick is an adb subprocess, so nothing runs while hidden.
+    if (!pageVisible) return;
     let alive = true;
+    // Overlapping adb checks can answer out of order; an older answer is dropped.
+    let issued = 0;
+    let answered = 0;
     const refresh = async () => {
+      const check = ++issued;
+      const superseded = () => check < answered;
       try {
         const next = await bridge.status();
-        if (alive) setStatus(next);
+        if (alive && !superseded()) {
+          answered = check;
+          setStatus(next);
+        }
       } catch (cause) {
-        if (alive) {
+        if (alive && !superseded()) {
+          answered = check;
           setStatus({
             available: false,
             devices: [],
@@ -30,6 +50,8 @@ export function useAndroidUsbDevices() {
             message: cause instanceof Error ? cause.message : String(cause),
           });
         }
+      } finally {
+        if (alive && !superseded()) setScanned(true);
       }
     };
     void refresh();
@@ -40,7 +62,7 @@ export function useAndroidUsbDevices() {
     };
   }, [bridge, pageVisible]);
 
-  return status;
+  return { ...status, scanned };
 }
 
 function deviceLabel(device: AndroidUsbDevice) {
@@ -74,7 +96,6 @@ export function AndroidDevicePanel({ status }: { status: AndroidDeviceStatus }) 
   }, [selected, status.devices]);
 
   useEffect(() => {
-    // an adb screencap subprocess per tick — pause the mirror while hidden
     if (!bridge || !selectedSerial || selectedState !== "device" || !pageVisible) {
       if (!pageVisible) return;
       setFrame(null);
@@ -211,17 +232,17 @@ export function AndroidDevicePanel({ status }: { status: AndroidDeviceStatus }) 
           </span>
         </div>
         {status.devices.length > 1 && (
-          <select
+          <Select
             value={selected.serial}
             onChange={(event) => setSerial(event.target.value)}
-            className="mt-3 w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[12px] text-ink"
+            className="mt-3 w-full"
           >
             {status.devices.map((device) => (
               <option key={device.serial} value={device.serial}>
                 {deviceLabel(device)} · {device.state}
               </option>
             ))}
-          </select>
+          </Select>
         )}
       </div>
 

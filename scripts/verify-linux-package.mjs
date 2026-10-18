@@ -53,12 +53,9 @@ function requireExecutable(file) {
   }
 }
 
-// electron-updater picks its installer from resources/package-type: present
-// and reading "deb" routes to DebUpdater, absent falls back to AppImageUpdater.
-// electron/updater.mjs reads the same marker to decide whether the update is
-// applied in place or handed to the system package manager. If packaging ever
-// puts the marker in both artifacts (or neither), that routing silently
-// inverts, so pin it here where both trees are already extracted.
+// electron-updater picks its installer from resources/package-type ("deb" →
+// DebUpdater, absent → AppImageUpdater), and the app's updater reads the same
+// marker; a marker in both artifacts (or neither) silently inverts the routing.
 function requirePackageType(resources, label, expected) {
   const marker = path.join(resources, "package-type");
   const found = statSync(marker, { throwIfNoEntry: false })?.isFile()
@@ -405,7 +402,7 @@ const resources = path.join(unpacked, "resources");
 requireExecutable(appImage);
 requireExecutable(executable);
 requireDirectoryMode(unpacked, 0o755);
-for (const relative of ["app.asar", "ui/index.html", "server/index.js"]) {
+for (const relative of ["app.asar", "ui/index.html", "server/index.js", "server/desktop-entry.mjs"]) {
   requireFile(path.join(resources, relative));
 }
 for (const forbidden of ["speech-helper", "cua-driver", "cua-sdk"]) {

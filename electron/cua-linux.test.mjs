@@ -89,8 +89,7 @@ afterEach(() => {
   }
 });
 
-// Windows does not expose the POSIX executable and ownership semantics used by
-// discovery. Canonical temp paths make the same contract useful on macOS.
+// Windows lacks the POSIX executable and ownership semantics discovery uses.
 describe.skipIf(process.platform === "win32")("Linux CUA discovery", () => {
   it("rejects an invalid explicit override without falling through", () => {
     const root = temporaryDirectory();

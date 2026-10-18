@@ -2,6 +2,7 @@
 // (server/tunnel.ts). Keep in step with the implementation.
 export declare const MANAGED_COMPANION_ENDPOINT_FIELD: string;
 export declare const MANAGED_COMPANION_TOKEN_FIELD: string;
+export declare const MANAGED_COMPANION_RELEASE_AT_FIELD: string;
 
 export interface ManagedTunnelAccess {
   endpoint: string;

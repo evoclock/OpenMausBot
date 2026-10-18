@@ -78,7 +78,6 @@ describe("configuredModelInstances", () => {
 
     expect(configuredModelInstances([missing, ready, empty], "missing")).toEqual([missing, ready]);
     expect(configuredModelInstances([missing, ready, empty], "empty")).toEqual([ready, empty]);
-    // An empty selection (a bot sent to setup) keeps nothing extra.
     expect(configuredModelInstances([missing, ready, empty], "")).toEqual([ready]);
   });
 
@@ -121,9 +120,6 @@ describe("configuredModelInstances", () => {
   });
 });
 
-// The Discord report: a person could no longer pick Claude at all. Claude
-// vanished from every picker when `claude auth status` did not answer
-// loggedIn:true in time, or when `claude --version` failed.
 describe("Claude in the picker when Claude Code is signed out or not found", () => {
   const official = [{ id: "claude-opus-5-5", label: "Opus 5.5" }, { id: "claude-sonnet-5", label: "Sonnet 5" }];
   const ollama = { id: "ollama:qwen3", label: "qwen3", custom: true, provider: "Ollama" };

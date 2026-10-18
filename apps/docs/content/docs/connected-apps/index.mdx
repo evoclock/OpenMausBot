@@ -20,11 +20,15 @@ The signed desktop app registers its own installation with OpenMausBot's managed
 
 The installation identity is stored using Electron's operating-system-backed secure storage. Provider OAuth tokens remain with Composio and are not written into bot prompts or the renderer.
 
+## MausBot Cloud
+
+Connected apps come with a MausBot Cloud plan. Each Cloud registers its own installation with the same managed service when it starts, so there is no key to add: open **Connected apps** on the Cloud and connect an app as above. The installation stays with that Cloud across restarts and is never copied into a backup.
+
 ## Self-hosted or source builds
 
 The managed service is a convenience for official packaged builds. A source build can use your own Composio project and `COMPOSIO_API_KEY`; see [Self-hosted Composio](./self-hosted-composio.mdx).
 
-You can also use your own Composio project in the packaged app. Open **App Settings → Connections → Self-host connected apps** and paste its project key. A saved project key takes priority over the managed service for the marketplace, connection management, and bot tools. Clear the key to return to the managed service.
+You can also use your own Composio project in the packaged app or on a Cloud. Open **App Settings → Connections → Self-host connected apps** and paste its project key. A saved project key takes priority over the managed service for the marketplace, connection management, and bot tools. Clear the key to return to the managed service.
 
 ## Connect X (Twitter)
 

@@ -1,7 +1,3 @@
-// The Skills surface's HTTP contract (features.skillsLibrary): flag off is
-// byte-identical to the pre-library responses; flag on adds the browse,
-// import, review-toggle, and assignment routes. Local only — the import is
-// pasted text, never a fetch.
 import { writeFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -74,11 +70,8 @@ describe("skills library routes through an isolated HTTP fixture", () => {
       }),
     ]);
 
-    // Malformed paste is a clean 400, and no library mutation happened.
     expect((await api("POST", "/api/skills-library", { text: "not a skill" })).status).toBe(400);
 
-    // Assignment: the merged per-bot listing gains the library origin and
-    // the unassigned pool empties.
     expect((await api("PUT", `/api/bots/${botId}/skills-library`, { skills: ["order-audit"] }))).toMatchObject({
       status: 200,
       body: { assignedSkills: ["order-audit"] },
@@ -86,22 +79,16 @@ describe("skills library routes through an isolated HTTP fixture", () => {
     const withSkill = await api("GET", `/api/bots/${botId}/skills`);
     expect(withSkill.body.skills).toEqual([expect.objectContaining({ name: "order-audit", origin: "library" })]);
     expect(withSkill.body.library).toEqual([]);
-    // the authoritative assignment list: a same-name private skill would
-    // hide the merged row, but must never hide the assignment itself
     expect(withSkill.body.assignedSkills).toEqual(["order-audit"]);
 
-    // Assigning a name that is not in the library is rejected, not created.
     expect((await api("PUT", `/api/bots/${botId}/skills-library`, { skills: ["nope"] })).status).toBe(422);
 
-    // The row's switch flips the library-wide review state, and the read
-    // route serves the pasted bytes back.
     expect((await api("PATCH", "/api/skills-library/order-audit", { enabled: true }))).toMatchObject({ status: 200 });
     const text = await api("GET", "/api/skills-library/order-audit");
     expect(text.body.text).toContain("Check every line item");
     const enabled = await api("GET", "/api/skills-library");
     expect(enabled.body.skills[0]).toMatchObject({ enabled: true, assignedBots: [{ id: botId, name: "Skills fixture" }] });
 
-    // Removing the assignment leaves the skill in the library.
     expect((await api("PUT", `/api/bots/${botId}/skills-library`, { skills: [] }))).toMatchObject({
       status: 200,
       body: { assignedSkills: [] },

@@ -3,14 +3,12 @@ export interface PendingAuthorization {
   createdAt: number;
 }
 
-/** Composio authorization links expire after ten minutes. A retry must not
- * renew this clock merely because the same page was opened again. */
+/** Composio authorization links expire after ten minutes; reopening the page must not renew the clock. */
 export function reusableConnectionUrl(page: PendingAuthorization | null | undefined, now = Date.now()): string | null {
   return page && now >= page.createdAt && now - page.createdAt < 10 * 60 * 1_000 ? page.url : null;
 }
 
-/** Reserve the tab during the click, before an authorization request can
- * consume the browser's user activation. Only our unused blank is closed. */
+/** Reserve the tab during the click, before an authorization request consumes the browser's user activation. */
 export function reserveConnectionPage() {
   const openExternal = window.ogb?.openExternal;
   let page: Window | null = null;

@@ -2,7 +2,7 @@
 // conservative: an unknown status, a missing or unparseable timestamp, or any
 // sign of a live connection means "not idle".
 
-export const NEVER_CONNECTED_RECLAIM_MS = 7 * 24 * 60 * 60 * 1_000;
+export const NEVER_CONNECTED_RECLAIM_MS = 2 * 24 * 60 * 60 * 1_000;
 
 export interface TunnelActivity {
   /** Provider timestamps in epoch milliseconds, or null when absent. */

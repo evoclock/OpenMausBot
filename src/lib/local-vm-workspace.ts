@@ -23,7 +23,7 @@ export interface LocalVmWorkspaceStatus {
 export interface LocalVmWorkspaceControlSnapshot {
   held: boolean;
   helpReason: string | null;
-  /** Present only on lease-aware control mutations, never on public reads. */
+  help?: import("../../shared/wire").ComputerHelpRef | null;
   owned?: boolean;
   acquired?: boolean;
   released?: boolean;
@@ -51,8 +51,7 @@ export interface NativeViewOverlayCandidate {
   zIndex: number | null;
 }
 
-/** Native views paint above renderer content. Hide them only when a visible,
- * real overlay intersects a pane; ordinary positioned layout remains visible. */
+/** Native views paint above renderer content, so hide them only under a visible overlay. */
 export function nativeViewOverlayIntersects(
   hostRects: readonly NativeViewRect[],
   candidates: readonly NativeViewOverlayCandidate[],
@@ -76,8 +75,6 @@ export type LocalVmWorkspaceControlResult =
   | { status: "controlled"; botId: string; snapshot: LocalVmWorkspaceControlSnapshot }
   | { status: "held-elsewhere"; botId: string; snapshot: LocalVmWorkspaceControlSnapshot };
 
-/** Release the workspace-owned pane before inspecting or taking the next one.
- * If native demotion fails, the main-process manager removes that view. */
 export async function switchLocalVmWorkspaceControl(
   port: LocalVmWorkspaceControlPort,
   currentBotId: string | null,
@@ -89,8 +86,7 @@ export async function switchLocalVmWorkspaceControl(
     await port.release(currentBotId);
   }
 
-  // The server performs this acquisition atomically. A separate read followed
-  // by take cannot prove ownership because another viewer may win in between.
+  // Atomic on the server: a read followed by a take cannot prove ownership.
   const taken = await port.take(nextBotId);
   if (!taken.held) throw new Error("The Local VM control hold was not acquired");
   if (taken.owned !== true) {
@@ -99,8 +95,7 @@ export async function switchLocalVmWorkspaceControl(
   try {
     await port.setInteractive(nextContextId);
   } catch (error) {
-    // The native manager removes a view when demotion cannot reload it, so a
-    // rejected demotion is still fail-closed before the API hold is released.
+    // Fail-closed: the native manager removes a view it cannot demote.
     await port.setInteractive(null).catch(() => {});
     await port.release(nextBotId).catch(() => {});
     throw error;
@@ -182,11 +177,7 @@ function parseLocalVmStatusPayload(raw: JsonValue) {
   return parsed.success ? parsed.data : null;
 }
 
-/**
- * Keep only UI-safe readiness facts. The server response also contains a
- * secret-bearing viewer_url and may contain arbitrary diagnostic text; neither
- * is retained in React state.
- */
+/** UI-safe facts only: the response's secret-bearing viewer_url and diagnostics never reach React state. */
 export function sanitizeLocalVmWorkspaceStatus(raw: JsonValue): LocalVmWorkspaceStatus {
   const value = parseLocalVmStatusPayload(raw);
   const mode = value?.mode ?? "unknown";
@@ -207,8 +198,7 @@ export function sanitizeLocalVmWorkspaceStatus(raw: JsonValue): LocalVmWorkspace
   return { mode, maxInstances, container, network, security, persistence, desktopReady, ready };
 }
 
-/** Return the URL only to the immediate main-process handoff. Never place it
- * in component state, logs, errors, analytics or workspace state events. */
+/** Only for the immediate main-process handoff: never in component state, logs, errors, analytics or state events. */
 export function readyLocalVmViewerUrl(raw: JsonValue): string | null {
   const value = parseLocalVmStatusPayload(raw);
   if (!value || !sanitizeLocalVmWorkspaceStatus(raw).ready) return null;

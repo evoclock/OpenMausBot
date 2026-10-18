@@ -5,8 +5,6 @@ import { liveDisclosure } from "@/lib/call-mode";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
-/** The OpenAI key for GPT-Live. `compact` fits it inside a popover (the
- * call bar's gear, the call button's first-call prompt). */
 export function LiveKeySetup({ onSaved, compact = false }: { onSaved: () => void; compact?: boolean }) {
   const { state, dispatch } = useStore();
   const [key, setKey] = useState("");
@@ -27,8 +25,7 @@ export function LiveKeySetup({ onSaved, compact = false }: { onSaved: () => void
         ? await window.ogb.setCredential("openaiLiveKey", value)
         : await api("/api/config", { method: "PUT", body: JSON.stringify({ live: { key: value } }) });
       dispatch({ type: "configStatus", config: status });
-      // Saving the key may finish after the prompt was dismissed. Do not
-      // turn that completed save into a call the user has already cancelled.
+      // The save may finish after the prompt was dismissed; never turn it into a call the user already cancelled.
       if (!mounted.current) return;
       setKey("");
       onSaved();
@@ -51,7 +48,6 @@ export function LiveKeySetup({ onSaved, compact = false }: { onSaved: () => void
     >
       <div className="text-[13.5px] font-medium text-ink">{t("call.live.keyTitle")}</div>
       <div className="text-[12.5px] leading-[1.45] text-ink-secondary">{t("call.live.keyExplain")}</div>
-      {/* where Live is set up: what a call sends to OpenAI */}
       <div className="text-[12.5px] leading-[1.45] text-ink-secondary">{liveDisclosure({ cloudHome: state.config?.cloudHome === true })}</div>
       <input
         type="password"

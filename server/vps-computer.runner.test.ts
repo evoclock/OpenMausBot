@@ -121,7 +121,6 @@ describe("default VPS command runner", () => {
       expect(docker.exitCode !== null || docker.signalCode !== null).toBe(true);
       expect(docker.stdin!.destroyed && docker.stdout!.destroyed && docker.stderr!.destroyed).toBe(true);
       expect(alive(master.pid!)).toBe(true);
-      // A subsequent command uses fresh handles; no automatic replay occurs.
       spawnMock.mockImplementation((_command, _args, options) => realSpawn(process.execPath, ["-e", "console.log('recovered')"], options));
       await expect(defaultRunner(["info"], { timeoutMs: 2_000 })).resolves.toMatchObject({ stdout: "recovered\n" });
     } finally {

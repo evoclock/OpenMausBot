@@ -34,7 +34,6 @@ const rawModel = (id: string, extra: Record<string, unknown> = {}) => ({
   modalities: { input: ["text"], output: ["text"] }, release_date: "2026-01-01", limit: { context: 128_000, output: 4096 }, ...extra,
 });
 
-/** A models.dev-shaped catalog with one provider whose single model is `model`. */
 const rawCatalog = (providerId: string, model: string, extra: Record<string, unknown> = {}) => ({
   [providerId]: {
     id: providerId, name: providerId, env: ["DEMO_API_KEY"], npm: "@ai-sdk/openai-compatible",
@@ -97,7 +96,6 @@ describe("bundled snapshot", () => {
     expect(Object.keys(catalog.providers).length).toBeGreaterThan(200);
     expect(catalog.providers.openrouter?.env).toEqual(["OPENROUTER_API_KEY"]);
     expect(catalog.providers.openrouter?.models["anthropic/claude-sonnet-4.5"]).toMatchObject({ id: "anthropic/claude-sonnet-4.5", tool_call: true });
-    // Providers whose base URL is a template never make it in.
     for (const id of ["cloudflare-workers-ai", "databricks", "neon", "snowflake-cortex"]) expect(catalog.providers[id]).toBeUndefined();
     expect(containsBrace(catalog.providers)).toBe(false);
   });
@@ -114,7 +112,6 @@ describe("bundled snapshot", () => {
     const catalog = new bundled.ModelCatalogStore({ dataDir: tempDir(), env: {}, openCodeCachePath: null, log: () => {} }).get();
     expect(catalog.origin).toBe("snapshot");
     expect(catalog.providers.deepseek).toBeDefined();
-    // The OpenCode licence notice survives bundling.
     expect(readFileSync(join(out, "catalog.js"), "utf8")).toContain("Copyright (c) 2025 opencode");
   });
 });
@@ -182,7 +179,6 @@ describe("choosing a source", () => {
     expect(newer.store.get().origin).toBe("opencode");
     expect(modelIds(newer.store.get()).sort()).toEqual(["oc/fresh-model", "router/ok"]);
     expect(newer.logs.some((line) => line.includes("left out 2 opencode catalog entries"))).toBe(true);
-    // Read only: never rewritten or removed.
     expect(existsSync(openCodeCachePath)).toBe(true);
 
     const older = harness({ openCodeCachePath });
@@ -349,7 +345,6 @@ describe("catalogEntries", () => {
     expect(entries.findIndex((entry) => entry.id === "alpha")).toBeLessThan(entries.findIndex((entry) => entry.id === "zeta"));
     expect(entries.findIndex((entry) => entry.id === "alpha")).toBeGreaterThan(entries.findIndex((entry) => entry.id === "cerebras"));
     expect(entries.find((entry) => entry.id === "openrouter")).toMatchObject({ catalogId: "openrouter", modelCount: 1, env: ["DEMO_API_KEY"] });
-    // A preset models.dev does not list is still offered.
     expect(entries.find((entry) => entry.id === "cline-credits")).toMatchObject({
       label: "Cline (credits)", env: ["CLINE_API_KEY"], api: "https://api.cline.bot/api/v1", modelCount: 0,
     });
@@ -373,12 +368,9 @@ describe("catalogEntries", () => {
       ...rawCatalog("groq", "g1", { npm: "@ai-sdk/groq", api: undefined }),
       ...rawCatalog("fireworks-ai", "fw1", { npm: "@ai-sdk/anthropic", api: "https://api.fireworks.ai/inference" }),
     }));
-    // MiniMax: models.dev's package is for its Anthropic endpoint, not the pinned OpenAI one.
     expect(npm(entries, "minimax")).toBe("@ai-sdk/openai-compatible");
-    // Kept when it describes the pinned address, or the SDK's own default address.
     expect(npm(entries, "openrouter")).toBe("@openrouter/ai-sdk-provider");
     expect(npm(entries, "groq")).toBe("@ai-sdk/groq");
-    // A catalog that moves a preset to another endpoint does not move the package.
     expect(npm(entries, "fireworks-ai")).toBe("@ai-sdk/openai-compatible");
     // MiniMax's row pins the package even if models.dev pairs its OpenAI address with the Anthropic SDK.
     const paired = catalogEntries(catalog(rawCatalog("minimax", "mm1", { npm: "@ai-sdk/anthropic", api: "https://api.minimax.io/v1" })));

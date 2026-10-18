@@ -1,10 +1,4 @@
-// This window's half of a Live call, in the desktop app or a web browser:
-// microphone, speaker and captions over WebRTC, straight to OpenAI. It lives
-// at app level (not in a chat view), so switching chats keeps the call.
-// Everything else about the call — what the bot is asked, what the voice is
-// told, approvals, idle hang-up — runs on the harness
-// (server/live-call-controller.ts). This module never sends appends:
-// its data channel may only send session.close.
+// Its data channel may only send session.close; everything else about the call runs on the harness.
 import { useSyncExternalStore } from "react";
 import type { LiveCallState, LiveEndReason } from "../../shared/wire";
 import { api, ApiError } from "@/state/store";
@@ -15,11 +9,8 @@ import { t } from "./i18n";
 
 export type LiveMediaPhase = "idle" | "starting" | "live" | "ending" | "ended" | "failed";
 
-/** The one thing a stopped call's notice offers: call again, or open this
- * page in the web browser (the desktop app refused it the microphone). */
 export type LiveCallAction = "retry" | "open-in-browser";
 
-/** A call is running in this window: the microphone is (or is about to be) open. */
 export function isLiveCallRunning(phase: LiveMediaPhase): boolean {
   return phase === "starting" || phase === "live" || phase === "ending";
 }
@@ -31,22 +22,13 @@ export interface LiveMediaState {
   threadId: string | null;
   startedAt: number | null;
   muted: boolean;
-  /** the voice's words, last 240 characters */
   caption: string;
-  /** the person's words while they speak, last 160 characters */
   heard: string;
-  /** why the call ended or failed, or a hint */
   notice: string | null;
-  /** the server has no OpenAI key; show the key form */
   needsKey: boolean;
+  needsPro: boolean;
   busyWith: LiveCallState | null;
-  /** a stopped call's one action, only where it can help: never for a busy
-   * line, a window without WebRTC or a sign-in that ended */
   action: LiveCallAction | null;
-  /** this window's Hang up asked for the end, and the computer has not
-   * confirmed it yet: the bar says "Hanging up…" and the end is quiet. Any
-   * other end (another device hung up, the computer ended the call) keeps
-   * the call's title while it ends, then says why. */
   hangingUp: boolean;
 }
 
@@ -57,27 +39,22 @@ export interface LiveMediaDeps {
   playRemote(track: MediaStreamTrack): Promise<void> | void;
   stopRemote(): void;
   iceTimeoutMs: number;
-  /** what this window is: the desktop app's own page, a server's page in it, or a browser */
   capabilities(): DesktopCapabilities;
-  /** whether the desktop app lets this page use the microphone; undefined in
-   * a browser, and from a desktop app older than the answer */
   pageMicrophone(): Promise<"allowed" | "refused" | undefined>;
   openInBrowser(url: string): void;
 }
 
 const IDLE: LiveMediaState = {
   phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false,
-  caption: "", heard: "", notice: null, needsKey: false, busyWith: null, action: null, hangingUp: false,
+  caption: "", heard: "", notice: null, needsKey: false, needsPro: false, busyWith: null, action: null, hangingUp: false,
 };
 const CAPTION_CHARS = 240;
 const HEARD_CHARS = 160;
 const HEARD_CLEAR_MS = 2_500;
 const ENDED_NOTICE_MS = 4_000;
 const SERVER_CLOSE_GRACE_MS = 3_000;
-/** How long the audio may take to connect once OpenAI's answer is applied. */
 export const MEDIA_CONNECT_TIMEOUT_MS = 20_000;
 
-/** This window has no microphone or WebRTC: trying again cannot help. */
 class LiveUnsupportedError extends Error {}
 
 let audio: HTMLAudioElement | null = null;
@@ -121,12 +98,8 @@ let heardTimer: ReturnType<typeof setTimeout> | null = null;
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
 let connectTimer: ReturnType<typeof setTimeout> | null = null;
-/** Stops waiting for the click that lets blocked audio play. */
 let stopGestureWait: (() => void) | null = null;
-/** The last call state the harness reported, even before this window knew the call's id. */
 let serverCall: LiveCallState | null = null;
-/** The harness reported this window's call attached: any status but
- * "connecting" and "ended". */
 let serverAttached = false;
 const watchers = new Set<() => void>();
 
@@ -139,8 +112,7 @@ export function liveMedia(): LiveMediaState {
   return state;
 }
 
-/** Watch every change; returns the unsubscribe. One function for every
- * consumer, so useSyncExternalStore never resubscribes on a render. */
+/** One function for every consumer, so useSyncExternalStore never resubscribes on a render. */
 export function subscribeLiveMedia(watcher: () => void): () => void {
   watchers.add(watcher);
   return () => {
@@ -188,20 +160,10 @@ export function endNotice(reason: LiveEndReason | undefined): { text: string; dr
   }
 }
 
-/** This window is a web browser, with no desktop app around it: the one
- * rule for who asks for the microphone and which app holds the call. It reads
- * the desktop capability contract (src/lib/desktop.ts: a window the app does
- * not answer for is a browser), never the preload bridge (CONTRIBUTING.md). */
 function inWebBrowser(capabilities: DesktopCapabilities): boolean {
   return capabilities.dictation.reasonCode === "desktop-app-required";
 }
 
-/** Who blocked the microphone, and the one thing that helps. The desktop app
- * says whether it lets this page use the microphone (`pageMic`): a page it
- * refused can make the call in a web browser. An older app does not say; it
- * refused every server's page but a verified Cloud, so a server's page counts
- * as refused there too. Otherwise the browser (per site) or the computer's
- * privacy settings blocked it: allow it there, then try again. */
 function micBlocked(capabilities: DesktopCapabilities, pageMic: "allowed" | "refused" | undefined): { notice: string; action: LiveCallAction } {
   if (pageMic === "refused" || (pageMic === undefined && capabilities.dictation.reasonCode === "remote-server")) {
     return { notice: t("call.live.micAppRefused"), action: "open-in-browser" };
@@ -209,9 +171,6 @@ function micBlocked(capabilities: DesktopCapabilities, pageMic: "allowed" | "ref
   return { notice: t(inWebBrowser(capabilities) ? "call.live.micBlockedBrowser" : "call.live.micBlocked"), action: "retry" };
 }
 
-/** Which app this window's call says holds the microphone: a web browser,
- * or the desktop app (its own page, or a server's page in it, such as My
- * Cloud). The harness reports it to a busy line elsewhere. */
 function liveClient(capabilities: DesktopCapabilities): "desktop" | "web" {
   return inWebBrowser(capabilities) ? "web" : "desktop";
 }
@@ -227,7 +186,6 @@ export async function startLiveCall(target: { botId: string; threadId: string })
     const stream = await deps.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     if (mine !== generation) return void stream.getTracks().forEach((track) => track.stop());
     microphone = stream;
-    // Mute can be pressed while the call connects.
     for (const track of stream.getAudioTracks()) track.enabled = !state.muted;
     const connection = deps.createPeer();
     peer = connection;
@@ -256,7 +214,6 @@ export async function startLiveCall(target: { botId: string; threadId: string })
     };
     await connection.setLocalDescription(await connection.createOffer());
     await iceGathered(connection, deps.iceTimeoutMs);
-    // hung up while the offer was gathering: never create the session
     if (mine !== generation) return;
     const sdp = connection.localDescription?.sdp;
     if (!sdp) throw new Error(t("call.live.noOffer"));
@@ -266,23 +223,17 @@ export async function startLiveCall(target: { botId: string; threadId: string })
       timeoutMs: 35_000,
     });
     if (mine !== generation) {
-      // hung up while the server was creating the session
       void endOnServer(result.call.callId);
       return;
     }
     const seen = serverCall;
-    // the clock starts when the call goes live, on this computer's clock
     set({ callId: result.call.callId });
     applyServerCall(result.call);
-    // The SSE frame can overtake this response (the call already live, or
-    // already ended); it was ignored then because the id was not known yet.
+    // The SSE frame can overtake this response; it was ignored then because the id was not known yet.
     if (seen?.callId === result.call.callId) applyServerCall(seen);
     if (mine !== generation) return;
     await connection.setRemoteDescription({ type: "answer", sdp: result.transport.sdp });
-    // hung up (or a newer call began) while the answer was applied: its wait is not ours
     if (mine !== generation) return;
-    // Audio that never gets through would leave the call "connecting", or a
-    // silent clock, until the idle hang-up while OpenAI bills every second.
     if (connection.connectionState !== "connected") {
       connectTimer = setTimeout(() => {
         if (mine === generation) void dropped(t("call.live.droppedNoAudio"));
@@ -290,23 +241,19 @@ export async function startLiveCall(target: { botId: string; threadId: string })
     }
   } catch (error) {
     if (mine !== generation) return;
-    const body = error instanceof ApiError ? (error.body as { needsKey?: boolean; activeCall?: LiveCallState } | undefined) : undefined;
-    // the session exists but this window cannot join it: free the harness's one call
+    const body = error instanceof ApiError ? (error.body as { needsKey?: boolean; needsPro?: boolean; activeCall?: LiveCallState } | undefined) : undefined;
     if (state.callId) void endOnServer(state.callId);
     release();
+    if (body?.needsPro) return set({ ...IDLE, needsPro: true, botId: target.botId, threadId: target.threadId });
     if (body?.needsKey) return set({ ...IDLE, needsKey: true, botId: target.botId, threadId: target.threadId });
     if (body?.activeCall) return set({ ...IDLE, phase: "failed", botId: target.botId, threadId: target.threadId, busyWith: body.activeCall, notice: busyText(body.activeCall) });
     const failed = { ...IDLE, phase: "failed" as const, botId: target.botId, threadId: target.threadId };
-    // No microphone at all is not a permission: connect one, then try again.
     if (error instanceof DOMException && error.name === "NotFoundError") return set({ ...failed, notice: t("call.live.micMissing"), action: "retry" });
     if (error instanceof DOMException && error.name === "NotAllowedError") {
       const pageMic = await deps.pageMicrophone();
-      // hung up, or called again, while the app was asked
       if (mine !== generation) return;
       return set({ ...failed, ...micBlocked(deps.capabilities(), pageMic) });
     }
-    // Trying again cannot help a window without WebRTC or a refused
-    // sign-in: each needs a person to change something first.
     const hopeless = error instanceof LiveUnsupportedError || (error instanceof ApiError && error.status === 401);
     set({ ...failed, action: hopeless ? null : "retry", notice: error instanceof Error ? error.message : String(error) });
   }
@@ -317,12 +264,10 @@ export async function hangUpLiveCall(): Promise<void> {
   if (phase === "idle" || phase === "ended" || phase === "failed") return dismissLiveNotice();
   const mine = ++generation;
   set({ phase: "ending", hangingUp: true });
-  // Hang up stops capturing now, even if the harness is slow or unreachable.
-  // Keep the channel alive until its close command and the end request leave.
+  // Stop capturing now; keep the channel alive until its close command and the end request leave.
   stopCapturing();
   sendClose();
   if (callId) await endOnServer(callId);
-  // The harness's end frame, or a newer call, got here first: leave it be.
   if (mine !== generation) return;
   release();
   set({ ...IDLE });
@@ -337,9 +282,6 @@ export type LiveCallShortcut = "mute" | "hangUp";
 
 type ChordEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "isComposing" | "defaultPrevented">;
 
-/** ⌘⇧M / Ctrl+Shift+M mutes or unmutes, ⌘⇧H / Ctrl+Shift+H hangs up — the
- * chords video-call apps such as Teams use. Escape stays with popovers and
- * dialogs: a Live call does not end by accident. */
 export function liveCallShortcut(event: ChordEvent, isMac: boolean): LiveCallShortcut | null {
   if (event.defaultPrevented || event.isComposing || event.altKey || !event.shiftKey) return null;
   const modifier = isMac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
@@ -348,14 +290,11 @@ export function liveCallShortcut(event: ChordEvent, isMac: boolean): LiveCallSho
   return key === "m" ? "mute" : key === "h" ? "hangUp" : null;
 }
 
-/** The chord as the buttons show it (`title`) and announce it (`aria-keyshortcuts`). */
 export function liveCallChord(action: LiveCallShortcut, isMac: boolean): { text: string; aria: string } {
   const letter = action === "mute" ? "M" : "H";
   return isMac ? { text: `⌘⇧${letter}`, aria: `Meta+Shift+${letter}` } : { text: `Ctrl+Shift+${letter}`, aria: `Control+Shift+${letter}` };
 }
 
-/** Acts on a chord while this window holds a call; true when it did (the
- * caller then stops the key from reaching anything else). */
 export function handleLiveCallKey(event: ChordEvent, isMac: boolean): boolean {
   const action = liveCallShortcut(event, isMac);
   if (!action || !isLiveCallRunning(state.phase)) return false;
@@ -364,14 +303,10 @@ export function handleLiveCallKey(event: ChordEvent, isMac: boolean): boolean {
   return true;
 }
 
-/** Drop the key prompt a failed start left for this bot (its chat was left
- * or the prompt closed), so it does not open again by itself later. */
-export function dismissKeyPrompt(botId: string): void {
-  if (state.needsKey && state.botId === botId) dismissLiveNotice();
+export function dismissStartPrompt(botId: string): void {
+  if ((state.needsKey || state.needsPro) && state.botId === botId) dismissLiveNotice();
 }
 
-/** The stopped call's one action: call this bot again, or open this page in
- * the web browser, which can give it the microphone. */
 export function takeLiveCallAction(): void {
   const { action, botId, threadId, phase } = state;
   if (phase !== "failed") return;
@@ -382,20 +317,14 @@ export function takeLiveCallAction(): void {
 export function dismissLiveNotice(): void {
   if (noticeTimer) clearTimeout(noticeTimer);
   noticeTimer = null;
-  if (state.phase === "ended" || state.phase === "failed" || state.needsKey) set({ ...IDLE });
+  if (state.phase === "ended" || state.phase === "failed" || state.needsKey || state.needsPro) set({ ...IDLE });
 }
 
-/** The harness refused this window's sign-in (it was signed out or
- * revoked): hang up at once and say why. The harness ends the call on its
- * side too; this window can no longer ask it to. */
 export function endSignedOut(): void {
   if (!isLiveCallRunning(state.phase)) return;
   finish(endNotice("signed-out"));
 }
 
-/** Ask the harness whether this window may still reach its call. A refused
- * sign-in (401) hangs up at once; an unreachable harness leaves the call to
- * its own media, which ends it if the connection is really gone. */
 export async function checkLiveSignIn(): Promise<void> {
   if (!isLiveCallRunning(state.phase)) return;
   const mine = generation;
@@ -406,14 +335,10 @@ export async function checkLiveSignIn(): Promise<void> {
   }
 }
 
-/** The app's event stream dropped or came back. A revoked or signed-out
- * sign-in has its stream cut and cannot receive the end frame, so a drop
- * during this window's call checks the sign-in. */
 export function onLiveStreamConnected(connected: boolean): void {
   if (!connected) void checkLiveSignIn();
 }
 
-/** The harness's view of the call (SSE live.call, or GET /api/live/call on connect). */
 export function onServerCall(call: LiveCallState | null): void {
   serverCall = call;
   applyServerCall(call);
@@ -422,25 +347,17 @@ export function onServerCall(call: LiveCallState | null): void {
 function applyServerCall(call: LiveCallState | null) {
   if (!state.callId) return;
   if (!call) {
-    // the harness restarted or forgot the call
     if (state.phase === "starting" || state.phase === "live") finish({ text: t("call.live.ended"), dropped: false });
     return;
   }
   if (call.callId !== state.callId) return;
   if (call.status === "ended") {
-    // Only the hang-up this window asked for ends quietly: one another
-    // device made reads "Call ended.", as the reason's words say.
     if (call.endReason === "hung-up" && state.hangingUp) endQuietly();
     else finish(endNotice(call.endReason), call.error);
     return;
   }
-  // Any status but connecting and ended means the computer's side reached
-  // OpenAI: "live", "ending", or one this window does not know, which counts
-  // as a call still running (as on both phones).
   if (call.status !== "connecting") serverAttached = true;
   if (call.status === "ending") {
-    // The line is closing, even when another device asked for it: keep the
-    // title until its reason arrives, but stop sending microphone audio now.
     stopCapturing();
     stopConnectWait();
     if (state.phase !== "ending") set({ phase: "ending" });
@@ -449,23 +366,17 @@ function applyServerCall(call: LiveCallState | null) {
   goLiveWhenReady();
 }
 
-/** "Connecting…" becomes live when both halves are up: the harness has
- * attached to the session, and this window's own data channel is open (the
- * iPhone's rule). The clock counts from that moment, on this computer. */
 function goLiveWhenReady() {
   if (state.phase !== "starting" || !serverAttached || channel?.readyState !== "open") return;
   set({ phase: "live", startedAt: Date.now() });
 }
 
-/** A hang-up this window asked for needs no notice. */
 function endQuietly() {
   release();
   generation += 1;
   set({ ...IDLE });
 }
 
-/** The call is over. `detail`: the harness's own words for why, shown
- * first (as on the phones); the reason still decides drop and Try again. */
 function finish(notice: { text: string; dropped: boolean }, detail?: string) {
   sendClose();
   release();
@@ -486,7 +397,6 @@ async function dropped(text: string) {
   if (callId) await endOnServer(callId);
 }
 
-/** Best effort: the harness also ends the call on its own when OpenAI closes it. */
 async function endOnServer(callId: string): Promise<void> {
   await deps.request("/api/live/call/end", { method: "POST", body: JSON.stringify({ callId }), timeoutMs: 8_000 }).catch(() => undefined);
 }
@@ -501,8 +411,6 @@ function onChannelMessage(raw: unknown) {
   if (event.type === "session.closed") {
     stopCapturing();
     stopConnectWait();
-    // The harness normally reports the end first; if its sideband is gone,
-    // stop anyway. A sign-in that ended has no end frame coming: ask.
     if (!closeTimer) void checkLiveSignIn();
     closeTimer ??= setTimeout(() => finish({ text: t("call.live.ended"), dropped: false }), SERVER_CLOSE_GRACE_MS);
     return;
@@ -516,8 +424,7 @@ function onChannelMessage(raw: unknown) {
   }
 }
 
-/** The window blocked autoplay: the next click or key press in it plays the
- * call's audio (a user gesture allows play()), and the hint goes away. */
+/** Autoplay was blocked: the next click or key press plays the audio (a user gesture allows play()). */
 function playOnGesture(mine: number, track: MediaStreamTrack) {
   const target = globalThis.document;
   if (!target || stopGestureWait) return;
@@ -549,7 +456,7 @@ function stopConnectWait() {
 
 function sendClose() {
   if (channel?.readyState === "open") {
-    try { channel.send(JSON.stringify({ type: "session.close" })); } catch { /* closing anyway */ }
+    try { channel.send(JSON.stringify({ type: "session.close" })); } catch {}
   }
 }
 
@@ -564,9 +471,9 @@ function release() {
   stopGestureWait?.();
   stopGestureWait = null;
   stopCapturing();
-  try { channel?.close(); } catch { /* already closed */ }
+  try { channel?.close(); } catch {}
   channel = null;
-  try { peer?.close(); } catch { /* already closed */ }
+  try { peer?.close(); } catch {}
   peer = null;
   deps.stopRemote();
   if (state.botId) endCall(state.botId);
@@ -576,9 +483,7 @@ function busyText(call: LiveCallState): string {
   return t(`call.live.busy.${call.client}`);
 }
 
-/** Non-trickle ICE: OpenAI takes one offer. Gathering that runs past
- * `timeoutMs` sends the candidates found so far (as the phones do); a call
- * whose audio then never connects is dropped by the media wait. */
+/** Non-trickle ICE: OpenAI takes one offer, so gathering past `timeoutMs` sends the candidates found so far. */
 function iceGathered(connection: RTCPeerConnection, timeoutMs: number): Promise<void> {
   if (connection.iceGatheringState === "complete") return Promise.resolve();
   return new Promise((resolve) => {

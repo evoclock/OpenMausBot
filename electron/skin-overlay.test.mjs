@@ -11,7 +11,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(here, "../src/styles.css"), "utf8");
 const skinIds = readFileSync(join(here, "../src/lib/skins.ts"), "utf8");
 
-// The value CSS defines for one custom property inside one skin's block.
 function cssToken(skin, name) {
   const block = css.match(new RegExp(`\\[data-skin="${skin}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
   return block.match(new RegExp(`${name}\\s*:\\s*(#[0-9a-fA-F]+)`))?.[1]?.toLowerCase() ?? null;
@@ -19,9 +18,7 @@ function cssToken(skin, name) {
 
 describe("skin overlay chrome", () => {
   it("covers exactly the skins the renderer ships", () => {
-    // SKIN_IDS is the source of truth (src/lib/skins.ts); a skin added there
-    // without a chrome entry here would leave that skin's caption buttons on
-    // the previous colour — the issue #454 failure, but for a new skin.
+    // SKIN_IDS (src/lib/skins.ts) is the source of truth: a skin without a chrome entry keeps the previous caption colour.
     const registered = [...skinIds.matchAll(/"([a-z-]+)"/g)]
       .map(([, id]) => id)
       .filter((id) => css.includes(`[data-skin="${id}"]`));
@@ -35,8 +32,7 @@ describe("skin overlay chrome", () => {
   });
 
   it("uses opaque symbol colours the overlay can accept", () => {
-    // The Windows overlay rejects alpha, so every symbolColor must be a plain
-    // 6-digit hex even though the CSS ink tokens may carry an alpha byte.
+    // The Windows overlay rejects alpha, so every symbolColor is plain 6-digit hex.
     for (const chrome of Object.values(SKIN_CHROME)) {
       expect(chrome.symbolColor).toMatch(/^#[0-9a-fA-F]{6}$/);
     }

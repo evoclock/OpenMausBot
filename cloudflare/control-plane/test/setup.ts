@@ -8,7 +8,10 @@ import { forgetCachedCapacity } from "../src/tunnel-capacity";
 declare global {
   namespace Cloudflare {
     interface Env {
+      MIGRATION_DB: D1Database;
       TEST_MIGRATIONS: D1Migration[];
+      /** wrangler.jsonc's CLOUDFLARE_ENDPOINT_ACCOUNTS, as JSON. */
+      TEST_PRODUCTION_ENDPOINT_ACCOUNTS: string;
     }
   }
 }
@@ -24,13 +27,11 @@ afterEach(async () => {
     env.DB.prepare("DELETE FROM control_action_rate_limits"),
     env.DB.prepare("DELETE FROM installation_action_rate_limits"),
     env.DB.prepare("DELETE FROM installation_endpoints"),
-    env.DB.prepare(
-      `UPDATE managed_endpoint_capacity
-          SET scan_page = 1, tunnel_count = NULL, dns_record_count = NULL, reclaim_pending = 0,
-              checked_at = NULL, capacity_rejected_at = NULL, capacity_rejected_code = NULL,
-              updated_at = 0
-        WHERE id = 1`,
-    ),
+    env.DB.prepare("DELETE FROM installation_push_devices"),
+    env.DB.prepare("DELETE FROM highlevel_flows"),
+    env.DB.prepare("DELETE FROM highlevel_ip_rate_limits"),
+    // A missing row reads as an empty snapshot (never scanned, never refused).
+    env.DB.prepare("DELETE FROM managed_endpoint_account_capacity"),
     env.DB.prepare("DELETE FROM installation_credentials"),
     env.DB.prepare("DELETE FROM installations"),
     env.DB.prepare('DELETE FROM "session"'),

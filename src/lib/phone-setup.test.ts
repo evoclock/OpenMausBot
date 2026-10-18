@@ -19,7 +19,9 @@ import {
   invalidatePhonePairingAttempt,
   queuePhonePairingAttempt,
   releasePhonePairingAttempt,
+  secureAddressRequestLapsed,
   shouldArmPhoneSetupProvisioningTimeout,
+  shouldPrepareSecureAddress,
   startNonOverlappingPhoneSetupPoll,
   type PhonePairingAttemptLock,
   type PhonePairingAttemptQueue,
@@ -176,6 +178,50 @@ describe("phone setup flow", () => {
     expect(
       phonePairingGate({ available: false, status: "signed-out" }, companion, false),
     ).toBe("account-required");
+  });
+
+  it("tells the desktop about automatic pairing, which keeps or creates the secure address", () => {
+    const waiting = { enabled: true, endpoints: [] };
+    const gate = phonePairingGate(account("ready"), waiting, false);
+    expect(gate).toBe("wait");
+    expect(shouldPrepareSecureAddress("automatic", gate, account("ready"))).toBe(true);
+    expect(shouldPrepareSecureAddress("automatic", "wait", account("connecting"))).toBe(true);
+    expect(shouldPrepareSecureAddress("automatic", "open", account("ready"))).toBe(true);
+    expect(shouldPrepareSecureAddress("automatic", "open", null)).toBe(true);
+    for (const explicit of ["local", "tailscale"] as const) {
+      for (const any of ["wait", "open"] as const) {
+        expect(shouldPrepareSecureAddress(explicit, any, account("ready"))).toBe(false);
+      }
+    }
+    for (const other of ["start", "account-required"] as const) {
+      expect(shouldPrepareSecureAddress("automatic", other, account("ready"))).toBe(false);
+    }
+    for (const unusable of [
+      null,
+      account("error"),
+      account("signed-out"),
+      { ...account("ready"), available: false },
+    ]) {
+      expect(shouldPrepareSecureAddress("automatic", "wait", unusable)).toBe(false);
+    }
+  });
+
+  it("sees when nothing is creating the secure address a pairing waits for", () => {
+    const waiting = { enabled: true, endpoints: [] };
+    expect(secureAddressRequestLapsed(account("ready"), waiting)).toBe(true);
+    expect(secureAddressRequestLapsed(account("connecting"), waiting)).toBe(false);
+    expect(secureAddressRequestLapsed(account("error"), waiting)).toBe(false);
+    expect(secureAddressRequestLapsed(
+      { ...account("ready"), endpoint: "https://c-opaque.openmausbot.com" },
+      waiting,
+    )).toBe(false);
+    expect(secureAddressRequestLapsed(account("ready"), {
+      enabled: true,
+      endpoints: [{ kind: "hosted", url: "https://c-opaque.openmausbot.com", priority: 0 }],
+    })).toBe(false);
+    expect(secureAddressRequestLapsed(account("ready"), { enabled: false })).toBe(false);
+    expect(secureAddressRequestLapsed(null, waiting)).toBe(false);
+    expect(secureAddressRequestLapsed({ ...account("ready"), available: false }, waiting)).toBe(false);
   });
 
   it("opens local pairing only after the explicit Wi-Fi fallback", () => {
@@ -469,12 +515,12 @@ describe("phone setup flow", () => {
     expect(
       normalizePhoneSetupActionError(
         new Error(
-          `Error invoking remote method 'companion-account:verify-code': Error: Secure HTTPS links are temporarily full. Pair on this Wi-Fi or with Tailscale for now; we'll retry automatically. Reference: ${requestId}.`,
+          `Error invoking remote method 'companion-account:verify-code': Error: Secure HTTPS links are temporarily full. Try again in 10 minutes, or pair on this Wi-Fi or with Tailscale. Reference: ${requestId}.`,
         ),
         "We could not finish setup. Try again.",
       ),
     ).toBe(
-      `Secure HTTPS links are temporarily full. Pair on this Wi-Fi or with Tailscale for now; we'll retry automatically. Reference: ${requestId}.`,
+      `Secure HTTPS links are temporarily full. Try again in 10 minutes, or pair on this Wi-Fi or with Tailscale. Reference: ${requestId}.`,
     );
   });
 

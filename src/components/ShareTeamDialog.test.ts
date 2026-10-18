@@ -61,12 +61,9 @@ describe("Share team", () => {
   });
 
   it("keeps every skill box when a 31-skill bot's exact choice is refused", () => {
-    // The refusal the server sends for a bot with 31 ticked skills: the
-    // sentence, and the team's skill names so the boxes stay drawn.
     const names = Array.from({ length: 31 }, (_, index) => `step-${String(index + 1).padStart(2, "0")}`);
     const refusal = new ApiError("Morgan has more than 30 skills. Choose fewer skills and try again.", 400,
       { error: "Morgan has more than 30 skills. Choose fewer skills and try again.", choices: { skills: names } });
-    // The dialog's state after that refusal, from the API client's real error.
     const view = shareRefused({ ...SHARE_VIEW_START, included: names.slice(0, 30) }, refusal);
     expect(view.preview).toBeNull();
     expect(view.error).toBe("Morgan has more than 30 skills. Choose fewer skills and try again.");

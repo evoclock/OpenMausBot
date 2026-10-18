@@ -1,7 +1,3 @@
-// Bot → Skills → From {Organization}: skills the organization's packages
-// offer without putting them on a bot. Adding one puts it on this bot,
-// switched on — the organization's Admin published it. With no organization
-// (or nothing offered) the card is absent.
 import { Building2, Check } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -12,8 +8,7 @@ import { useBotEditor } from "./BotEditorContext";
 
 export function OrgSkillsCard({ bot, onAdded }: { bot: Bot; onAdded: () => void }) {
   const { request, draft } = useBotEditor();
-  // The editor's transport may be a new function each render; the fetch
-  // below must not re-run because of that, only when the bot changes.
+  // The editor's transport may be a new function each render; the fetch must re-run only when the bot changes.
   const api = useRef(request);
   api.current = request;
   const [organization, setOrganization] = useState<string | null>(null);
@@ -31,13 +26,11 @@ export function OrgSkillsCard({ bot, onAdded }: { bot: Bot; onAdded: () => void 
       setOrganization(result.organization?.name ?? null);
       setSkills(result.skills ?? []);
     } catch {
-      // No organization library is the same as nothing offered.
       if (!cancelled?.()) setOrganization(null);
     }
   }, [bot.id]);
 
   useEffect(() => {
-    // A bot still being created has no skills to add to.
     if (draft) return;
     let cancelled = false;
     void refresh(() => cancelled);

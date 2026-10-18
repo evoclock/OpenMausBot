@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-// A stand-in for OpenAI's GPT-Live API, for tests and the isolated fixture.
-// It speaks just enough HTTP and RFC 6455 WebSocket for the harness:
-// POST /v1/live/sessions and GET /v1/live/sessions/:id/attach. Nothing here
-// touches audio. Self-contained on purpose (node built-ins only).
+// A stand-in for OpenAI's GPT-Live API: just enough HTTP and RFC 6455 WebSocket for POST /v1/live/sessions
+// and GET /v1/live/sessions/:id/attach. No audio.
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
@@ -10,7 +8,6 @@ import { pathToFileURL } from "node:url";
 
 export interface FakeLiveSession {
   id: string;
-  /** the API key the session was created with (its bearer) */
   key: string;
   body: Record<string, unknown>;
   commands: Array<Record<string, unknown>>;
@@ -32,11 +29,8 @@ export interface FakeOpenAiLive {
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-/** An SDP answer to `offer` that a real WebRTC client (browser, simulator,
- * emulator) accepts in setRemoteDescription, so it reaches its "live" state
- * against this fake. Media never connects: nothing listens on the one host
- * candidate. Audio answers with the offer's first codec, the data channel
- * with the offer's SCTP settings, anything else is rejected (port 0). */
+/** An SDP answer a real WebRTC client accepts in setRemoteDescription. Media never connects; audio takes the
+ * offer's first codec, the data channel its SCTP settings, anything else port 0. */
 export function fakeAnswerSdp(offer: string): string {
   const lines = offer.split(/\r?\n/).filter(Boolean);
   const firstMedia = lines.findIndex((line) => line.startsWith("m="));
@@ -157,7 +151,7 @@ export async function startFakeOpenAiLive(options: { port?: number; closeOnReque
         return;
       }
       let body: Record<string, unknown> = {};
-      try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; } catch { /* recorded as {} */ }
+      try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; } catch {}
       const session: FakeLiveSession = { id: `sess_fake_${++counter}`, key: bearer(req), body, commands: [], attached: false, closed: false };
       sessions.push(session);
       wake();

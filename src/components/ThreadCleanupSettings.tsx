@@ -3,8 +3,7 @@ import { api, useStore, type ConfigStatus } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { Card } from "./SettingsPrimitives";
 
-/** Server bounds from server/config.ts, mirrored here so the form can
- * reject out-of-range input before the round trip. */
+/** Server bounds from server/config.ts, mirrored to reject out-of-range input before the round trip. */
 const MIN_RETENTION_DAYS = 1;
 const MAX_RETENTION_DAYS = 3650;
 const DEFAULT_RETENTION_DAYS = 30;
@@ -22,13 +21,11 @@ export function parseCapMib(value: string): number | null {
   const mib = Number(value);
   if (!Number.isFinite(mib)) return null;
   const bytes = Math.round(mib * MIB);
-  // mibText shows at most two decimals, so accept only exact 0.25 MiB steps:
-  // 0.251 would persist as 263193 bytes, redisplay as 0.25, and silently
-  // shrink to 262144 on the next save.
+  // Exact 0.25 MiB steps only: mibText shows two decimals, so 0.251 would redisplay as 0.25 and silently shrink on the
+  // next save.
   return bytes >= MIN_CAP_BYTES && bytes <= MAX_CAP_BYTES && bytes % MIN_CAP_BYTES === 0 ? bytes : null;
 }
 
-/** 52428800 → "50", 262144 → "0.25" — the input shows whole MiB when it can. */
 function mibText(bytes: number): string {
   const mib = bytes / MIB;
   return String(Number.isInteger(mib) ? mib : Number(mib.toFixed(2)));
@@ -40,7 +37,6 @@ export function ThreadCleanupSettings() {
   const { state, dispatch } = useStore();
   const confirmedRetentionDays = state.config?.threads?.eventLogRetentionDays ?? null;
   const confirmedCapBytes = state.config?.threads?.eventLogMaxBytes ?? null;
-  // a draft is the field the user is typing in; null means follow the server
   const [retentionDraft, setRetentionDraft] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string | null>(null);
   const [pending, setPending] = useState<Knob | null>(null);
@@ -51,8 +47,6 @@ export function ThreadCleanupSettings() {
   const retentionValue = retentionDraft ?? (confirmedRetentionDays === null ? String(DEFAULT_RETENTION_DAYS) : String(confirmedRetentionDays));
   const capValue = capDraft ?? (confirmedCapBytes === null ? String(DEFAULT_CAP_MIB) : mibText(confirmedCapBytes));
 
-  // a save from the other knob replaces the config object, so only drop the
-  // draft that matches the value the server just confirmed
   useEffect(() => {
     if (retentionDraft !== null && confirmedRetentionDays !== null && String(confirmedRetentionDays) === retentionDraft) setRetentionDraft(null);
   }, [confirmedRetentionDays, retentionDraft]);

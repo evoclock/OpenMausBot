@@ -1,5 +1,4 @@
-// xAI API driver. Grok uses the OpenAI chat-completions wire contract and
-// adds the shared transient-failure retry policy.
+// xAI API driver over the OpenAI chat-completions contract, with the shared retry policy.
 import type { ProviderDriver } from "../contracts.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
 

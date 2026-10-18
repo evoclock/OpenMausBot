@@ -3,7 +3,7 @@ import { hangUpRemoteCall, liveCallBarView, liveLineHeldElsewhere } from "./Live
 import type { LiveMediaState } from "@/lib/live-call-media";
 
 const bot = { id: "b1", threadId: "t1", name: "Ada" };
-const idle: LiveMediaState = { phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false, caption: "", heard: "", notice: null, needsKey: false, busyWith: null, action: null, hangingUp: false };
+const idle: LiveMediaState = { phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false, caption: "", heard: "", notice: null, needsKey: false, needsPro: false, busyWith: null, action: null, hangingUp: false };
 
 describe("liveCallBarView", () => {
   it("shows nothing without a call on this chat", () => {
@@ -22,13 +22,9 @@ describe("liveCallBarView", () => {
     const media: LiveMediaState = { ...idle, phase: "ending", callId: "c", botId: "b1", threadId: "t1", startedAt: 0, hangingUp: true };
     expect(liveCallBarView({ bot, media, server: null, now: 5_000 })).toMatchObject({ kind: "local", title: "Hanging up…", ending: true });
   });
-  // Nobody here pressed Hang up: another device hung up, or the computer
-  // ends the call (idle, a deleted chat). The bar keeps the call's title
-  // until the end, whose words then say why.
   it("keeps the call's title while it ends for any other reason", () => {
     const media: LiveMediaState = { ...idle, phase: "ending", callId: "c", botId: "b1", threadId: "t1", startedAt: 1_000 };
     expect(liveCallBarView({ bot, media, server: null, now: 66_000 })).toMatchObject({ kind: "local", title: "Live with Ada · 1:05", ending: true });
-    // one that ends before it went live still says it is connecting
     expect(liveCallBarView({ bot, media: { ...media, startedAt: null }, server: null, now: 0 })).toMatchObject({ title: "Live with Ada · Connecting…" });
   });
   it("says connecting before the call is live", () => {
@@ -53,7 +49,6 @@ describe("liveCallBarView", () => {
     expect(liveCallBarView({ bot, media: { ...idle, phase: "failed", botId: "b1", threadId: "t1", notice: "Call dropped.", action: "retry" }, server: null, now: 0 })).toEqual({ kind: "notice", text: "Call dropped.", action: "retry" });
     expect(liveCallBarView({ bot, media: { ...idle, phase: "failed", botId: "b1", threadId: "t1", notice: "The app didn't let this page use the microphone.", action: "open-in-browser" }, server: null, now: 0 })).toEqual({ kind: "notice", text: "The app didn't let this page use the microphone.", action: "open-in-browser" });
     expect(liveCallBarView({ bot, media: { ...idle, phase: "failed", botId: "b1", threadId: "t1", notice: "Another Live call is running.", action: null }, server: null, now: 0 })).toEqual({ kind: "notice", text: "Another Live call is running.", action: null });
-    // a call that ended by itself needs nothing done
     expect(liveCallBarView({ bot, media: { ...idle, phase: "ended", botId: "b1", threadId: "t1", notice: "Call ended.", action: "retry" }, server: null, now: 0 })).toEqual({ kind: "notice", text: "Call ended.", action: null });
   });
 });
@@ -74,7 +69,6 @@ describe("hangUpRemoteCall", () => {
     const dispatch = vi.fn();
     await hangUpRemoteCall("c9", 3, dispatch, request as never);
     expect(request).toHaveBeenLastCalledWith("/api/live/call");
-    // the store drops it if a live.call frame moved the line past version 3
     expect(dispatch).toHaveBeenCalledWith({ type: "liveCallLookup", call: null, since: 3, seq: expect.any(Number) });
   });
   it("stays quiet when the harness cannot be reached at all", async () => {
@@ -84,9 +78,6 @@ describe("hangUpRemoteCall", () => {
   });
 });
 
-// The call button is hidden while another device holds the line (the
-// iPhone's rule): a second Live call cannot start, and pressing it only
-// earned a "busy" refusal.
 describe("liveLineHeldElsewhere", () => {
   const phone = { callId: "c9", botId: "b2", threadId: "t2", client: "ios", voice: "marin", startedAt: 0, status: "live" } as const;
   it("is true while another device's call runs, on any bot, until it has ended", () => {

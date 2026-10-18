@@ -40,10 +40,21 @@ Live ids are merged into the main cloud rail (not the local-models pane). A
 failed listing keeps the last usable catalog (then the static fallback) rather
 than emptying the rail.
 
-`--model <id>` is passed as a global CLI flag before `acp`. When the running
-CLI also implements ACP `session/set_model`, OpenMausBot pins the same id over
-the wire. If that method is missing (`-32601`), the argv pin is left to stand
-and the turn continues.
+`--model <id>` is passed as a global CLI flag before `acp`. Current CLIs
+(checked with 2026.09.28) ignore that flag in ACP sessions: every session
+starts on `default[]` (Auto). The pick only lands through ACP
+`session/set_model`, which accepts only the parameterised ids the session
+advertises, such as `grok-4.7[context=256k,reasoning_effort=high,fast=true]`.
+OpenMausBot maps the picker slug onto that list: `auto` to `default[]`, a
+plain slug to its Standard variant, `-fast` to `fast=true`, and an effort
+slug such as `grok-4.7-high-fast` to the variant with that effort. The
+session advertises one variant per base, so a slug with another effort
+(`grok-4.7-medium-fast`) gets that variant and a notice in the conversation.
+
+If `session/set_model` is missing (`-32601`), the argv pin is left to stand
+and the turn continues. If Cursor refuses the id (`-32602`), the turn also
+continues, on the model the session started with, and the conversation shows
+a notice that names it.
 
 ## Autonomy
 
@@ -54,9 +65,20 @@ one: both **Ask for approval** and **Approve for me** launch Cursor without
 `--force`, then OpenMausBot handles its permission requests according to the
 bot's current level.
 
+## Questions
+
+Cursor's AskQuestion tool sends `cursor/ask_question`. OpenMausBot shows all
+of its questions on one question card, including multi-select questions, and
+answers with the option ids the person picked. Cursor's reply format has no
+free text. If any answer is in the person's own words, OpenMausBot replies
+`skipped` and puts every answer in the reason, which Cursor gives the model
+as it is. An unanswered card replies `cancelled`. A question that arrives as
+one `session/request_permission` per question (Cursor's fallback) still
+becomes the one-question card it was before.
+
 ## What this driver does not do yet
 
-- Cursor ACP extension methods (`cursor/ask_question`, `cursor/create_plan`,
+- The other Cursor ACP extension methods (`cursor/create_plan`,
   todos/tasks/images) are not given a dedicated UI. Unknown JSON-RPC requests
   are rejected with method-not-found so the CLI is not left blocked.
 - MCP servers passed in `session/new` follow Cursor's ACP limitations; prefer

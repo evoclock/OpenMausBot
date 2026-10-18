@@ -10,22 +10,13 @@ function reducedMotion(): boolean {
 }
 
 export interface MenuMotion {
-  /** Render the menu: it is open, or still playing its close. */
   shown: boolean;
-  /** Closed, and playing the open pop backwards. */
   closing: boolean;
   className: string;
-  /** Spread on the menu element. A closing menu is only a picture of one:
-   * inert and aria-hidden keep it out of the tab order, hit-testing and the
-   * accessibility tree, so nothing (a person, a screen reader, a test
-   * driver) can reach a menu that is already closed. */
   exitProps: { inert?: boolean; "aria-hidden"?: boolean };
 }
 
-/** Keep a menu mounted through the same 200ms pop it uses to open, so close
- * is the open motion played backwards. */
 export function useMenuMotion(open: boolean): MenuMotion {
-  // True from the menu's first open until its close has finished playing.
   const [mounted, setMounted] = useState(open);
 
   useLayoutEffect(() => {
@@ -42,8 +33,8 @@ export function useMenuMotion(open: boolean): MenuMotion {
     return () => window.clearTimeout(timer);
   }, [open, mounted]);
 
-  // Read `open` itself, not only the state that trails it, so the menu shows
-  // on the render its trigger flips and goes inert on the render it closes.
+  // Read `open` itself, not only the trailing state, so the menu shows on the render its trigger flips and goes inert
+  // on the render it closes.
   const closing = !open && mounted;
   return {
     shown: open || mounted,
@@ -53,8 +44,6 @@ export function useMenuMotion(open: boolean): MenuMotion {
   };
 }
 
-/** Remember the last open payload so a menu can finish closing after its
- * owner has already cleared the state that positioned it. */
 export function useHeldMenuMotion<T>(value: T | null): MenuMotion & { value: T | null } {
   const motion = useMenuMotion(value != null);
   const held = useRef<T | null>(value);

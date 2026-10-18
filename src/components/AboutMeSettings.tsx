@@ -62,9 +62,6 @@ interface LearnedFact {
   at: number;
 }
 
-/** What bots with Memory upkeep added to About me on their own, newest
- * first, each with Remove: About me reaches every bot, so the person can
- * always see and take back what was added for them. */
 function LearnedFacts({ onChanged }: { onChanged: (aboutMe: string) => void }) {
   const [facts, setFacts] = useState<LearnedFact[]>([]);
   const [busy, setBusy] = useState<string | null>(null);

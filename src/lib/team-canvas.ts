@@ -11,7 +11,6 @@ export const TEAM_PADDING = 20;
 export const HEADER_HEIGHT = 64;
 export const COMPUTER_DRAG_TYPE = "application/x-omb-computer";
 
-/** Personal card order never changes a bot's team or Chief role. */
 export function orderBots<T extends { id: string }>(bots: T[], order: string[] = []): T[] {
   const rank = new Map(order.map((id, index) => [id, index]));
   return [...bots].sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));

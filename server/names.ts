@@ -1,7 +1,3 @@
-// Bot name generator — a curated local list beats a naming API: instant,
-// offline, and every name is on-brand (short, friendly, a little pet-like,
-// which suits the Maus). Picks avoid names already in use; when the pool is
-// exhausted it falls back to "Name 2", "Name 3", …
 const NAMES = [
   "Scout", "Pixel", "Atlas", "Nova", "Juno", "Koda", "Miso", "Mochi",
   "Biscuit", "Pepper", "Clover", "Ember", "Willow", "Comet", "Orbit", "Echo",
@@ -17,7 +13,6 @@ export function pickBotName(taken: Iterable<string>): string {
   const used = new Set([...taken].map((n) => n.trim().toLowerCase()));
   const free = NAMES.filter((n) => !used.has(n.toLowerCase()));
   if (free.length > 0) return free[Math.floor(Math.random() * free.length)];
-  // pool exhausted — number a random base name
   const base = NAMES[Math.floor(Math.random() * NAMES.length)];
   for (let i = 2; ; i++) {
     if (!used.has(`${base.toLowerCase()} ${i}`)) return `${base} ${i}`;

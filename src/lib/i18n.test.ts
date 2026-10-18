@@ -45,10 +45,8 @@ describe("t", () => {
   });
 
   it("setLocale reports the locale that actually took effect", () => {
-    // a shipped base pack catches its regional variants…
     expect(setLocale("de-AT")).toBe("de");
     expect(t("engines.local")).toBe("Lokal");
-    // …and a genuinely unknown tag falls back to English
     expect(setLocale("xx-YY")).toBe("en");
     expect(t("engines.local")).toBe("Local");
   });
@@ -70,6 +68,7 @@ describe("t", () => {
     expect(resolveLocale("pt-BR", available)).toBe("pt-br");
     expect(resolveLocale("pt-PT", available)).toBe("pt");
     expect(resolveLocale("hi-IN", available)).toBe("hi");
+    expect(resolveLocale("tr-TR", available)).toBe("tr");
   });
 
   it("every registered pack carries only known keys with non-empty values", () => {
@@ -105,7 +104,6 @@ describe("t", () => {
     try {
       expect(setLocale("zz")).toBe("zz");
       expect(t("engines.cloud")).toBe("Wolke");
-      // key the pack omits → English, not undefined and not the key
       expect(t("engines.local")).toBe("Local");
     } finally {
       delete locales["zz"];
@@ -114,8 +112,7 @@ describe("t", () => {
   });
 
   it("interpolates params and keeps unmatched placeholders visible", () => {
-    // exercised through a raw template so the test doesn't depend on which
-    // catalog keys happen to use params yet
+    // A raw template, so the test doesn't depend on which catalog keys use params.
     const template = "Hello {name}, {missing}!";
     const rendered = template.replace(/\{(\w+)\}/g, (match, name: string) =>
       name in { name: "Maus" } ? String({ name: "Maus" }[name as "name"]) : match,
@@ -124,8 +121,6 @@ describe("t", () => {
   });
 });
 
-// The server picks which note a held approval card shows; the renderer picks
-// the language. A key this build has never heard of must still read.
 describe("tFromServer", () => {
   it("translates a key the catalog knows", () => {
     locales["zz"] = { "approval.held.native": "Der Anbieter verlangt deine Zustimmung." };
@@ -154,21 +149,12 @@ describe("tFromServer", () => {
     expect(tFromServer(undefined, undefined)).toBeUndefined();
   });
 
-  // The rule these notes have to keep — a note must name a button the reader
-  // can see — now lives in ApprovalModeSelector.i18n.test.ts, which checks the
-  // note against the label the selector renders in that same language. The
-  // labels used to be hardcoded English, so this file pinned the English words
-  // instead; the selector reads the catalog now.
-
   it("prefers the catalog over stale text saved with an older card", () => {
     expect(tFromServer("approval.held.undelivered", "Auto mode couldn't answer this one."))
       .toBe(en["approval.held.undelivered"]);
   });
 });
 
-// Screen readers pick a voice and pronunciation rules from <html lang>. A
-// German or Japanese interface read out with English rules is gibberish, so
-// the page language follows the pack that is actually showing.
 describe("page language", () => {
   afterEach(() => {
     setLocale("en");
@@ -177,7 +163,7 @@ describe("page language", () => {
 
   it("names every picker language with a valid BCP-47 tag", () => {
     expect(localeChoices.map(({ code }) => documentLanguage(code))).toEqual([
-      "en", "de", "es", "fr", "hi", "ja", "pt-BR", "zh", "zh-TW", "uk",
+      "en", "de", "es", "fr", "hi", "ja", "pt-BR", "zh", "zh-TW", "uk", "vi", "tr",
     ]);
     for (const { code } of localeChoices) {
       expect(Intl.getCanonicalLocales(documentLanguage(code))).toEqual([documentLanguage(code)]);
@@ -201,7 +187,6 @@ describe("page language", () => {
     expect(root.lang).toBe("zh-TW");
     setLocale("ja");
     expect(root.lang).toBe("ja");
-    // an unknown language shows English, so the page says English
     setLocale("xx-YY");
     expect(root.lang).toBe("en");
   });

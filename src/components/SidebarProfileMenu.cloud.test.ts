@@ -3,8 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CloudAccountBridge, CloudAccountState } from "../../electron/cloud-account.mjs";
 
-// On this computer the menu reads the person's Cloud from the native
-// snapshot. React's hooks are replayed by hand.
+// React's hooks are replayed by hand.
 const f = vi.hoisted(() => ({ values: [] as unknown[], index: 0, effects: [] as EffectCallback[] }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
@@ -41,7 +40,6 @@ it("on this computer, follows the snapshot: a paid, Ready Cloud is offered, and 
   push({ status: "signed-out" });
   render(true);
   expect(result.cloud).toBeNull();
-  // reading it never signs in, refreshes or connects
   expect(bridge.connectHomeForPhone).not.toHaveBeenCalled();
 });
 
@@ -51,7 +49,6 @@ it("is not read anywhere but this computer's own window", async () => {
   render(false);
   expect(result).toEqual({ cloud: null });
   expect(bridge.state).not.toHaveBeenCalled();
-  // a desktop that is a remote client of another server
   vi.stubGlobal("window", { ogb: { cloudAccount: bridge, remoteClient: { active: true } } });
   f.values = []; render(true); f.effects[0]!(); await flush(); render(true);
   expect(result).toEqual({ cloud: null });

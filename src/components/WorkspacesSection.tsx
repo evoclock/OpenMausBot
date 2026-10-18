@@ -1,7 +1,3 @@
-// App settings → Workspaces: the operator's view of the client workspaces on
-// this server, through the fleet agent (server/fleet-agent.ts). Create one,
-// add or remove a person, suspend, resume, delete, upgrade all. Enterprise
-// `admin` entitlement, and only where an agent exists.
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RefreshCw } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -34,7 +30,6 @@ export function workspacesAvailable(config: ConfigStatus | null | undefined): bo
 
 const fetchFleet = (): Promise<FleetView> => api("/api/fleet");
 
-/** The list alone, so it renders the same from a fetch or a fixture. */
 export function WorkspacesTable({ fleet, onAct, busy }: { fleet: FleetView; onAct: (slug: string, action: "suspend" | "resume" | "delete" | "users") => void; busy: string | null }) {
   if (fleet.workspaces.length === 0) return <div className="text-[13px] text-ink-secondary">{t("workspaces.empty", { domain: fleet.domain })}</div>;
   return (
@@ -138,7 +133,7 @@ function NewWorkspaceForm({ domain, onCreated, disabled }: { domain: string; onC
       <p className="text-[11.5px] leading-relaxed text-ink-secondary">{t("workspaces.createHint")}</p>
       {error && <p role="alert" className="text-[12px] text-danger">{error}</p>}
       <div className="flex justify-end">
-        <button type="submit" disabled={disabled || saving} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white hover:brightness-110 disabled:opacity-60">
+        <button type="submit" disabled={disabled || saving} className="ui-button ui-button-primary">
           {saving ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}{saving ? t("workspaces.creating") : t("workspaces.create")}
         </button>
       </div>

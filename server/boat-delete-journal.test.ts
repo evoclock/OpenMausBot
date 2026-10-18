@@ -15,7 +15,7 @@ function operation(
   targetId = "bx_23456789",
   status: "pending" | "processing" | "blocked" | "completed" = "pending",
 ) {
-  return { id: OPERATION_ID, kind: "box" as const, targetId, status };
+  return { id: OPERATION_ID, kind: "sandbox" as const, targetId, status };
 }
 
 function worker(dataDir: string, source: string) {
@@ -98,7 +98,6 @@ describe("Boat deletion journal", () => {
     const processing = journal.markBoatDeletionAccepted("bx_23456789", operation("bx_23456789", "processing"));
     expect(processing.status).toBe("processing");
 
-    // An eventually-consistent provider response must not move the fence back.
     expect(journal.markBoatDeletionAccepted("bx_23456789", operation()).status).toBe("processing");
     const completed = journal.markBoatDeletionAccepted("bx_23456789", operation("bx_23456789", "completed"));
     expect(completed.status).toBe("completed");

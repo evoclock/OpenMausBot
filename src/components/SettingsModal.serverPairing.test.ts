@@ -4,12 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettingsSection } from "@/state/store";
 import { SettingsModal } from "./SettingsModal";
 
-// #950: a packaged desktop build never surfaced a way to mint a session
-// pairing code, so MCP clients (and a second desktop app) had no path to
-// one. ServerPairingCard was gated on `!window.ogb`, hiding it from every
-// desktop instance instead of only the ones that don't own the server
-// being paired against. MOCA-84 then found the remote-client case needs it
-// too. These tests pin the card as always offered; the server decides who may act.
+// These pin the card as always offered; the server decides who may act.
 const fixture = vi.hoisted(() => ({ section: "companion" as AppSettingsSection, config: undefined as { cloudHome?: boolean } | undefined, phonePairing: 0 }));
 // Pinned to Advanced: these cover the Advanced rail; Simple has its own suite.
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: () => {} }));
@@ -51,10 +46,6 @@ describe("Settings → Remote access: server pairing card visibility", () => {
   });
 
   it("is offered when this desktop is a remote client of a hosted workspace, whose phones pair only here", () => {
-    // MOCA-84: a NAS-hosted server reached from the Mac app had no pairing
-    // options at all — the companion section is hidden remotely too. The
-    // desktop's requests carry the hosted server's session, so the server,
-    // not this gate, decides whether that session may mint codes.
     vi.stubGlobal("window", { ogb: { remoteClient: { active: true } } });
     expect(render()).toContain("SERVER_PAIRING_CARD_MARKER");
   });
@@ -70,8 +61,6 @@ describe("Settings → Remote access: server pairing card visibility", () => {
 });
 
 describe("Settings → Remote access opened by Connect your phone", () => {
-  // The request goes to exactly one card: the one that pairs a phone with
-  // what this window shows.
   it("on this computer, reveals the phone flow, not the server's pairing code", () => {
     fixture.phonePairing = 3;
     vi.stubGlobal("window", { ogb: { companion: {} } });
@@ -83,7 +72,6 @@ describe("Settings → Remote access opened by Connect your phone", () => {
   it("on the person's own Cloud in this window, reveals the Cloud's own pairing code", () => {
     fixture.phonePairing = 2;
     fixture.config = { cloudHome: true };
-    // a Cloud page gets the reduced bridge: no phone bridge, no remote client
     vi.stubGlobal("window", { ogb: { cloudPlan: {} } });
     const html = render();
     expect(html).toContain("SERVER_PAIRING_CARD_MARKER cloud focus=2");
@@ -97,7 +85,6 @@ describe("Settings → Remote access opened by Connect your phone", () => {
     vi.stubGlobal("window", { ogb: { companion: {}, remoteClient: { active: true } } });
     const html = render();
     expect(html).toContain("SERVER_PAIRING_CARD_MARKER focus=1");
-    // this computer's phone flow is not offered to a remote client at all
     expect(html).not.toContain("COMPANION_SECTION");
   });
 

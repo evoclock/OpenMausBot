@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { replyAuthor, replySnippet } from "./replies";
+import { escapeCancelsReply, replyAuthor, replySnippet } from "./replies";
 import { citationAttachment, createCitationTextSelector, serializeCitation } from "./citations";
 import type { Message } from "@/state/store";
 
@@ -30,5 +30,26 @@ describe("reply display", () => {
     expect(snippet).toContain("quoted text");
     expect(snippet).toContain("why?");
     expect(snippet).not.toContain("omb-citation");
+  });
+});
+
+describe("escapeCancelsReply", () => {
+  it("drops a reply target on Escape", () => {
+    expect(escapeCancelsReply({ key: "Escape" }, { replying: true, recording: false })).toBe(true);
+  });
+  it("leaves other keys, no target, dictation and IME composition alone", () => {
+    expect(escapeCancelsReply({ key: "Enter" }, { replying: true, recording: false })).toBe(false);
+    expect(escapeCancelsReply({ key: "Escape" }, { replying: false, recording: false })).toBe(false);
+    expect(escapeCancelsReply({ key: "Escape" }, { replying: true, recording: true })).toBe(false);
+    expect(escapeCancelsReply({ key: "Escape", isComposing: true }, { replying: true, recording: false })).toBe(false);
+  });
+});
+
+describe("replySnippet markup", () => {
+  it("shows markdown emphasis, code, links and headings as plain text", () => {
+    expect(replySnippet("## Plan\nOnly **reply** and `copy`, see [the PR](https://example.com/pr)")).toBe("Plan Only reply and copy, see the PR");
+  });
+  it("leaves a lone asterisk or underscore alone", () => {
+    expect(replySnippet("2 * 3 = 6 and snake_case")).toBe("2 * 3 = 6 and snake_case");
   });
 });

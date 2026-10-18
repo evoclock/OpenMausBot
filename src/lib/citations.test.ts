@@ -58,6 +58,15 @@ describe("selected-text citations", () => {
     expect(isAttachment({ ...citation, quote: "" })).toBe(false);
   });
 
+  it("previews the words as typed, with citations folded in and nothing hidden", () => {
+    const citation = citationAttachment(source, createCitationTextSelector("quoted text", 0, 11)!, "Check this");
+    const text = "Compare [earlier task](omb://thread/bot-1/thread-2)";
+    expect(citationPreviewText(text)).toBe(text);
+    expect(citationPreviewText(composeMessage(text, [citation]))).toBe(`${text} quoted text — Check this`);
+    const typed = '<data-context>{"cardId":"c_1"}</data-context>\nDo not hide this';
+    expect(citationPreviewText(typed)).toBe(typed);
+  });
+
   it("does not parse a serialized citation nested inside quoted or comment content", () => {
     const inner = citationAttachment(source, createCitationTextSelector("inner quote", 0, 11)!);
     const outer = citationAttachment(

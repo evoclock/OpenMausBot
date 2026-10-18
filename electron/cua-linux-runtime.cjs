@@ -13,9 +13,7 @@ const {
 } = require("./cua-linux.cjs");
 
 const CONNECTION_SCHEMA_VERSION = 1;
-// Schema 2 is intentionally incompatible with early Linux desktop builds.
-// Those builds could start Cua without the Xorg seat-safety flags; keeping the
-// opt-in versioned makes a newer build unable to arm an older installed copy.
+// Schema 2 is deliberately incompatible with early builds that started Cua without the Xorg seat-safety flags.
 const SETTINGS_SCHEMA_VERSION = 2;
 const HOST_BUNDLE_ID = "com.openmausbot.app";
 const CERTIFIED_CONTRACT_VERSION = "0.6.0";
@@ -101,8 +99,6 @@ function cleanupStaleRuntimeDirectories(root, {
       fileSystem.rmdirSync(directory);
       removed += 1;
     } catch {
-      // Runtime cleanup is best-effort and strictly scoped. A suspicious or
-      // concurrently changing entry is left untouched for manual inspection.
     }
   }
   return removed;
@@ -129,8 +125,7 @@ function writePrivateJson(file, value, {
       try {
         fileSystem.fsyncSync(directoryHandle);
       } catch {
-        // The file itself is already flushed and atomically renamed. Some
-        // otherwise-supported filesystems reject fsync on a directory.
+        // Some filesystems reject fsync on a directory.
       }
     } finally {
       fileSystem.closeSync(directoryHandle);
@@ -570,9 +565,7 @@ function createLinuxCuaRuntime({
         }
       } catch {}
     }
-    // Unix sockets have a short path limit. A private, uid-scoped directory
-    // directly under the system temp root keeps the fallback deterministic
-    // and short when XDG_RUNTIME_DIR is missing or unsafe.
+    // Unix sockets have a short path limit: a private uid-scoped dir under the temp root when XDG_RUNTIME_DIR is unusable.
     const currentUid = process.getuid?.() ?? os.userInfo().uid;
     const root = ensurePrivateDirectory(path.join(os.tmpdir(), `openmausbot-cua-${currentUid}`));
     cleanupStaleRuntimeDirectories(root);
@@ -589,7 +582,6 @@ function createLinuxCuaRuntime({
       try {
         fs.unlinkSync(file);
       } catch {
-        // A failure for one owned path must not prevent cleanup of the other.
       }
     }
     try {
@@ -699,9 +691,7 @@ function createLinuxCuaRuntime({
       const args = [
         "serve",
         "--embedded",
-        // The driver's visual cursor is a full-screen X11 overlay. It is not
-        // needed for inspection or input delivery, and a compositor/renderer
-        // failure must never leave that surface between the user and desktop.
+          // The visual cursor is a full-screen X11 overlay; a compositor failure must never leave it over the desktop.
         "--no-overlay",
         "--socket",
         socketPath,
@@ -710,9 +700,7 @@ function createLinuxCuaRuntime({
         "--permission-mode",
         "standard",
       ];
-      // Pin the exact file inspected above, not merely its path. Keep this
-      // directly adjacent to spawn so an update/replacement during doctor or
-      // runtime preparation fails closed instead of launching uninspected code.
+      // Pin the exact inspected file, adjacent to spawn, so a replacement during preparation fails closed.
       const revalidated = validateDriverCandidate(inspected.path);
       if (
         revalidated.status !== "found" ||
@@ -781,8 +769,7 @@ function createLinuxCuaRuntime({
             version: inspected.driverVersion,
             source: inspected.source,
             manifestSchema: inspected.manifestSchema,
-            // Private descriptor-only pin. The renderer consumes getStatus(),
-            // which deliberately omits this internal file identity.
+            // Private pin: getStatus() deliberately omits this file identity.
             fileIdentity: inspected.fileIdentity,
           },
           daemon: {

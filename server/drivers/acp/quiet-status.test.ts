@@ -10,8 +10,7 @@ import {
 } from "./quiet-status.ts";
 import { qwenDebugLogPath } from "./qwen.ts";
 
-// Lines copied from a real Qwen Code 0.24.7 debug log, captured against a
-// model endpoint that answered 429.
+// Lines from a real Qwen Code 0.24.7 debug log against an endpoint that answered 429.
 const RETRY_EXPLICIT = "2026-10-02T02:50:41.757Z [WARN] [RETRY] Attempt 1 failed with status 429. Retrying after explicit delay of 20000ms... {";
 const RETRY_BACKOFF = "2026-10-02T02:51:41.757Z [ERROR] [RETRY] Attempt 3 failed with status 503. Retrying in 12s...";
 const GATE = "2026-10-02T02:49:41.570Z [DEBUG] [COMPRESSION] [compaction] cheap-gate NOOP: effectiveTokens=2587, auto=167000, contextLimit=200000";
@@ -126,9 +125,7 @@ describe("process probe", () => {
     await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
     try {
       const sample = await sampleProcessTree(process.pid);
-      // Found, not "unknown". macOS `ps` prints TIME to the hundredth of a
-      // second; Linux procps prints whole seconds, so a test worker that has
-      // used under a second of CPU honestly reads 0 there.
+      // macOS `ps` prints TIME to the hundredth; Linux procps prints whole seconds, so under a second reads 0.
       expect(sample.cpuMs).not.toBeNull();
       expect(sample.cpuMs!).toBeGreaterThanOrEqual(0);
       if (process.platform === "darwin") expect(sample.cpuMs!).toBeGreaterThan(0);

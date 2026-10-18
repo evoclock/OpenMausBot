@@ -8,10 +8,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { writeFileAtomic } from "./atomic.ts";
 import { cloudHomePrompt } from "./system-prompt.ts";
+import { CONTROL_BUSY, CONTROL_REFUSAL_PLAIN, controlRefusal, createControlClient } from "./control-client.ts";
 import { freePortBlock } from "./testing/ports.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const CALL_WAIT_MS = 3_000;
 let child: ChildProcess;
 let startServer: (computerWaitMaxMs?: number) => Promise<void>;
 let fixtureHome = "";
@@ -43,10 +45,7 @@ async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolea
     await new Promise(r => setTimeout(r, 40));
   }
 }
-// The fake writes its dump in one go, but a poll can still land between the
-// open and the close of that write and read a truncated file — macOS CI hit
-// "Unexpected end of JSON input" here. A partial file is "not yet", not a
-// failure: parse errors fall through to the next poll.
+// A poll can land mid-write (macOS CI read truncated JSON): a parse error means "not yet".
 const dump = () => until(() => {
   if (!existsSync(dumpFile)) return null;
   try { return JSON.parse(readFileSync(dumpFile, "utf8")); } catch { return null; }
@@ -54,6 +53,7 @@ const dump = () => until(() => {
 const idle = (botId: string) => until(() => api("GET", "/api/bots?messages=0"), s => !s.bots.find((b: any) => b.id === botId)?.busy);
 const computer = (d: any) => d.mcpConfig.mcpServers.computer;
 const gate = (c: any) => fetch(c.env.OMB_CONTROL_URL, { headers: { authorization: `Bearer ${c.env.OMB_CONTROL_TOKEN}` } });
+const check = (c: any) => createControlClient({ url: c.env.OMB_CONTROL_URL, token: c.env.OMB_CONTROL_TOKEN }).state(true);
 
 beforeAll(async () => {
   fixtureHome = mkdtempSync(join(tmpdir(), "omb-group-vm-"));
@@ -73,17 +73,17 @@ beforeAll(async () => {
     res.setHeader("content-type", "application/json");
     let raw = ""; for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
-    if (path === "/boxes" && req.method === "POST") {
+    if (path === "/sandboxes" && req.method === "POST") {
       if (!allowBoatCreation) { res.statusCode = 409; return res.end(JSON.stringify({ error: "Unexpected Boat creation in routing fixture" })); }
       boatRow = { id: "bx_23456789", name: body.name ?? "fixture-new-box", state: "idle" };
-      return res.end(JSON.stringify({ box: boatRow }));
+      return res.end(JSON.stringify({ sandbox: boatRow }));
     }
-    if (path === "/boxes") return res.end(JSON.stringify({ boxes: boatRow ? [boatRow] : [] }));
-    if (/^\/boxes\/bx_[^/]+$/.test(path)) {
+    if (path === "/sandboxes") return res.end(JSON.stringify({ sandboxes: boatRow ? [boatRow] : [] }));
+    if (/^\/sandboxes\/bx_[^/]+$/.test(path)) {
       if (req.method === "DELETE") { boatRow = null; return res.end("{}"); }
       if (!boatRow) res.statusCode = 404;
       else if (req.method === "PATCH" && body.name) boatRow.name = body.name;
-      return res.end(JSON.stringify(boatRow ? { box: boatRow } : { error: "missing" }));
+      return res.end(JSON.stringify(boatRow ? { sandbox: boatRow } : { error: "missing" }));
     }
     if (path.endsWith("/desktop")) return res.end(JSON.stringify({ desktopUrl: "https://desktop.fixture.invalid/" }));
     if (path.endsWith("/resume") && boatRow) { boatRow.state = "idle"; return res.end("{}"); }
@@ -98,8 +98,7 @@ beforeAll(async () => {
   const boatPort = (boatServer.address() as { port: number }).port;
   writeFileSync(join(data, "config.json"), JSON.stringify({ instances: { claude: {
     driver: "claudeAgent", config: { cli: join(ROOT, "server/testing/fake-claude-cli.ts") },
-    // A turn on the cloud computer uses it, so its first computer call is
-    // what creates or wakes the Boat, as with a real model.
+    // Its first computer call is what creates or wakes the Boat, as with a real model.
     environment: { FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_DUMP: dumpFile, FAKE_CLAUDE_SLOW_FINISH_GATE: finishFile, FAKE_CLAUDE_USES_CLOUD_COMPUTER: "1" },
   } } }));
   const port = await freePortBlock([0, 1]);
@@ -112,8 +111,9 @@ beforeAll(async () => {
         APPDATA: join(fixtureHome, "appdata"), LOCALAPPDATA: join(fixtureHome, "localappdata"),
         TEMP: fixtureHome, TMP: fixtureHome, TMPDIR: fixtureHome,
         OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: ui, OMB_TEST_VM_STATE: stateFile,
-        OMB_BOX_API: `http://127.0.0.1:${boatPort}`,
+        OMB_BOAT_API: `http://127.0.0.1:${boatPort}`,
         ...(computerWaitMaxMs ? { OMB_COMPUTER_WAIT_MAX_MS: String(computerWaitMaxMs) } : {}),
+        OMB_COMPUTER_CALL_WAIT_MS: String(CALL_WAIT_MS),
         OMB_USER_DATA: join(fixtureHome, "user-data"),
       }, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -141,8 +141,7 @@ async function cleanupRooms() {
   const attempt = async (operation: () => unknown | Promise<unknown>) => {
     try { await operation(); } catch (error) { errors.push(error); }
   };
-  // Stop before releasing shared fixture gates: a cancelled setup must not
-  // dispatch just as the next test starts using the same dump and finish files.
+  // Stop before releasing shared gates, or a cancelled setup dispatches as the next test reuses the files.
   for (const [id] of pending) await attempt(() => stop(id));
   await attempt(() => vmState());
   await attempt(() => writeFileSync(finishFile, "finish"));
@@ -268,15 +267,13 @@ describe("Group Local VM ownership on the real isolated server", () => {
         const capped = await fetch(base + `/api/bots/${bots[2].id}/local-computer/run`, {
           method: "POST", headers: { "content-type": "application/json" }, body: "{}",
         });
-        expect(capped.status).toBe(409); // The existing per-bot limit still holds.
+        expect(capped.status).toBe(409);
       }
       await api("PATCH", "/api/config", { localVm: { mode: "pool", maxInstances: 2 } });
       vmState({ ...readState(), blockedTarget: "pool:0" });
       rmSync(stateFile + ".entered", { force: true });
       await api("POST", `/api/bots/${bots[0].id}/messages`, { text: "Hold the first seat." });
       await until(() => existsSync(stateFile + ".entered") && readFileSync(stateFile + ".entered", "utf8") === "pool:0", Boolean);
-      // The first seat owns its lease and is still inspecting. The other
-      // seat must provision and dispatch without waiting for that inspection.
       await api("POST", `/api/bots/${bots[1].id}/messages`, { text: "Hold the second seat." });
       const secondComputer = computer(await dump());
       const secondStatus = await api("GET", `/api/bots/${bots[1].id}/local-computer`);
@@ -338,7 +335,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(created.workspace_path.startsWith(fixtureHome)).toBe(true);
       const saved = join(created.workspace_path, "saved.txt");
       writeFileSync(saved, "survives idle removal");
-      // Older versions removed idle containers; keep that recovery path working.
       await api("POST", `/api/bots/${returning.id}/local-computer/remove`, {});
       await api("POST", `/api/bots/${holder.id}/local-computer/run`, {});
       await waitForExit(child, { signal: "SIGTERM" });
@@ -353,11 +349,11 @@ describe("Group Local VM ownership on the real isolated server", () => {
         await idle(bot.id);
         return mounted;
       };
-      expect(await turn(returning)).toBeUndefined(); // Capacity is still occupied.
+      expect(await turn(returning)).toBeUndefined();
       const before = JSON.parse(readFileSync(stateFile, "utf8")).actions.length;
       await api("POST", `/api/bots/${holder.id}/local-computer/remove`, {});
       rmSync(stateFile + ".entered", { force: true });
-      expect(await turn(fresh)).toBeUndefined(); // Free capacity does not authorize its first VM.
+      expect(await turn(fresh)).toBeUndefined();
       expect(existsSync(stateFile + ".entered")).toBe(false);
       const recovered = await turn(returning);
       expect(recovered).toBeTruthy();
@@ -427,7 +423,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
     const { bot } = await api("POST", "/api/bots", { name: "Auto VM shell" });
     try {
       await api("PATCH", `/api/bots/${bot.id}`, { browser: false });
-      // Inventory discovery marks the disposable VM as available to Auto.
       await api("GET", "/api/local-computer");
       await api("POST", `/api/bots/${bot.id}/messages`, { text: "Run a command on the VM" });
       const mounted: any = await dump();
@@ -452,8 +447,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       vmState(); rmSync(dumpFile, { force: true }); rmSync(finishFile, { force: true });
       allowBoatCreation = true;
       await api("PUT", "/api/config", { box: { token: "box_fixture" } });
-      // A team's shared computer is held for the whole turn, so the slow
-      // fake engine (gated on the finish file) is the holder this check needs.
+      // A team's shared computer is held for the whole turn, so the gated slow fake is the holder.
       for (const name of ["Computer holder", "Computer waiter"]) {
         const { bot } = await api("POST", "/api/bots", { name, section });
         bots.push(bot);
@@ -467,8 +461,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("POST", `/api/bots/${bots[1].id}/messages`, { text: "Wait for the shared computer" });
       const transcript = () => api("GET", `/api/threads/${bots[1].threadId}/messages?limit=50`);
       await until(transcript, value => JSON.stringify(value).includes("Waiting for"));
-      // Only the waiting thread gets the short clock; the holder is a
-      // deliberately gated provider. This exercises the real event wiring.
+      // Only the waiting thread gets the short clock; the holder is deliberately gated.
       vmState({ stallThread: bots[1].threadId });
       await new Promise(resolve => setTimeout(resolve, 400));
       expect(JSON.stringify(await transcript())).not.toContain("the turn was stopped");
@@ -478,7 +471,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       writeFileSync(finishFile, "finish");
       await idle(bots[0].id);
       await idle(bots[1].id);
-      // Both turns ran on the bots' own engine; Boat's own agent was never asked.
       expect(boatPrompts.length).toBe(count);
       const settled = await transcript();
       expect(JSON.stringify(settled)).not.toContain("the turn was stopped");
@@ -526,8 +518,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect((await fetch(base + "/api/internal/computer/select", { headers: { authorization: `Bearer ${token}` } })).status).toBe(200);
       expect(boatCalls.every(call => call.method === "GET")).toBe(true);
       if (state === "removed") boatRow = null;
-      // The continuation keeps the bot's own engine and model; the selected
-      // Boat arrives as its computer tools. Boat's runner is never asked.
       const harnessComputer = (sent: any) => computer(sent)?.args?.at(-1) === "computer" && /harness-mcp-proxy/.test(computer(sent).args[0]);
       rmSync(dumpFile, { force: true });
       writeFileSync(finishFile, "finish");
@@ -536,14 +526,14 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(continued.argv[continued.argv.indexOf("--model") + 1]).toBe(before.argv[before.argv.indexOf("--model") + 1]);
       await idle(bot.id);
       expect(boatPrompts).toHaveLength(0);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(state === "wake" ? 0 : 1);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(state === "wake" ? 0 : 1);
       expect(boatCalls.some(call => call.path.endsWith("/resume"))).toBe(state === "wake");
       rmSync(dumpFile, { force: true });
       await api("POST", `/api/bots/${bot.id}/messages`, { text: "Inspect the current page on the same cloud VM" });
       expect(harnessComputer(await dump())).toBe(true);
       await idle(bot.id);
       expect(boatPrompts).toHaveLength(0);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(state === "wake" ? 0 : 1);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(state === "wake" ? 0 : 1);
     } finally {
       writeFileSync(finishFile, "finish");
       await api("POST", `/api/bots/${bot.id}/interrupt`, {}); await idle(bot.id);
@@ -568,7 +558,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
       const available = await (await call("GET")).json() as any;
       expect(available.canSelect).toBe(true);
-      // Not a Cloud home: every place is listed, and no bot is told it runs in the cloud.
       expect(available.options.map((option: any) => option.surface)).toEqual(["cloud", "vm", "local", "browser"]);
       expect(before.mcpConfig.mcpServers.agents.env.OMB_CLOUD_HOME).toBe("0");
       expect(before.systemPrompt).not.toContain(cloudHomePrompt(true));
@@ -587,9 +576,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       const state = await api("GET", "/api/bots?messages=30");
       const saved = state.bots.find((b: any) => b.id === bot.id);
       expect(saved.tasks.find((task: any) => task.threadId === bot.threadId).surface).toBe("vm");
-      // the model picked the VM: the pin is the machine's record, not the
-      // person's, so a Works on change sweeps it rather than the thread
-      // staying stuck on the machine's choice
       await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" });
       const swept = (await api("GET", "/api/bots?messages=0")).bots.find((b: any) => b.id === bot.id);
       expect(swept.tasks.find((task: any) => task.threadId === bot.threadId).surface).toBeUndefined();
@@ -747,8 +733,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
     }
   }, 30_000);
 
-  // Linux accepts only its own validated runtime descriptor, which a fixture
-  // cannot forge; the macOS and Windows descriptor is a plain file.
+  // Linux accepts only its own validated runtime descriptor, which a fixture cannot forge.
   it.skipIf(process.platform === "linux")("mounts a channel speaker's own This computer destination behind the control gate", async () => {
     const { bots, group } = await room();
     mkdirSync(dirname(cuaDescriptor), { recursive: true });
@@ -811,17 +796,14 @@ describe("Group Local VM ownership on the real isolated server", () => {
       const suffix = createHash("sha256").update(bots[0].id).digest("hex").slice(0, 6);
       boatRow = { id: "bx_23456789", name: `ogb-${scope}-${prefix}-${suffix}`, state: "archived" };
       boatCalls.length = 0; boatPrompts.length = 0;
-      // The speaker keeps its own engine; its Boat is woken and mounted as
-      // its computer tools, and Boat's runner is never asked.
       const onBoat = (sent: any) => computer(sent)?.args?.at(-1) === "computer" && /harness-mcp-proxy/.test(computer(sent).args[0]);
       writeFileSync(finishFile, "finish");
       await send(group.id);
       expect(onBoat(await dump())).toBe(true);
       await idle(bots[0].id);
       expect(boatCalls.some(call => call.path.endsWith("/resume"))).toBe(true);
-      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/boxes")).toHaveLength(0);
+      expect(boatCalls.filter(call => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(0);
       expect(JSON.stringify(await api("GET", "/api/bots?messages=30"))).not.toContain("not available in channels yet");
-      // The Boat is given back: the same speaker can take the room again.
       rmSync(dumpFile, { force: true });
       await send(group.id);
       expect(onBoat(await dump())).toBe(true);
@@ -840,7 +822,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
     const { bots, group } = await room();
     vmState({ failed: true });
     await send(group.id);
-    await until(() => api("GET", "/api/bots?messages=30"), r => JSON.stringify(r).includes("fixture desktop unavailable"));
+    await until(() => api("GET", "/api/bots?messages=30"), r => JSON.stringify(r).includes("Fixture desktop unavailable."));
     await idle(bots[0].id);
     vmState();
     await send(group.id);
@@ -863,25 +845,18 @@ describe("Group Local VM ownership on the real isolated server", () => {
   });
   it("does not dispatch after a stall during delayed room setup and the room can run again", async () => {
     const { bots, group } = await room();
-    // Park setup in the pre-id quarantine wait — a prior turn's cancelled
-    // handshake can hold a room thread there while its TTL runs — then
-    // stall the turn while it is parked between claim and provider dispatch.
+    // Park setup in the pre-id quarantine wait, then stall the turn between claim and provider dispatch.
     vmState({ wedgeClear: true }); rmSync(stateFile + ".entered", { force: true }); rmSync(stateFile + ".clearwait", { force: true });
     await send(group.id);
     await until(() => existsSync(stateFile + ".entered"), Boolean);
-    // entry into readiness is not the quarantine: wait until the turn is
-    // actually parked in waitForClear, so the stall below fires inside the
-    // window that used to find no completion handler
+    // Entry into readiness is not the quarantine: wait until the turn is parked in waitForClear.
     await until(() => existsSync(stateFile + ".clearwait"), Boolean);
     vmState({ wedgeClear: true, stall: true });
     await until(() => api("GET", "/api/bots?messages=30"), r => JSON.stringify(r).includes("the turn was stopped"));
     vmState();
     await idle(bots[0].id);
-    // The quarantine released and setup resumed, but the latched stall
-    // completed the turn before the provider dispatch: no CLI was launched.
     expect(existsSync(dumpFile)).toBe(false);
-    // The claim was released. Wait out the stall's VM-lease grace so a
-    // later turn on the same room can take the VM and run.
+    // Wait out the stall's VM-lease grace so a later turn can take the VM.
     await new Promise(r => setTimeout(r, 6_500));
     await send(group.id);
     expect(computer(await dump())).toBeTruthy();
@@ -920,9 +895,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
   });
 
   it("never trips the lazy first-screen-call claim on an eagerly claimed turn", async () => {
-    // Issue #1361 seam check: dispatch still claims, so the gate's lazy
-    // branch (no computer entry yet) must stay unreachable and the poll
-    // must answer with the plain not-held snapshot, not contention text.
     const { bots, group } = await room();
     await send(group.id);
     const c = computer(await dump());
@@ -944,8 +916,7 @@ describe("Group Local VM ownership on the real isolated server", () => {
       const mountedHolder = computer(await dump());
       expect((await gate(mountedHolder)).status).toBe(200);
       rmSync(dumpFile, { force: true });
-      // The container can stop outside the app while its provider turn still
-      // holds the seat. Auto must eagerly wait before waking this known VM.
+      // The container can stop outside the app while its provider turn still holds the seat.
       vmState({ containers: ["shared"], stopped: ["shared"] });
       await api("POST", `/api/bots/${auto.id}/messages`, { text: "Use the stopped shared VM when available" });
       await until(async () => JSON.stringify((await api("GET", `/api/threads/${auto.threadId}/messages`)).messages)
@@ -986,13 +957,9 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("PATCH", `/api/bots/${auto.id}`, { browser: false });
       await api("POST", `/api/bots/${holder.id}/messages`, { text: "Hold the VM" });
       await until(async () => (await api("GET", "/api/bots?messages=0")).bots.find((b: any) => b.id === holder.id)?.busy, Boolean);
-      // The dump file is shared with the holder's fake CLI. Consume the
-      // holder's dump and remove it, so the assertion below can only pass
-      // on the Auto turn's own mount, never the holder's leftover file.
+      // The dump file is shared with the holder: consume it so the check below reads the Auto turn's own mount.
       await dump();
       rmSync(dumpFile, { force: true });
-      // The Auto attach mounts the computer MCP without claiming the VM, so
-      // this dispatch must not block behind the holder's eager claim.
       await api("POST", `/api/bots/${auto.id}/messages`, { text: "No screen work today" });
       expect(computer(await dump())).toBeTruthy();
       await until(async () => (await api("GET", "/api/bots?messages=0")).bots.find((b: any) => b.id === auto.id)?.busy, Boolean);
@@ -1024,30 +991,27 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(autoComputer).toBeTruthy();
       rmSync(dumpFile, { force: true });
       await api("POST", `/api/bots/${holder.id}/messages`, { text: "Hold the VM" });
-      // busy flips before setup claims the VM, so it is not a contention
-      // signal. Each fake CLI dumps once, on its first prompt, after the
-      // eager claim and mount: the fresh dump is the lease-held sync point.
+      // busy flips before setup claims the VM; the fresh dump (written after the eager claim and mount) is the sync point.
       const holderComputer = computer(await dump());
       expect(holderComputer).toBeTruthy();
       expect((await gate(holderComputer)).status).toBe(200);
-      // First screen tools/call: the gate fires the deferred claim, answers
-      // with the contention text, and the existing wait activity appears.
-      const first = await (await gate(autoComputer)).json();
-      expect(first).toMatchObject({ held: true, helpOpen: false,
-        blockedReason: "Another thread is using this computer. This call was not performed. Pause computer work until that thread finishes, then take a fresh screenshot before acting." });
+      const started = Date.now();
+      const first = await check(autoComputer);
+      expect(first).toEqual({ held: true, helpOpen: false, blockedReason: CONTROL_BUSY });
+      expect(controlRefusal(first)).not.toBe(CONTROL_REFUSAL_PLAIN);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(CALL_WAIT_MS - 200);
       await until(async () => {
  const state = await api("GET", "/api/bots?messages=30");
         return (state.bots.find((b: any) => b.id === auto.id)?.messages ?? [])
           .some((m: any) => m.kind === "activity" && String(m.tool?.name ?? "").startsWith("Waiting for its turn on this computer"));
       }, Boolean);
-      // Releasing the holder lets the waiting claim land; the next poll passes.
       await api("POST", `/api/bots/${holder.id}/interrupt`, {}); await idle(holder.id);
       await until(async () => {
         const state = await api("GET", "/api/bots?messages=30");
         return (state.bots.find((b: any) => b.id === auto.id)?.messages ?? [])
           .some((m: any) => m.kind === "activity" && String(m.tool?.name ?? "").startsWith("Computer free"));
       }, Boolean);
-      expect(await (await gate(autoComputer)).json()).toEqual({ held: false, helpOpen: false });
+      expect(await check(autoComputer)).toEqual({ held: false, helpOpen: false });
     } finally {
       writeFileSync(finishFile, "finish");
       await api("POST", `/api/bots/${auto.id}/interrupt`, {}); await api("POST", `/api/bots/${holder.id}/interrupt`, {});
@@ -1066,20 +1030,13 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("POST", `/api/bots/${auto.id}/messages`, { text: "Use the VM when it is ready" });
       const autoComputer = computer(await dump());
       expect(autoComputer).toBeTruthy();
-      // The VM dies between dispatch and the first screen call: the fired
-      // claim rejects inside readyLocalVmForTurn — after bindTurnComputer
-      // already left a turn-computer entry behind.
+      // The VM dies between dispatch and the first screen call, after bindTurnComputer left an entry behind.
       vmState({ failed: true });
       const refused = { held: true, helpOpen: false,
         blockedReason: expect.stringMatching(/^This turn could not claim the Local VM \(.+\)\. This call was not performed\. Do not retry computer work in this turn/) };
-      const first = await (await gate(autoComputer)).json() as any;
+      const first = await check(autoComputer);
       expect(first).toEqual(refused);
-      // Honest about why. The contention text would send the model into a
-      // screenshot loop waiting on a "thread" that does not exist.
       expect(first.blockedReason).not.toContain("Another thread");
-      // Issue #1369: the rejection is terminal, not an open-ended pause.
-      // The thread gets one computer-unavailable error and the turn ends,
-      // so it can never sit busy behind a gate that only refuses.
       await until(async () => {
         const state = await api("GET", "/api/bots?messages=30");
         return (state.bots.find((b: any) => b.id === auto.id)?.messages ?? [])
@@ -1087,9 +1044,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
             String(m.tool?.name ?? "").startsWith("error: computer unavailable — the Local VM could not be claimed for this turn"));
       }, Boolean);
       await idle(auto.id);
-      // One failure, one incident: the rejection was reported where it
-      // happened, and Claude settling the interrupt as exit_before_result
-      // must not file the same broken turn a second time.
       const incidents = await until(async () => {
         const state = await api("GET", "/api/bots?messages=0");
         const thread = state.bots.find((b: any) => b.id === chief.id)?.tasks?.find((t: any) => t.title === "Team incidents");
@@ -1100,9 +1054,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       expect(chips).toHaveLength(1);
       expect(String(chips[0]?.tool?.name)).toContain("computer unavailable — the Local VM could not be claimed for this turn");
       expect(chips[0]?.threadRef?.botId).toBe(auto.id);
-      // Fail-closed outlives the turn: the teardown revokes the bridge's
-      // capability, so a late poll can never fall through to held:false
-      // and forward a screen call onto a VM this turn never claimed.
       expect((await gate(autoComputer)).status).toBe(401);
     } finally {
       writeFileSync(finishFile, "finish");
@@ -1121,10 +1072,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       await api("POST", `/api/bots/${auto.id}/messages`, { text: "Take a screenshot" });
       const autoComputer = computer(await dump());
       expect(autoComputer).toBeTruthy();
-      // Nobody holds the VM. The gate fires the deferred claim, lets it
-      // land, and answers truthfully: the very first screen call proceeds.
-      // Answering held here — as an unconditional "fire and refuse" did —
-      // told every Auto VM turn that another thread had the computer.
       expect(await (await gate(autoComputer)).json()).toEqual({ held: false, helpOpen: false });
       const state = await api("GET", "/api/bots?messages=30");
       const activities = (state.bots.find((b: any) => b.id === auto.id)?.messages ?? [])
@@ -1148,11 +1095,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
       const autoComputer = computer(await dump());
       vmState({ failed: true });
       expect((await (await gate(autoComputer)).json() as any).held).toBe(true);
-      // The rejected claim had already bound the turn resource and taken
-      // the exclusive lease. The auto turn is still running — only its
-      // screen calls are refused — so without an explicit unwind the
-      // desktop stays serialised behind a turn that never got it, which is
-      // the exact symptom this feature exists to remove.
       vmState();
       rmSync(dumpFile, { force: true });
       await api("POST", `/api/bots/${next.id}/messages`, { text: "Hold the VM" });
@@ -1177,7 +1119,6 @@ describe("Group Local VM ownership on the real isolated server", () => {
     if (failure === "stall") vmState({ stall: true });
     await idle(bots[0].id);
     expect((await gate(c)).status).toBe(401);
-    // Mode changes reject stale localVmActiveThreads even after the bot is idle.
     await api("PATCH", "/api/config", { localVm: { mode: "per-bot", maxInstances: 2 } });
     vmState({ noContainers: true });
     await api("PATCH", "/api/config", { localVm: { mode: "shared", maxInstances: 2 } });

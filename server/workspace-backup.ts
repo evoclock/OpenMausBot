@@ -1,5 +1,4 @@
-// An encrypted filesystem snapshot, not an additive import. The caller must
-// quiesce writers before create/commit. Restore runs before config/store load.
+// Encrypted filesystem snapshot: quiesce writers before create/commit; restore runs before config/store load.
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scrypt } from "node:crypto";
 import {
   chmodSync, closeSync, constants, cpSync, createReadStream, createWriteStream, existsSync,
@@ -12,12 +11,11 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { pipeline } from "node:stream/promises";
 import { Worker } from "node:worker_threads";
 import * as tar from "tar";
-import { fromMarkdown } from "mdast-util-from-markdown";
 import { writeFileAtomic } from "./atomic.ts";
-import { escapeAttribute, splitTranscriptAttachments } from "../src/lib/composer-attachments.ts";
 import { WORKSPACE_BACKUP_CLIENT_KEYS } from "../shared/workspace-backup-client.ts";
-import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
-import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary } from "../shared/workspace-backup.ts";
+import { INSTRUCTION_FILE, restorePaths, validRelative } from "./workspace-backup-paths.ts";
+import { ephemeralWorkspaceTokenPath, excludedWorkspaceAuthPath, liveDataEnginePath, managedTaskSkillLink, portableWorkspaceConfig, redownloadedOrgLibraryPath, restoredWorkspaceConfig } from "./workspace-backup-policy.ts";
+import type { WorkspaceBackupClientState, WorkspaceBackupPrivateMetadata, WorkspaceBackupSummary, WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
 export type { WorkspaceBackupSummary, WorkspaceBackupPrivateMetadata } from "../shared/workspace-backup.ts";
 export const MAX_WORKSPACE_BACKUP_BYTES = 10 * 1024 ** 3;
@@ -29,21 +27,21 @@ const HEADER_BYTES = MAGIC.length + 16 + 12;
 const TAG_BYTES = 16;
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const EXCLUDED = new Set([
-  ".backups", "tools", "cache", ".cache", "tmp", ".tmp", "dist-native", "tunnel-runtime",
+  ".backups", "tools", "browser", "cache", ".cache", "tmp", ".tmp", "dist-native", "tunnel-runtime", "evidence",
   ".openmausbot-server-child", "environment-id", "sessions.json", "tunnel-account.json",
   "team-computers.json",
   "openmausbot-server.lease", "box-create-requests.lock", "messages.db-wal", "messages.db-shm",
-  // This machine's decision-model log (server/decider/log.ts): local
-  // measurement of what the classifier picked, not workspace data.
+  "runtime.db-wal", "runtime.db-shm",
   "decider-log",
-  // A Cloud home's record of who its owner was (server/cloud-owner.ts): this
-  // machine's own, kept in place by a restore, which settles what it brought.
   "cloud-owner.json",
+  "sync",
+  // "Also use my Claude Code skills": a link to the person's own ~/.claude/skills, made again on each turn.
+  "claude-user-skills",
 ]);
 const EXCLUSION_NOTES = [
   "Device pairing, server identity, live leases and runtime files (existing destination identities are preserved).",
   "Saved credentials, provider and MCP connections, managed provider login homes and browser login profiles are not transferred. Destination connections are preserved; reconnect on a new device.",
-  "Downloaded tools and caches; these can be installed again.",
+  "Downloaded tools and caches (they can be installed again), and recorded browser step screenshots (export them from a conversation to keep them).",
   "Installed dependency folders (node_modules) and symbolic links inside conversation work folders; reinstall or recreate them in the project.",
   "External project folders, CLI login homes, browser session homes, OS keychains, companion devices and other servers.",
   "VM/container disk layers and remote cloud data; durable files inside this workspace are included.",
@@ -73,9 +71,11 @@ export interface WorkspaceRestoreResult {
   id?: string;
   safetyCopyPath?: string;
   summary?: WorkspaceBackupSummary;
+  leftBehind?: WorkspaceLeftBehind;
   clientState?: WorkspaceBackupClientState;
 }
-export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string };
+/** `pathsRewritten`: the source data folder was rewritten in text too, by the restore or by repairMovedWorkspacePaths. */
+export type LastWorkspaceRestore = WorkspaceRestoreResult & { restored: true; id: string; pathsRewritten?: true };
 
 function excluded(name: string): boolean {
   return EXCLUDED.has(name) || excludedWorkspaceAuthPath(name) || name.startsWith("openmausbot-server.lease.") || name.startsWith("box-create-requests.lock.") || /^perm-[A-Za-z0-9_-]+\.sock$/.test(name);
@@ -86,14 +86,12 @@ function forbiddenArchivePath(path: string): boolean {
     (path !== folded && ["config.json", "webhooks.json"].includes(folded));
 }
 function preserved(name: string): boolean {
-  // Existing WAL/SHM belong to the old database and must move into safety,
-  // never accompany a different restored main database.
+  // An existing WAL/SHM belongs to the old database: it must never accompany a different restored main database.
   const folded = name.toLowerCase();
-  return excluded(folded) && folded !== "messages.db-wal" && folded !== "messages.db-shm";
+  return excluded(folded) && !LIVE_DATABASE_SIDECARS.has(folded);
 }
-/** Left where it is by a restore. The session registry's open marker is this
- * machine's own (never exported or installed): a crash before the restore
- * still costs account sign-ins, as it would have without one. */
+const SNAPSHOT_DATABASES: Record<string, string> = { "messages.db": "messages-snapshot.db", "runtime.db": "runtime-snapshot.db" };
+const LIVE_DATABASE_SIDECARS = new Set(Object.keys(SNAPSHOT_DATABASES).flatMap((name) => [`${name}-wal`, `${name}-shm`]));
 function keptInPlace(name: string): boolean {
   return preserved(name) || name.toLowerCase() === "sessions.json.open";
 }
@@ -126,11 +124,6 @@ function newJob(dataDir: string, id: string = randomUUID()): { id: string; direc
   mkdirSync(directory, { mode: 0o700 });
   return { id, directory };
 }
-function validRelative(path: string): boolean {
-  return !!path && path.length <= 4096 && !isAbsolute(path) && !/[\\\0:]/.test(path) &&
-    path.split("/").every((part) => !!part && part !== "." && part !== ".." && !/[. ]$/.test(part) &&
-      !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part));
-}
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -158,8 +151,6 @@ function assertLocalAuthOutsideSnapshot(dataDir: string): void {
   const configPath = join(dataDir, "config.json");
   const config = existsSync(configPath) ? privateJson(configPath) : {};
   const instances = record(config) && record(config.instances) ? config.instances : {};
-  // These are the concrete auth/home overrides read by current CLI drivers,
-  // not a recursive guess at which arbitrary user settings contain secrets.
   const fields = ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "GROK_HOME", "KIMI_CODE_HOME", "HERMES_HOME", "FACTORY_HOME_OVERRIDE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "LOCALAPPDATA"];
   const check = (value: unknown, field: string, home: string) => {
     if (typeof value !== "string" || !value.trim()) return;
@@ -194,8 +185,7 @@ function passwordKey(password: string, salt: Buffer): Promise<Buffer> {
   });
 }
 
-// Open without following links and copy synchronously so this server cannot
-// interleave a mutation. External writers are detected where stat permits.
+// No link following, and a synchronous copy so this server cannot interleave a mutation.
 function copyRegular(source: string, destination: string): { size: number; mode: number; sha256: string } {
   const input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
   let output: number | undefined;
@@ -272,8 +262,7 @@ function databaseCounts(path: string): { threads: number; messages: number } {
  * Keep synchronous file validation/fsync intact, but off the request thread. */
 export async function createWorkspaceBackup(dataDir: string, options: CreateWorkspaceBackupOptions): Promise<CreatedWorkspaceBackup> {
   const source = new URL("./workspace-backup.worker.ts", import.meta.url);
-  // Assign ownership before the worker can create staging, including crashes
-  // too early to send a job-created message back to this process.
+  // Assign ownership before the worker can create staging, even if it crashes before reporting back.
   const jobId = randomUUID();
   let worker: Worker | undefined;
   let completed = false;
@@ -295,12 +284,10 @@ export async function createWorkspaceBackup(dataDir: string, options: CreateWork
     return result;
   } finally {
     await worker?.terminate();
-    // Reuse the guarded deletion path: never sweep other jobs or recovery.
     if (!completed && entryExists(join(dataDir, ".backups", jobId))) removeWorkspaceBackupJob(dataDir, jobId);
   }
 }
 
-/** Worker implementation; application callers use createWorkspaceBackup. */
 export async function createWorkspaceBackupSnapshot(dataDir: string, options: CreateWorkspaceBackupOptions, jobId?: string): Promise<CreatedWorkspaceBackup> {
   if (Object.hasOwn(options, "credentials")) throw new Error("Workspace backups do not transfer credentials.");
   assertLocalAuthOutsideSnapshot(dataDir);
@@ -310,6 +297,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
   const snapshot = join(job.directory, "snapshot");
   folder(join(snapshot, "data"));
   const entries: Entry[] = [];
+  const foldedPaths = new Map<string, string>();
   const warnings = ["Stop external editors and managed desktops before exporting; files written outside this server cannot be frozen by the backup gate.", "Conversation text and user files are not redacted and may contain secrets you pasted. Keep the encrypted backup private.", RESTORE_WARNING];
   let bytes = 0;
   let skippedLinks = 0;
@@ -317,45 +305,35 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
   let skippedWorkLinks = 0;
   try {
     const root = realpathSync(dataDir);
-    const sourceDb = join(root, "messages.db");
-    // The caller closes its message handle after flushing, while maintenance
-    // remains held. The native snapshot includes any committed WAL records.
-    if (existsSync(sourceDb)) {
-      if (lstatSync(sourceDb).isSymbolicLink()) throw new Error("The message database must not be a symbolic link.");
-      const db = new DatabaseSync(sourceDb, { readOnly: true });
-      // Node 26's native backup completion can wait for unrelated event-loop
-      // activity after an async scrypt. A scoped pulse prevents an idle server
-      // from waiting indefinitely; it owns no data and always stops here.
+    for (const [name, snapshotName] of Object.entries(SNAPSHOT_DATABASES)) {
+      const sourceDb = join(root, name);
+      if (!existsSync(sourceDb)) continue;
+      if (lstatSync(sourceDb).isSymbolicLink()) throw new Error(`The ${name === "messages.db" ? "message" : "runtime"} database must not be a symbolic link.`);
+      // Another connection may open this database meanwhile; without a busy timeout the backup fails at once ("database is locked").
+      const db = new DatabaseSync(sourceDb, { readOnly: true, timeout: 5_000 });
+      // Node 26's native backup completion can wait on unrelated event-loop activity after an async scrypt; this pulse keeps it moving.
       const completionPulse = setInterval(() => {}, 25);
-      try { await backup(db, join(snapshot, "messages-snapshot.db")); }
+      try { await backup(db, join(snapshot, snapshotName)); }
       finally { clearInterval(completionPulse); db.close(); }
-      const snapshotDb = new DatabaseSync(join(snapshot, "messages-snapshot.db"));
+      const snapshotDb = new DatabaseSync(join(snapshot, snapshotName));
       try { snapshotDb.exec("PRAGMA journal_mode = DELETE"); } finally { snapshotDb.close(); }
     }
     const walk = (directory: string, prefix = "") => {
       for (const name of readdirSync(directory).sort()) {
         if (!prefix && excluded(name)) continue;
         const path = prefix ? `${prefix}/${name}` : name;
-        if (excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path)) continue;
-        // Do not silently skip noncanonical source spellings: reject them so
-        // a case-sensitive host cannot export auth paths active on Windows/Mac.
+        if (excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path) || liveDataEnginePath(path)) continue;
+        // Reject noncanonical spellings: a case-sensitive host must not export auth paths active on Windows/Mac.
         if (forbiddenArchivePath(path)) throw new Error("A workspace filename conflicts with a protected authentication or runtime path.");
-        if (!validRelative(path)) throw new Error("A workspace filename cannot be safely restored on supported platforms.");
+        if (!validRelative(path)) throw new Error(`Cannot back up a name that cannot be restored on every supported platform, such as one with ":" or "\\", a trailing dot or space, or a Windows device name like CON or AUX; rename it first: ${path}`);
         const source = join(directory, name);
         const stat = lstatSync(source);
-        // Installed dependencies come back from the project's lockfile, can
-        // hold more files than this format allows, and are often a link an
-        // agent made to another checkout's install. Leave them out.
         if (name === "node_modules" && (stat.isDirectory() || stat.isSymbolicLink())) {
           skippedDependencies++;
           continue;
         }
-        // A conversation's work folder (task-workspaces/<bot>/<thread>) holds
-        // what an agent made there, and agents link things in (another
-        // checkout, a virtualenv). A link's target is not this workspace's
-        // data, so the link is left out rather than failing the backup.
         if (stat.isSymbolicLink() && path.startsWith("task-workspaces/")) {
-          skippedWorkLinks++;
+          if (managedTaskSkillLink(source, path, [root, resolve(dataDir)])) skippedLinks++; else skippedWorkLinks++;
           continue;
         }
         if (stat.isSymbolicLink()) {
@@ -365,8 +343,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
           if (rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) || isAbsolute(rel)) {
             throw new Error(`Cannot back up symbolic link outside the workspace: ${path}`);
           }
-          // Only the app's disposable native-discovery links may be omitted.
-          // An arbitrary user link represents user data, even inside the root.
+          // Only the app's disposable native-discovery links may be omitted; any other link is user data.
           if (!/^workspaces\/[^/]+\/\.(?:claude|agents|grok)\/skills\/[^/]+$/.test(path) ||
             !rel.replaceAll("\\", "/").startsWith(`workspaces/${path.split("/")[1]}/skills/`)) {
             throw new Error(`Cannot back up user-created symbolic link; replace it with regular files first: ${path}`);
@@ -375,6 +352,9 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
           continue;
         }
         if (entries.length >= MAX_WORKSPACE_BACKUP_FILES) throw new Error("The workspace exceeds the 100,000-entry backup limit.");
+        const caseTwin = foldedPaths.get(path.toLowerCase());
+        if (caseTwin) throw new Error(`Cannot back up names that differ only by letter case, which collide on Windows and macOS; rename one first: ${caseTwin} and ${path}`);
+        foldedPaths.set(path.toLowerCase(), path);
         const destination = join(snapshot, "data", path);
         if (stat.isDirectory()) {
           folder(destination);
@@ -391,7 +371,7 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
               writeJson(destination, value);
             }
             copied = { size: lstatSync(destination).size, mode: 0o600, sha256: hashFile(destination) };
-          } else copied = copyRegular(path === "messages.db" ? join(snapshot, "messages-snapshot.db") : source, destination);
+          } else copied = copyRegular(SNAPSHOT_DATABASES[path] ? join(snapshot, SNAPSHOT_DATABASES[path]) : source, destination);
           bytes += copied.size;
           if (bytes > MAX_WORKSPACE_BACKUP_BYTES) throw new Error("The workspace exceeds the 10 GB backup limit.");
           entries.push({ path, type: "file", ...copied });
@@ -414,8 +394,6 @@ export async function createWorkspaceBackupSnapshot(dataDir: string, options: Cr
       summary, sourceDataDir: resolve(dataDir), clientState: options.clientState ?? {}, entries,
     };
     writeJson(join(snapshot, "manifest.json"), manifest);
-    // Validate our own output too: JSON serialization must never silently
-    // discard metadata or produce a backup the importer cannot read.
     validateManifest(privateJson(join(snapshot, "manifest.json")));
     const path = join(job.directory, "workspace.ombbackup");
     const iv = randomBytes(12);
@@ -507,9 +485,7 @@ async function inspectTar(path: string): Promise<Map<string, { type: string; siz
   const fd = openSync(path, "r");
   const signature = Buffer.alloc(4);
   try { readSync(fd, signature, 0, 4, 0); } finally { closeSync(fd); }
-  // This format is uncompressed tar. Reject auto-detected gzip and zstd
-  // before tar's parser can inflate an authenticated but malicious
-  // decompression bomb; tar is also told never to decompress (below).
+  // Uncompressed tar only: reject gzip/zstd before tar can inflate an authenticated decompression bomb.
   if ((signature[0] === 0x1f && signature[1] === 0x8b) || signature.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
     throw new Error("Compressed payloads are not supported in this workspace backup version.");
   }
@@ -520,8 +496,7 @@ async function inspectTar(path: string): Promise<Map<string, { type: string; siz
   await tar.t({ file: path, strict: true, brotli: false, zstd: false, onReadEntry(entry) {
     const name = entry.type === "Directory" ? entry.path.replace(/\/$/, "") : entry.path;
     const expectedRoot = name === "manifest.json" || name === "data" || name.startsWith("data/");
-    // ReadEntry normalizes backslashes on Windows; inspect the raw header too
-    // so the same hostile archive is rejected before extraction on every OS.
+    // ReadEntry normalizes backslashes on Windows; the raw header is checked too.
     if (entry.header.path?.includes("\\") || !validRelative(name) || !expectedRoot || !["File", "Directory"].includes(entry.type) ||
       names.has(name.toLowerCase()) || entries.size >= MAX_WORKSPACE_BACKUP_FILES + 2 ||
       !Number.isSafeInteger(entry.size) || entry.size < 0 || (entry.type === "Directory" && entry.size !== 0)) {
@@ -588,8 +563,7 @@ export async function stageWorkspaceBackup(dataDir: string, archivePath: string,
   const job = newJob(dataDir);
   const plaintext = join(job.directory, "archive.tar");
   try {
-    // No extraction, parser or metadata processing occurs until GCM final()
-    // authenticates the complete encrypted file.
+    // Nothing is parsed until GCM final() authenticates the whole file.
     await decryptArchive(archivePath, plaintext, options.password);
     const expected = await inspectTar(plaintext);
     const staged = join(job.directory, "staged");
@@ -620,14 +594,20 @@ export function readStagedWorkspaceBackup(dataDir: string, id: string): Workspac
   return { id, ...privateMetadata(manifest) };
 }
 
+/** A staged backup's own data folder, and the folder it was made from. */
+export function stagedWorkspaceData(dataDir: string, id: string): { data: string; sourceDataDir: string } {
+  readStagedWorkspaceBackup(dataDir, id);
+  const staged = join(jobPath(dataDir, id), "staged");
+  return { data: join(staged, "data"), sourceDataDir: validateManifest(privateJson(join(staged, "manifest.json"))).sourceDataDir };
+}
+
 export function commitPendingWorkspaceRestore(dataDir: string, id: string) {
   const root = backupRoot(dataDir);
   if (existsSync(join(root, "pending-restore.json"))) throw new Error("A workspace restore is already waiting for restart.");
   if (existsSync(join(root, `safety-${id}`))) throw new Error("This restore was already attempted. Preview the backup again to create a fresh restore attempt.");
   const metadata = readStagedWorkspaceBackup(dataDir, id);
   const manifest = validateStaged(join(jobPath(dataDir, id), "staged"));
-  // Discover adaptation errors before persisting a restart request. A broken
-  // legacy transcript or scheduler file must not trap subsequent app boots.
+  // Adapt before persisting a restart request: a broken legacy file must not trap later boots.
   prepareRestore(dataDir, id, manifest);
   writeJson(join(root, "pending-restore.json"), { id });
   return { id, restartRequired: true as const, summary: metadata.summary };
@@ -653,8 +633,7 @@ function readJournal(path: string): RestoreJournal {
 function rollback(dataDir: string, journal: RestoreJournal): void {
   const stage = join(jobPath(dataDir, journal.id), "apply", "data");
   const saved = join(backupRoot(dataDir), `safety-${journal.id}`, "data");
-  // Existence on both sides resolves a crash between rename and journal I/O.
-  // New data is moved back, never deleted; originals remain recoverable.
+  // Existence on both sides resolves a crash between rename and journal I/O; new data is moved back, never deleted.
   for (const name of journal.incoming) {
     const live = join(dataDir, name);
     const staged = join(stage, name);
@@ -678,65 +657,12 @@ function rollback(dataDir: string, journal: RestoreJournal): void {
   }
 }
 
-function rebasePath(value: string, source: string, destination: string): string {
-  // Explicit old-root prefix, not a free-form text replacement. Normalize
-  // Windows separators without interpreting unrelated external paths.
-  const normalized = value.replaceAll("\\", "/");
-  const original = source.replaceAll("\\", "/").replace(/\/$/, "");
-  if (normalized !== original && !normalized.startsWith(`${original}/`)) return value;
-  const suffix = normalized.slice(original.length).replace(/^\//, "");
-  if (suffix && !validRelative(suffix)) return value;
-  return suffix ? join(destination, suffix) : destination;
-}
-const PATH_KEYS = new Set(["cwd", "pinnedCwd", "workspace", "configDir", "profileDirectory", "agentDir", "dataDir", "home", "cli", "path", "filePath", "localPath"]);
-function rebaseFields(value: unknown, source: string, destination: string): void {
-  if (Array.isArray(value)) { for (const item of value) rebaseFields(item, source, destination); }
-  else if (record(value)) {
-    for (const [key, item] of Object.entries(value)) {
-      if (PATH_KEYS.has(key) && typeof item === "string") value[key] = rebasePath(item, source, destination);
-      else if (typeof item === "object") rebaseFields(item, source, destination);
-    }
-  }
-}
-function rebaseMessage(message: unknown, source: string, destination: string): void {
-  if (!record(message)) return;
-  for (const field of ["attachments", "images", "fileAttachments", "file", "card"]) rebaseFields(message[field], source, destination);
-  if (typeof message.text !== "string") return;
-  // Only actual top-level attachment markup is rewritten. Quoted prose,
-  // code fences, pasted text and arbitrary mentions of the old path stay exact.
-  const text = message.text;
-  const edits: Array<{ from: number; to: number; text: string }> = [];
-  // A tag after a single newline remains inline HTML within a Markdown
-  // paragraph, even though the app's attachment parser treats its whole line
-  // as a card. Do not descend into quotes/lists/code or arbitrary HTML blocks.
-  const candidates = fromMarkdown(text).children.flatMap((node) => node.type === "html" ? [node] :
-    node.type === "paragraph" ? node.children.filter((child) => child.type === "html") : []);
-  for (const node of candidates) {
-    if (node.position?.start.offset === undefined || node.position.end.offset === undefined || node.position.start.column !== 1) continue;
-    const lineEnd = text.indexOf("\n", node.position.end.offset);
-    if (text.slice(node.position.end.offset, lineEnd < 0 ? text.length : lineEnd).trim()) continue;
-    const parsed = splitTranscriptAttachments(node.value, false);
-    if (parsed.display.trim() || !parsed.images.length && !parsed.files.length) continue;
-    const next = node.value.replace(/(<attached-(?:image|file)[\t ]+path=")([^"\r\n]*)(")/g, (whole, before: string, encoded: string, after: string) => {
-      const attachment = [...parsed.images, ...parsed.files].find((item) => escapeAttribute(item.path) === encoded);
-      return attachment ? `${before}${escapeAttribute(rebasePath(attachment.path, source, destination))}${after}` : whole;
-    });
-    if (next !== node.value) edits.push({ from: node.position.start.offset, to: node.position.end.offset, text: next });
-  }
-  let next = text;
-  for (const edit of edits.reverse()) next = next.slice(0, edit.from) + edit.text + next.slice(edit.to);
-  message.text = next;
-}
 function prepareRestore(dataDir: string, id: string, manifest: Manifest): string {
   assertLocalAuthOutsideSnapshot(dataDir);
   const job = jobPath(dataDir, id);
   const prepared = join(job, "apply", "data");
   if (existsSync(join(job, "apply"))) rmSync(join(job, "apply"), { recursive: true, force: true });
   folder(prepared);
-  // Keep the authenticated original staging tree intact for reinspection and
-  // recovery. Only this installation copy has paths/scheduling adapted.
-  // An archive from a release that exported per-turn hook tokens still
-  // restores; the dead tokens themselves are never installed.
   const installed = manifest.entries.filter((entry) => !ephemeralWorkspaceTokenPath(entry.path));
   for (const entry of installed.filter((entry) => entry.type === "directory")) folder(join(prepared, entry.path));
   for (const entry of installed) {
@@ -750,27 +676,32 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
     change(value);
     writeJson(path, value);
   };
-  for (const name of ["bots.json", "groups.json", "config.json", "routines.json", "calendar-calls.json"]) {
-    changeJson(name, (value) => rebaseFields(value, manifest.sourceDataDir, resolve(dataDir)));
-  }
-  // Voice provider configuration and credentials deliberately stay with the
-  // destination installation. Imported per-agent ids belong to the source
-  // provider's catalog, so retaining them could send an incompatible id to
-  // the destination provider.
+  const paths = restorePaths(manifest.sourceDataDir, resolve(dataDir));
   changeJson("bots.json", (value) => {
     if (!Array.isArray(value)) throw new Error("Invalid bot definitions in workspace backup.");
-    for (const bot of value) if (record(bot)) delete bot.voice;
+    for (const bot of value) if (record(bot)) {
+      paths.definitions(bot, String(bot.id));
+      if (typeof bot.soul === "string") bot.soul = paths.text(bot.soul);
+      delete bot.voice;
+    }
   });
-  // Never install source connection settings. Destination keys, endpoints,
-  // driver environments and MCP configuration remain paired and unchanged.
+  changeJson("groups.json", (value) => {
+    paths.definitions(value);
+    if (Array.isArray(value)) for (const group of value) if (record(group) && typeof group.bulletin === "string") group.bulletin = paths.text(group.bulletin);
+  });
+  for (const name of ["config.json", "routines.json", "calendar-calls.json"]) changeJson(name, (value) => paths.definitions(value));
+  for (const entry of installed) {
+    if (entry.type !== "file" || entry.size > MAX_METADATA_BYTES || !INSTRUCTION_FILE.test(entry.path)) continue;
+    const before = readFileSync(join(prepared, entry.path), "utf8");
+    const after = paths.text(before);
+    if (after !== before) writeFileAtomic(join(prepared, entry.path), after, { mode: entry.mode });
+  }
+  // Never install source connection settings.
   const oldConfig = join(dataDir, "config.json");
   const newConfig = join(prepared, "config.json");
   if (existsSync(oldConfig) || existsSync(newConfig)) {
     writeJson(newConfig, restoredWorkspaceConfig(existsSync(newConfig) ? privateJson(newConfig) : {}, existsSync(oldConfig) ? privateJson(oldConfig) : {}));
   }
-  // Browser authentication lives alongside ordinary VM files. Copy only the
-  // destination's excluded subtrees into the install copy, never the archive.
-  // They then participate in the same top-level swap and crash rollback.
   const browserHomes = ["vm-home"];
   const vmHomes = join(dataDir, "vm-homes");
   if (entryExists(vmHomes)) {
@@ -788,7 +719,10 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
   }
   changeJson("routines.json", (value) => {
     if (!record(value)) throw new Error("Invalid routine definitions in workspace backup.");
-    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) routine.enabled = false;
+    if (Array.isArray(value.routines)) for (const routine of value.routines) if (record(routine)) {
+      routine.enabled = false;
+      if (typeof routine.prompt === "string") routine.prompt = paths.text(routine.prompt);
+    }
     if (Array.isArray(value.runs)) for (const run of value.runs) {
       if (record(run) && ["queued", "running", "waiting"].includes(String(run.status))) {
         run.status = "failed";
@@ -806,8 +740,7 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       webhook.enabled = false;
       webhook.verificationPending = false;
       const previous = oldHooks.find((old) => record(old) && old.id === webhook.id && old.endpointId === webhook.endpointId);
-      // Unknown random hashes cannot authenticate a caller. A migrated hook
-      // needs an explicit secret rotation before it can receive anything.
+      // A migrated hook needs a secret rotation: an unknown hash cannot authenticate a caller.
       webhook.secretHash = record(previous) && typeof previous.secretHash === "string" && /^[a-f0-9]{64}$/.test(previous.secretHash) ? previous.secretHash : randomBytes(32).toString("hex");
     }
   });
@@ -819,8 +752,8 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
   if (existsSync(join(prepared, "browser-cleanups.json"))) writeJson(join(prepared, "browser-cleanups.json"), []);
   for (const entry of manifest.entries) {
     if (/^messages-[^/]+\.json$/.test(entry.path)) changeJson(entry.path, (value) => {
-      if (Array.isArray(value)) for (const message of value) rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
-      else if (record(value) && Array.isArray(value.messages)) for (const message of value.messages) rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
+      if (Array.isArray(value)) for (const message of value) paths.message(message);
+      else if (record(value) && Array.isArray(value.messages)) for (const message of value.messages) paths.message(message);
     });
   }
   const dbPath = join(prepared, "messages.db");
@@ -832,19 +765,17 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
         const update = db.prepare("UPDATE messages SET json = ?, text = ? WHERE thread_id = ? AND id = ?");
         for (const row of db.prepare("SELECT thread_id, id, json FROM messages").iterate()) {
           const message: unknown = JSON.parse(String(row.json));
-          rebaseMessage(message, manifest.sourceDataDir, resolve(dataDir));
+          paths.message(message);
           const json = JSON.stringify(message);
           if (json !== row.json) update.run(json, record(message) && typeof message.text === "string" ? message.text : null, row.thread_id, row.id);
         }
       }
-      // Import is not a server restart: the source may still be running.
-      // Keep accepted words/receipts for review, but never execute a copy of
-      // its pending work (including when restoring to the original home).
+      // Import is not a restart: the source may still be running, so never execute a copy of its pending work.
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_followups'").get()) {
         const pause = db.prepare("UPDATE chat_followups SET status = 'interrupted', payload = ? WHERE id = ?");
         for (const row of db.prepare("SELECT id, payload FROM chat_followups WHERE status IN ('pending', 'dispatching', 'interrupted')").iterate()) {
           const payload: unknown = JSON.parse(String(row.payload));
-          rebaseMessage(payload, manifest.sourceDataDir, resolve(dataDir));
+          paths.message(payload);
           if (record(payload)) delete payload.prompt;
           pause.run(JSON.stringify(payload), row.id);
         }
@@ -852,6 +783,36 @@ function prepareRestore(dataDir: string, id: string, manifest: Manifest): string
       db.exec("COMMIT");
     } finally { db.close(); }
   }
+  const runtimePath = join(prepared, "runtime.db");
+  if (existsSync(runtimePath)) {
+    const db = new DatabaseSync(runtimePath);
+    try {
+      db.exec("BEGIN");
+      const now = Date.now();
+      const update = db.prepare("UPDATE assignments SET status = 'failed', finished_at = ?, json = ? WHERE id = ?");
+      const event = db.prepare("INSERT INTO assignment_events (assignment_id, at, kind, detail) VALUES (?, ?, 'settled', ?)");
+      for (const row of db.prepare("SELECT id, json FROM assignments WHERE status NOT IN ('completed', 'failed', 'cancelled')").iterate()) {
+        const assignment: unknown = JSON.parse(String(row.json));
+        if (!record(assignment)) continue;
+        assignment.status = "failed";
+        assignment.outcome = "interrupted";
+        assignment.outcomeDetail = "Not resumed after workspace restore.";
+        assignment.result = "Not resumed after workspace restore.";
+        assignment.finishedAt = now;
+        assignment.lastActivityAt = now;
+        delete assignment.restart;
+        delete assignment.question;
+        delete assignment.answer;
+        update.run(now, JSON.stringify(assignment), row.id);
+        event.run(row.id, now, "failed: interrupted — Not resumed after workspace restore.");
+      }
+      db.exec("COMMIT");
+      db.exec("PRAGMA journal_mode = DELETE");
+    } finally { db.close(); }
+  }
+  const leftBehind = paths.leftBehind();
+  if (leftBehind) writeJson(join(job, "left-behind.json"), leftBehind);
+  else rmSync(join(job, "left-behind.json"), { force: true });
   return prepared;
 }
 
@@ -871,19 +832,19 @@ function finishRestore(dataDir: string, id: string, consumePending = true): Last
     try {
       const value: unknown = JSON.parse(draftAttachments);
       const manifest = validateManifest(privateJson(join(jobPath(dataDir, id), "staged", "manifest.json")));
-      rebaseFields(value, manifest.sourceDataDir, resolve(dataDir));
+      restorePaths(manifest.sourceDataDir, resolve(dataDir)).fields(value);
       clientState["omb-draft-attachments"] = JSON.stringify(value);
-    } catch { /* A malformed client draft must not jeopardize durable server data. */ }
+    } catch {}
   }
-  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState };
+  const leftBehind = join(jobPath(dataDir, id), "left-behind.json");
+  const result: LastWorkspaceRestore = { restored: true, id, safetyCopyPath: join(root, `safety-${id}`), summary, clientState, pathsRewritten: true,
+    ...(existsSync(leftBehind) ? { leftBehind: privateJson(leftBehind) as WorkspaceLeftBehind } : {}) };
   writeJson(join(root, "last-restore.json"), result);
   if (consumePending) rmSync(join(root, "pending-restore.json"), { force: true });
   return result;
 }
 
-/** Called after the data-directory lease, before anything reads app state.
- * The DATA_DIR itself and all destination identity/session/lease files stay
- * in place. The previous durable tree is retained under .backups/safety-ID. */
+/** Call after the data-directory lease, before anything reads app state; the old tree stays under .backups/safety-ID. */
 export function applyPendingWorkspaceRestore(dataDir: string): WorkspaceRestoreResult {
   const root = backupRoot(dataDir);
   const journalFile = join(root, "restore-journal.json");
@@ -916,8 +877,7 @@ export function applyPendingWorkspaceRestore(dataDir: string): WorkspaceRestoreR
     existing: readdirSync(dataDir).filter((name) => !keptInPlace(name)).sort(),
     incoming: readdirSync(prepared).sort(),
   };
-  // Top-level source and destination names are checked before recording any
-  // move; a restored root never traverses an archive-controlled directory.
+  // Names are checked before any move is recorded; a restored root never traverses an archive-controlled directory.
   for (const name of [...journal.existing, ...journal.incoming]) {
     if (!validRelative(name) || name.includes("/") || preserved(name)) throw new Error("Unsafe workspace restore target.");
   }
@@ -938,8 +898,6 @@ export function applyPendingWorkspaceRestore(dataDir: string): WorkspaceRestoreR
   return finishRestore(dataDir, pending.id);
 }
 
-/** Delete only an unreferenced upload/export/staging job, never a safety copy
- * or a job needed by a pending restore or its latest recovery receipt. */
 export function removeWorkspaceBackupJob(dataDir: string, id: string): void {
   const path = jobPath(dataDir, id);
   const root = backupRoot(dataDir);
@@ -954,9 +912,6 @@ export function removeWorkspaceBackupJob(dataDir: string, id: string): void {
   rmSync(path, { recursive: true, force: true });
 }
 
-/** Whether a snapshot leaves out this workspace-relative path, by the same
- * rules as the export walk (cloud-move.ts sizes a move with it). Symbolic
- * links are the caller's to skip. */
 export function omittedFromWorkspaceBackup(path: string): boolean {
-  return excluded(path.split("/")[0]) || excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path);
+  return excluded(path.split("/")[0]) || excludedWorkspaceAuthPath(path) || ephemeralWorkspaceTokenPath(path) || redownloadedOrgLibraryPath(path) || liveDataEnginePath(path);
 }

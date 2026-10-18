@@ -83,7 +83,6 @@ describe("presets in New bot", () => {
     expect(calls[0]).toMatchObject({ path: "POST /api/bots", body: { preset: "p1", name: "Sky", useDefaults: false } });
     expect(calls.filter((call) => call.path.endsWith("/memory/file")).map((call) => call.body.path)).toEqual(["memory/other.md"]);
     expect(calls.filter((call) => call.path.endsWith("/skill-template")).map((call) => call.body.name)).toEqual(["follow-up"]);
-    // Choosing a built-in role (or Custom) afterwards forgets the preset.
     draft.choosePreset(undefined);
     calls.length = 0;
     await createConfiguredBot(draft, request, persistBotUpdate);

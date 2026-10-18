@@ -1,5 +1,3 @@
-// Registry and stylesheet are two halves of one contract: a font listed here
-// without a CSS block silently renders as the skin's font, so it gets a test.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -35,7 +33,6 @@ describe("fonts", () => {
   });
 
   it("registers every stylesheet block", () => {
-    // SAFETY: the assertion only fits toContain()'s parameter type.
     for (const id of blocks) expect(FONT_IDS).toContain(id as (typeof FONT_IDS)[number]);
   });
 

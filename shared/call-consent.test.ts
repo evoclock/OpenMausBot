@@ -22,10 +22,8 @@ describe("spokenConsent", () => {
     expect(spokenConsent("yesterday was fine")).toBeNull();
   });
 
-  // On a Live call the microphone stays open while the voice speaks, and
-  // nothing waits for the person to finish a thought: "okay…" then a pause
-  // then "wait, what does it delete?" granted the card. Take turns closes the
-  // microphone while the bot talks and keeps its rule.
+  // On a Live call the microphone stays open while the voice speaks; Take turns
+  // closes it while the bot talks and keeps its rule.
   describe("on a Live call", () => {
     it("does not take a hedging okay, sure or fine as a yes", () => {
       for (const said of ["okay", "OK.", "ok", "sure", "fine", "Okay... wait, what does it delete?", "okay I need your permission to run a command"]) {

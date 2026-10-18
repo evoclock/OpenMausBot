@@ -6,10 +6,9 @@ import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { collisionFreeDownloadPath, defaultSaveName, resolveSavablePath, revealDownloadWhenDone, withSavableFile } from "./save-file.mjs";
+import { collisionFreeDownloadPath, defaultSaveName, resolveSavablePath, revealDownloadWhenDone, revealInFolder, withSavableFile } from "./save-file.mjs";
 
-// Creating a symlink on Windows needs elevation or developer mode, so the
-// symlink cases only run where the runner can actually make one.
+// Creating a symlink on Windows needs elevation or developer mode.
 const canSymlink = (() => {
   const probe = fs.mkdtempSync(path.join(os.tmpdir(), "omb-symlink-probe-"));
   try {
@@ -40,9 +39,7 @@ after(() => {
 describe("save-file path validation", () => {
   it("accepts a file inside the bot home, as a path or a file:// URL", async () => {
     const file = path.join(botHome, "workspaces", "bot", "report.docx");
-    // must be fs.promises.realpath, the same call the module makes: on Windows
-    // the callback API leaves 8.3 short names ("RUNNER~1") that the promises
-    // API expands ("runneradmin"), so mixing the two compares different strings
+    // fs.promises.realpath, as the module uses: on Windows the callback API leaves 8.3 short names that the promises API expands.
     const expected = await fs.promises.realpath(file);
     assert.equal(await resolveSavablePath(file, { home }), expected);
     assert.equal(await resolveSavablePath(pathToFileURL(file).href, { home }), expected);
@@ -194,8 +191,7 @@ describe("save-file source handles", () => {
 
   it("rejects a validation-to-open identity swap on Windows", async () => {
     const source = path.join(botHome, "workspaces", "bot", "report.docx");
-    // These IDs are distinct BigInts but collapse to the same Number. The
-    // options assertions below make the precision guarantee executable.
+    // Distinct BigInts that collapse to the same Number.
     const expected = { dev: 1n, ino: 9007199254740992n, isFile: () => true };
     const opened = { dev: 1n, ino: 9007199254740993n, isFile: () => true };
     let closed = false;
@@ -225,5 +221,48 @@ describe("save-file source handles", () => {
     assert.equal(closed, true);
     assert.deepEqual(statOptions, { bigint: true });
     assert.deepEqual(handleStatOptions, { bigint: true });
+  });
+});
+
+describe("Show in folder for a file outside the workspace", () => {
+  const shell = () => {
+    const shown = [];
+    return { shown, reveal: (target) => shown.push(target) };
+  };
+
+  it("reveals an existing file or folder by its normalised absolute path", async () => {
+    const file = path.join(home, "secret.txt");
+    const spelled = path.join(home, "workspace-elsewhere", "..", "secret.txt");
+    const { shown, reveal } = shell();
+    assert.equal(await revealInFolder(spelled, { reveal }), "shown");
+    assert.equal(await revealInFolder(botHome, { reveal }), "shown");
+    assert.deepEqual(shown, [file, botHome]);
+  });
+
+  it("says a missing file is missing and reveals nothing", async () => {
+    const { shown, reveal } = shell();
+    assert.equal(await revealInFolder(path.join(home, "gone.js"), { reveal }), "missing");
+    assert.deepEqual(shown, []);
+  });
+
+  it("refuses relative paths, URLs and network shares without touching the disk", async () => {
+    const { shown, reveal } = shell();
+    const fsp = { stat: () => assert.fail("an invalid path must not be looked up") };
+    for (const rawPath of ["secret.txt", "../secret.txt", pathToFileURL(path.join(home, "secret.txt")).href,
+      "https://example.com/x", "//server/share/x", "", "\0", null, 42]) {
+      assert.equal(await revealInFolder(rawPath, { reveal, fsp }), "invalid", String(rawPath));
+    }
+    for (const rawPath of ["\\\\server\\share\\x.js", "\\\\?\\C:\\x.js", "C:relative.js", "file:///C:/x.js"]) {
+      assert.equal(await revealInFolder(rawPath, { reveal, fsp, pathApi: path.win32 }), "invalid", rawPath);
+    }
+    assert.deepEqual(shown, []);
+  });
+
+  it("accepts a Windows drive path like the one in the report", async () => {
+    const { shown, reveal } = shell();
+    const fsp = { stat: async () => ({ isFile: () => true, isDirectory: () => false }) };
+    const rawPath = "C:\\Users\\Maus\\_draft\\..\\_draft\\ollama-gen.js";
+    assert.equal(await revealInFolder(rawPath, { reveal, fsp, pathApi: path.win32 }), "shown");
+    assert.deepEqual(shown, ["C:\\Users\\Maus\\_draft\\ollama-gen.js"]);
   });
 });

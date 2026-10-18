@@ -25,7 +25,6 @@ describe("bot-attached files", () => {
       ],
     });
     expect(splitMessageAttachments(undefined)).toEqual({ images: [], files: [] });
-    // Voice notes have their own player; unknown future kinds aren't images.
     expect(splitMessageAttachments([
       ...attachments, { kind: "audio", path: "/store/voice.mp3" }, { kind: "future", path: "/store/unknown" },
     ])).toEqual(splitMessageAttachments(attachments));
@@ -37,7 +36,6 @@ describe("bot-attached files", () => {
     expect(html).toContain("song.mp3");
     expect(html).toContain("deck.pptx");
     expect(html).toContain("Play song.mp3");
-    // A link to a file that is already attached adds no second card.
     expect(render("Done: [the deck](/store/cccc.pptx)")).toBe(html);
   });
 

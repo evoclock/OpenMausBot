@@ -1,5 +1,5 @@
-// The shape of one line in a bot's activity log, shared by the harness
-// reader (server/activity.ts) and the panel that renders it.
+// The shape of one line in a bot's activity log, shared by the harness reader
+// and the panel that renders it.
 
 export type ActivityOutcome =
   /** the tool finished and reported success */
@@ -21,7 +21,6 @@ export interface ActivityRow {
   threadId: string;
   turnId?: string;
   requestId?: string;
-  /** the raw tool name, for anyone who wants it */
   tool: string;
   /** the connected app or surface it touched, when there is one */
   app: string | null;

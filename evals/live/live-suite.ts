@@ -14,9 +14,8 @@ import {
   type LiveScenarioOutcome,
 } from "./types.ts";
 
-/** Tier-3 glue: loading, adapting, checking and scoring live scenarios.
- * Pure functions only — everything that touches a server or a real model
- * lives in run-live.ts, so all of this is unit-testable offline. */
+/** Tier-3 glue: loading, adapting, checking and scoring live scenarios. Pure
+ * functions only, so all of this is unit-testable offline. */
 
 const LIVE_DIR = join(dirname(fileURLToPath(import.meta.url)));
 export const LIVE_SCENARIOS_DIR = join(LIVE_DIR, "scenarios");

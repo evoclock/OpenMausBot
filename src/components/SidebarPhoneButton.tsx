@@ -31,9 +31,6 @@ export interface SidebarPhoneStatus {
   connectedCount: number;
 }
 
-/** Current sidecars report authenticated live event streams, so green means a
- * phone is connected now. The timestamp fallback is deliberately neutral and
- * exists only for an older unpackaged development sidecar. */
 export function deriveSidebarPhoneStatus(
   snapshot: SidebarPhoneSnapshot | null | undefined,
   now: number,
@@ -88,8 +85,6 @@ export function deriveSidebarPhoneStatus(
     };
   }
 
-  // Compatibility with a sidecar from an older unpackaged development build.
-  // Recent activity stays neutral because it is not proof of a live stream.
   const recentCount = snapshot.devices.filter((device) => {
     const age = now - device.lastSeenAt;
     return Number.isFinite(device.lastSeenAt) && age >= 0 && age <= SIDEBAR_PHONE_RECENT_MS;
@@ -113,7 +108,6 @@ export function deriveSidebarPhoneStatus(
   };
 }
 
-/** Settings → Remote access, at the phone pairing (lib/phone-pairing.ts). */
 export const phoneSettingsAction = phonePairingSettingsAction;
 
 export function useSidebarPhoneStatus(): SidebarPhoneStatus {
@@ -171,7 +165,7 @@ export function SidebarPhoneStatusButton({
       data-phone-status={status.kind}
       data-sidebar-density={density}
       className={cn(
-        "relative flex size-10 shrink-0 items-center justify-center rounded-md hover:bg-raised",
+        "relative flex size-[46px] shrink-0 items-center justify-center rounded-xl hover:bg-raised",
         density === "icons" && "mx-auto",
         connected ? "text-success" : "text-ink-secondary hover:text-ink",
       )}

@@ -4,10 +4,7 @@ import { expect, it } from "vitest";
 import { FIXTURE_STARTER_BOT_NAME, launchVerificationServer } from "../scripts/control-omb.ts";
 
 it("pins the fixture starter bot's name deterministically (#1257)", async () => {
-  // The first-run seed draws a random name from server/names.ts — "Quill" is
-  // in that pool — so a suite planning a bot named like the starter could
-  // flake on a name-based assertion. Two launches must both see exactly one
-  // starter with the pinned name, whatever the pool drew.
+  // The first-run seed draws a random name from server/names.ts, which includes "Quill": both launches must see the pinned name.
   for (let launch = 0; launch < 2; launch++) {
     const fixture = await launchVerificationServer({});
     try {
@@ -25,8 +22,7 @@ it("pins the fixture starter bot's name deterministically (#1257)", async () => 
   }
 });
 
-/** An executable this machine has installed outside anything the fixture is
- * granted (node's own directory is its whole PATH). */
+/** Installed outside anything the fixture is granted (node's own directory is its whole PATH). */
 function machineInstalledCli(): string | undefined {
   const granted = dirname(process.execPath);
   for (const dir of ["/opt/homebrew/bin", "/usr/local/bin"]) {
@@ -36,15 +32,13 @@ function machineInstalledCli(): string | undefined {
       try {
         const stat = statSync(join(dir, name));
         if (stat.isFile() && stat.mode & 0o111) return name;
-      } catch { /* a dangling link is not an installed CLI */ }
+      } catch {}
     }
   }
   return undefined;
 }
 
 it("keeps the fixture blind to this machine's installed CLIs (#2035)", async () => {
-  // Homebrew's `codex` once made the product fleet's ChatGPT plan engine
-  // "available" in the fixture on a developer Mac, never on CI.
   const cli = machineInstalledCli();
   const fixture = await launchVerificationServer({});
   try {
@@ -61,8 +55,7 @@ it("keeps the fixture blind to this machine's installed CLIs (#2035)", async () 
     expect(instances.filter((instance) => instance.snapshot.state === "available").map((instance) => instance.instanceId))
       .toEqual(["claude"]);
     if (cli) {
-      // Each lookup rescans and restarts the login-shell PATH probe, whose
-      // result lands a moment later: ask again after it would have.
+      // Each lookup restarts the login-shell PATH probe, whose result lands a moment later: ask again after it would have.
       for (let attempt = 0; attempt < 3; attempt++) {
         if (attempt) await new Promise((resolve) => setTimeout(resolve, 500));
         expect((await get(`/api/cli-candidates?name=${encodeURIComponent(cli)}`)).candidates).toEqual([]);

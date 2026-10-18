@@ -1,11 +1,4 @@
-// The container image's entry point (Dockerfile, deploy/podman/Containerfile).
-// It runs the server (index.js beside it) and starts it again when the server
-// asks to (RESTART_EXIT_CODE, after a copied workspace commits;
-// docs/copy-workspace.md), so the container never exits for that. A Caddy
-// sharing its network (compose `network_mode: service:omb`) is cut off when
-// the container restarts, until `docker compose up -d`; this keeps it served.
-// SIGTERM and SIGINT are passed on, and the launcher exits with the server's
-// own code.
+// Container entry: restarts the server in place on RESTART_EXIT_CODE, since a container restart cuts off a Caddy sharing its network.
 import { spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -38,9 +31,7 @@ export function superviseServer(start: () => ChildProcess, options: { signals?: 
   });
 }
 
-/** Run as the process's entry (`node dist-server/server-launcher.js`), not
- * imported. Node names the entry by its real path, so compare real paths: a
- * temporary folder on macOS is reached through a link. */
+/** Node names the entry by its real path, so compare real paths (a macOS temp folder is reached through a link). */
 function isEntry(): boolean {
   try { return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]!))).href; } catch { return false; }
 }

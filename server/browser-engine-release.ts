@@ -1,14 +1,10 @@
-// The pinned agent-browser release the harness downloads for the bots'
-// browser (docs/plans/browser-engine.md). Digests were computed from the
-// official GitHub assets on 2026-09-08, except the explicitly versioned Windows
-// vendor build below. Update pins through a reviewed native end-to-end run.
-// The Dockerfile retains the official Linux version.
+// Digests computed from the official GitHub assets on 2026-09-08, except the versioned Windows vendor build; update pins
+// only through a reviewed native end-to-end run. The Dockerfile keeps the official Linux version.
 export const AGENT_BROWSER_VERSION = "0.37.0";
 
 export interface AgentBrowserReleaseAsset {
   /** `<platform>-<arch>`; Linux adds `-musl` on Alpine-style systems. */
   target: string;
-  /** File name on the GitHub release. */
   asset: string;
   sha256: string;
   bytes: number;
@@ -46,7 +42,7 @@ const RELEASES = new Map<string, AgentBrowserReleaseAsset>([
   [
     "win32-x64",
     {
-      // Upstream 0.37.0 still lacks PR #1781's Windows cold-start fix.
+      // Upstream 0.37.0 still lacks vercel-labs/agent-browser#1781's Windows cold-start fix.
       // Retain the native-verified revision until its replacement is tested.
       target: "win32-x64", version: "0.36.0-omb.1",
       asset: "agent-browser-win32-x64-0.36.0-omb.1.exe",

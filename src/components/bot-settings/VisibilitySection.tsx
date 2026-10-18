@@ -1,9 +1,3 @@
-// Who can see this bot, on a workspace served to several people: everyone
-// who can sign in (the default), admins only, or the listed addresses (and
-// @domain entries) plus admins. Shown to admins only, and not in the desktop
-// app, where nobody else signs in. Saving is the change: the server narrows
-// every member's lists, conversations, files and live updates at once
-// (server/bot-visibility.ts). No confirmation step: it is a setting.
 import { useEffect, useState } from "react";
 import { Check, Loader2 } from "lucide-react";
 
@@ -20,22 +14,17 @@ export function formFromVisibility(visibility: BotVisibility | undefined): { mod
   return { mode: "people", people: visibility.people.join("\n") };
 }
 
-/** The PATCH value for the form; the server validates each address again. */
 export function visibilityFromForm(mode: VisibilityMode, people: string): { ok: true; visibility: BotVisibility } | { ok: false } {
   if (mode !== "people") return { ok: true, visibility: mode };
   const entries = [...new Set(people.split(/[\s,;]+/).map((entry) => entry.trim().toLowerCase()).filter(Boolean))];
   return entries.length ? { ok: true, visibility: { people: entries } } : { ok: false };
 }
 
-/** One audience, however it was written: absent is everyone, lists compare as sets. */
 export function audienceKey(visibility: BotVisibility | undefined): string {
   if (!visibility || visibility === "everyone" || visibility === "admins") return visibility ?? "everyone";
   return JSON.stringify([...new Set(visibility.people.map((entry) => entry.trim().toLowerCase()))].sort());
 }
 
-/** Rooms visible to fewer people than this bot: another bot in them has a
- * different audience, or the room kept a narrower one from before (a room's
- * floor never widens on its own; see server/bot-visibility.ts). */
 export function mixedRooms(
   bot: Pick<Bot, "id" | "visibility">,
   groups: ReadonlyArray<{ id: string; name: string; memberIds: string[]; dm?: boolean; audienceFloor?: BotVisibility }>,
@@ -69,8 +58,6 @@ export function VisibilitySection({ bot }: { bot: Bot }) {
   const [error, setError] = useState<string | null>(null);
   const dirty = mode !== saved.mode || (mode === "people" && people.trim() !== saved.people.trim());
 
-  // The stored value changed (another admin, or this save echoed back by the
-  // live stream): the form follows it.
   const storedKey = JSON.stringify(bot.visibility ?? "everyone");
   useEffect(() => {
     const next = formFromVisibility(JSON.parse(storedKey) as BotVisibility);
@@ -78,7 +65,6 @@ export function VisibilitySection({ bot }: { bot: Bot }) {
     setPeople(next.people);
   }, [bot.id, storedKey]);
 
-  /** The admin's explicit choice to widen a room to what its bots allow. */
   const resetRoom = async (groupId: string) => {
     setBusy(true);
     setError(null);

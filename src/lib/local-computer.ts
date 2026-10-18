@@ -10,10 +10,6 @@ export function instanceSupportsLocalComputer(
   return capabilities?.localComputerMcp === true || capabilities?.computerMcp === true;
 }
 
-/** Whether the Runs-on “This computer” control should be clickable.
- *  macOS keeps the destination available even before CUA has a grant, so
- *  the user can pick it and then approve Accessibility / Screen Recording
- *  instead of finding a grayed-out button. */
 export function localComputerSelectable({
   capabilities,
   providerSupportsLocal,
@@ -23,9 +19,6 @@ export function localComputerSelectable({
 }): boolean {
   if (!providerSupportsLocal) return false;
   if (capabilities.localComputer.available) return true;
-  // macOS and Windows both keep the destination clickable before the driver
-  // is live, so the user can pick it and then finish the permission/setup
-  // step instead of hunting for why the button is greyed out.
   return capabilities.host.platform === "darwin" || capabilities.host.platform === "win32";
 }
 
@@ -61,10 +54,6 @@ export function localComputerDisabledReason({
   return "CUA Driver is not ready for local computer control.";
 }
 
-export function linuxAutoDescription(): string {
-  return "Auto reuses an existing cloud computer; otherwise computer use stays off.";
-}
-
 export type BoatPanelAction =
   | "cloud-new"
   | "cloud-asleep"
@@ -80,19 +69,12 @@ export type BoatPanelAction =
 
 const READY_BOAT_STATES = new Set(["idle", "ready", "running"]);
 
-/** A Boat state the panel can attach to and poll. */
 export function isReadyBoatState(state: string | null | undefined): boolean {
   return typeof state === "string" && READY_BOAT_STATES.has(state);
 }
 const SLEEPING_BOAT_STATES = new Set(["archived", "stopped"]);
 
-/** Mirror the turn router's Boat choice without letting a passive panel open
- * mutate infrastructure. Opening the panel never creates, wakes, bootstraps,
- * or opens a Boat: with Cloud computer chosen the bot's first computer call
- * starts it, and the panel says so (cloud-new, cloud-asleep) next to the
- * person's own button to start it now. Auto only reports an existing Boat's
- * current state. This is deliberately independent of the engine: every engine
- * needs an explicit Cloud choice before anything may provision. */
+/** A passive panel open never provisions: nothing creates, wakes or opens a Boat without an explicit Cloud choice. */
 export function resolveBoatPanelAction({
   computer,
   configured,
@@ -108,13 +90,8 @@ export function resolveBoatPanelAction({
   canUseCloud: boolean;
   autoLocal: boolean;
   teamComputer?: boolean;
-  /** A turn is running on this bot: the server refuses provision/sleep
-   * with 409 while the turn owns the boat, and the turn itself creates or
-   * wakes the boat it needs. */
   busy?: boolean;
 }): BoatPanelAction {
-  // A team's explicit grant wins over Auto's private-Boat/local fallback.
-  // This panel reports it; paid lifecycle and shared access stay in Team map.
   if (computer === undefined && teamComputer) return "team-boat";
   const explicitCloud = computer === "cloud";
 
@@ -124,10 +101,7 @@ export function resolveBoatPanelAction({
   }
   if (explicitCloud) {
     if (!canUseCloud) return "auto-unavailable";
-    // A ready boat is shown as-is (mid-turn its frames already stream in).
     if (boatState && READY_BOAT_STATES.has(boatState)) return "attach-ready-boat";
-    // Mid-turn the panel only watches: anything else is the turn's to start
-    // on its first computer call, and so is a boat already starting.
     if (busy || (boatState && !SLEEPING_BOAT_STATES.has(boatState))) return "busy-boat";
     return boatState ? "cloud-asleep" : "cloud-new";
   }
@@ -139,11 +113,6 @@ export function resolveBoatPanelAction({
   return autoLocal ? "local" : "auto-unavailable";
 }
 
-/** What the panel shows while it watches a conversation's cloud computer
- * (busy-boat). A missing or sleeping computer is started only by the bot's
- * first computer call, so there is nothing to wait for: the panel says what
- * it found, without a spinner. Only a computer that is really starting spins:
- * a turn bringing it up, or one still coming up after a turn. */
 export function busyBoatView(boatState: string | null, busy: boolean): {
   line: "computer.cloud.new" | "computer.cloud.asleep" | "computer.phase.busyBoat" | "computer.phase.starting";
   spinner: boolean;
@@ -153,9 +122,7 @@ export function busyBoatView(boatState: string | null, busy: boolean): {
   return { line: busy ? "computer.phase.busyBoat" : "computer.phase.starting", spinner: true };
 }
 
-/** A stale ready phase can survive one render while the selected bot or its
- * destination changes. Keep every cloud preview POST behind the durable,
- * explicit Cloud choice as well as the resolved phase. */
+/** A stale ready phase can survive one render, so preview POSTs also need the durable, explicit Cloud choice. */
 export function shouldPollCloudPreview(
   {
     computer,
@@ -182,9 +149,7 @@ export function shouldPollCloudPreview(
     && resolvedCloudBackend === cloudBackend;
 }
 
-/** A computer effect may render optimistic profile state while its PATCH is
- * still in flight. Provider work is safe only when the settled server bot
- * confirms the same destination and backend that this render expects. */
+/** Provider work only once the settled server bot confirms the destination and backend this render expects. */
 export function persistedComputerSelectionMatches({
   computer,
   cloudBackend,

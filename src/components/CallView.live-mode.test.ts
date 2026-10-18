@@ -12,7 +12,7 @@ vi.mock("./DesktopCapabilities", () => ({
 import { CallButton, CallOverlay, CallTargetButton } from "./CallView";
 import { setCallMode } from "@/lib/call-mode";
 import { endCall, startCall } from "@/lib/call";
-import { configureLiveMedia, dismissKeyPrompt, resetLiveMedia, startLiveCall } from "@/lib/live-call-media";
+import { configureLiveMedia, dismissStartPrompt, resetLiveMedia, startLiveCall } from "@/lib/live-call-media";
 
 const bot: Bot = {
   id: "atlas",
@@ -73,7 +73,6 @@ describe("call modes", () => {
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
     const markup = render(createElement(CallButton, { bot }));
     expect(markup).toContain('aria-label="Hang up on Atlas"');
-    // a mode is picked before a call, not during one
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Call mode"/);
   });
 
@@ -118,22 +117,58 @@ describe("call modes", () => {
     expect(composer).toContain('aria-label="OpenAI API key for Live calls"');
     expect(composer).toContain("bottom-full");
     expect(render(createElement(CallButton, { bot: { ...bot, id: "juniper" } }))).not.toContain("OpenAI API key");
-    // Leaving the chat (or closing the prompt) drops it: it does not open
-    // again by itself on a later visit. Another chat leaving keeps it.
-    dismissKeyPrompt("juniper");
+    dismissStartPrompt("juniper");
     expect(render(createElement(CallButton, { bot }))).toContain("OpenAI API key");
-    dismissKeyPrompt(bot.id);
+    dismissStartPrompt(bot.id);
     expect(render(createElement(CallButton, { bot }))).not.toContain("OpenAI API key");
+  });
+
+  it("shows the Pro card under the call button, never the key form, when Live calls need Pro", async () => {
+    vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
+    const track = { enabled: true, stop: vi.fn() };
+    configureLiveMedia({
+      getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
+      createPeer: () => ({
+        iceGatheringState: "complete",
+        localDescription: { sdp: "v=0" },
+        addTrack() {},
+        createDataChannel: () => ({ close() {} }),
+        createOffer: async () => ({ type: "offer", sdp: "v=0" }),
+        setLocalDescription: async () => {},
+        close() {},
+      }) as unknown as RTCPeerConnection,
+      request: async () => {
+        throw new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true });
+      },
+      stopRemote: () => {},
+    });
+    setCallMode("live");
+    await startLiveCall({ botId: bot.id, threadId: bot.threadId });
+    const header = render(createElement(CallButton, { bot }));
+    expect(header).toContain("Live calls from your phone need a Pro plan");
+    expect(header).not.toContain('aria-label="OpenAI API key for Live calls"');
+    expect(header).not.toContain('type="password"');
+    expect(header).toMatch(/aria-expanded="true" aria-controls="[^"]+"[^>]*aria-label="Live call with Atlas"/);
+    const popup = /<div id="([^"]+)" tabindex="-1" class="animate-pop-in/.exec(header);
+    expect(popup).not.toBeNull();
+    expect(header).toContain(`aria-controls="${popup![1]}"`);
+    expect(header).not.toContain("Get Pro");
+    const composer = render(createElement(CallButton, { bot, placement: "composer" }));
+    expect(composer).toContain("Live calls from your phone need a Pro plan");
+    expect(composer).toContain("bottom-full");
+    expect(render(createElement(CallButton, { bot: { ...bot, id: "juniper" } }))).not.toContain("Pro plan");
+    dismissStartPrompt("juniper");
+    expect(render(createElement(CallButton, { bot }))).toContain("Live calls from your phone need a Pro plan");
+    dismissStartPrompt(bot.id);
+    expect(render(createElement(CallButton, { bot }))).not.toContain("Pro plan");
   });
 
   it("leaves a Live call to the call bar and covers the chat only for Take turns", async () => {
     vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}) } });
-    // the microphone prompt never answers: the call stays "starting"
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: bot.id, threadId: bot.threadId });
     expect(render(createElement(CallOverlay, { bot }))).toBe("");
 
-    // a failed Live call's notice stays in the bar; a take-turns call still opens
     resetLiveMedia();
     configureLiveMedia({ getUserMedia: () => Promise.reject(new Error("no microphone")) });
     await startLiveCall({ botId: bot.id, threadId: bot.threadId });

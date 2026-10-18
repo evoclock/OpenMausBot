@@ -1,14 +1,10 @@
-// Proves the line the app hands a Ubuntu user actually installs, and that the
-// command it replaced does not.
-//
-// The .deb update path ends with a command on the clipboard: the app
-// deliberately never installs the package itself. That makes the command the
-// whole deliverable, so it is executed here as root on a clean Ubuntu, through
-// a real shell, exactly as pasted — quoting included.
+// Proves the install line the app puts on the clipboard (it never installs the
+// .deb itself) works as pasted, quoting included, as root on a clean Ubuntu,
+// and that a bare `dpkg -i` does not.
 //
 //   node scripts/smoke-deb-command.mjs <path-to-deb>
 //
-// Needs a container runtime; installing a system package is the point.
+// Needs a container runtime.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -82,9 +78,7 @@ const checks = [
   ["the app binary is in place", installed.includes("EXECUTABLE=yes")],
 ];
 
-// The command this replaced. On a clean Ubuntu the dependencies are not
-// present, and dpkg resolves none of them — which is why the old in-app
-// installer could leave a user with a broken package.
+// Control: on a clean Ubuntu `dpkg -i` resolves none of the dependencies.
 console.log("[smoke-deb-command] control: the `dpkg -i` the app used to run…");
 const control = inContainer([prepare, `dpkg -i "${staged}" || echo "DPKG_FAILED"`].join("\n"), {
   expectFailure: false,

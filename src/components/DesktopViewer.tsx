@@ -11,8 +11,7 @@ function subscribeLocation(listener: () => void) {
 }
 const locationHash = () => location.hash;
 
-/** Served through the app's normal route/build. Only desktop pixels and
- * input cross the VM boundary; the VM never supplies this page's code. */
+/** Security: only desktop pixels and input cross the VM boundary; the VM never supplies this page's code. */
 export function DesktopViewer() {
   const screen = useRef<HTMLDivElement>(null);
   const rfb = useRef<RFB | null>(null);
@@ -189,8 +188,8 @@ export function DesktopViewer() {
         <form onSubmit={event => {
           event.preventDefault();
           if (!rfb.current || !connected || !keyboardPanel) return;
-          // Explicit text entry works with phone keyboards without reading
-          // the device clipboard. Non-Latin text uses Unicode VNC keysyms.
+          // Explicit text entry works with phone keyboards without reading the clipboard; non-Latin text uses Unicode
+          // VNC keysyms.
           for (const char of text) {
             const code = char.codePointAt(0)!;
             rfb.current.sendKey(code === 10 ? 0xff0d : code === 9 ? 0xff09 : code <= 255 ? code : 0x01000000 | code, null);

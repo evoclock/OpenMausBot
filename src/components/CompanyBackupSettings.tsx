@@ -21,7 +21,7 @@ const dateLabel = (entry: CompanyBackupEntry) => {
     : t("companyBackup.unknownDate");
 };
 
-/** Local connection snapshots are allowed here; cloud calls start only below the capability gate. */
+/** Security: local connection snapshots are allowed here; cloud calls start only below the capability gate. */
 export function CompanyBackupSettings() {
   const organization = window.ogb?.remoteClient?.active ? undefined : window.ogb?.organization;
   const bridge = organization ? window.ogb?.companyBackups : undefined;
@@ -44,8 +44,6 @@ export function CompanyBackupSettings() {
     return () => { generation.current++; unsubscribe?.(); };
   }, [organization]);
   if (!bridge || !connection) return null;
-  // Not connected: cloud controls stay hidden, but a paused daily schedule
-  // saved on this computer keeps its status and its off switch.
   if (connection.status !== "connected" || connection.cloudBackups !== true || !connection.organization?.id || !connection.organization.name?.trim() || !connection.email) return <SavedCompanyBackupSchedule bridge={bridge} />;
   return <ConnectedCompanyBackupSettings key={`${connection.organization.id}:${connection.email}:${connection.deviceId ?? ""}`} connection={connection} bridge={bridge} />;
 }
@@ -83,7 +81,7 @@ export function SavedCompanyBackupSchedule({ bridge }: { bridge: BackupBridge })
   </Card>;
 }
 
-/** A new connection identity remounts this panel, clearing passwords and staged previews. */
+/** Security: a new connection identity remounts this panel, clearing passwords and staged previews. */
 export function ConnectedCompanyBackupSettings({ connection, bridge }: { connection: ManagedDesktopState; bridge: BackupBridge }) {
   const [state, setState] = useState<CompanyBackupState | null>(null);
   const [listing, setListing] = useState<BackupList | null>(null);
@@ -176,8 +174,7 @@ export function ConnectedCompanyBackupSettings({ connection, bridge }: { connect
   const configureSchedule = async (enabled: boolean) => {
     if (!bridge.configureSchedule || lock.current || !state ||
         (enabled && (disabled || dialog?.kind !== "schedule" || confirmation !== "BACK UP THIS WORKSPACE DAILY"))) return;
-    // Turning off must stay possible while the native scheduler is uploading.
-    // Main cancels only that scheduled operation, never an unrelated manual one.
+    // Turning off must stay possible while the native scheduler uploads; main cancels only that scheduled operation.
     lock.current = true; setAction("schedule"); setError("");
     const current = generation.current, initialRevision = revision.current;
     setConfirmation("");
@@ -208,8 +205,8 @@ export function ConnectedCompanyBackupSettings({ connection, bridge }: { connect
   const restore = () => {
     if (dialog?.kind !== "restore" || !preview || confirmation !== "REPLACE") return;
     void perform("restore", async (isCurrent) => {
-      // The existing boot recovery reads this stage ID even if the response is lost.
-      // If storage is unavailable, do not start a replacement we cannot recover.
+      // Boot recovery reads this stage ID even if the response is lost; without storage, never start a replacement we
+      // cannot recover.
       const existingRestore = localStorage.getItem(WORKSPACE_RESTORE_MARKER);
       if (existingRestore && existingRestore !== preview.id) throw new Error("An earlier restore needs recovery first.");
       localStorage.setItem(WORKSPACE_RESTORE_MARKER, preview.id);

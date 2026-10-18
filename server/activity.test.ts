@@ -1,8 +1,3 @@
-// A bot's activity log: what it did, in plain words, with the outcome. Two
-// logs already on disk feed it — the per-thread runtime events (what ran,
-// did it finish) and the fleet-wide decision log (what was asked, with
-// which arguments, and who said yes). These tests pin the merge: one row
-// per thing that happened, never one per log that saw it.
 import { appendFileSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +26,8 @@ describe("describeTool", () => {
     expect(describeTool("GMAIL_SEND_EMAIL")).toEqual({ app: "Gmail", label: "Send email" });
     expect(describeTool("mcp__composio__GITHUB_CREATE_AN_ISSUE")).toEqual({ app: "GitHub", label: "Create an issue" });
     expect(describeTool("GOOGLESHEETS_BATCH_UPDATE")).toEqual({ app: "Google Sheets", label: "Batch update" });
+    expect(describeTool("mcp__highlevel__HIGHLEVEL_ADD_NOTE")).toEqual({ app: "HighLevel", label: "Add note" });
+    expect(describeTool("HIGHLEVEL_UPDATE_CONTACT")).toEqual({ app: "HighLevel", label: "Update contact" });
   });
 
   it("treats the bot's computer and its teammates as apps too", () => {

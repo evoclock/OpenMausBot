@@ -1,13 +1,8 @@
-// A bot in a room knows what it did in its 1:1 — and back. Pinned against
-// the real server: the brief is assembled inline in two prompt builders, the
-// disclosure chip lands in the room, and the finished turn leaves a line in
-// the bot's daily log. Only the assembled bytes prove all three agree.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 
-/** Every memory/log/*.md under the fixture's data dir, with contents. */
 function dailyLogs(root: string): Array<{ path: string; text: string }> {
   const out: Array<{ path: string; text: string }> = [];
   const walk = (dir: string, depth: number) => {
@@ -46,9 +41,7 @@ it("carries a bot's recent 1:1 work into a room turn, tells the room, logs the t
       return undefined;
     }
   };
-  // What the bot was given for its latest turn. A process kept warm keeps its
-  // launch-time instructions; a part that changed since arrives in the
-  // turn's own message.
+  // A warm process keeps its launch-time instructions; a part that changed since arrives in the turn's own message.
   const given = () => {
     const sent = dump();
     const content = (sent?.prompt as { message?: { content?: unknown } } | undefined)?.message?.content;
@@ -62,18 +55,15 @@ it("carries a bot's recent 1:1 work into a room turn, tells the room, logs the t
     // SAFETY: same shape as above
     const { bot: helper } = await runControlOmb(["new-bot", "--name", "Helper"], { env }) as { bot: { id: string } };
 
-    // The first 1:1 turn: nothing said anywhere else yet, so no brief.
     await runControlOmb(["send", "--bot", lead.id, "--text", "Please reconcile the September invoices."], { env });
     await runControlOmb(["wait", "--bot", lead.id, "--timeout", "30"], { env });
     const first = given();
     expect(first).not.toContain("Your recent work");
 
-    // The finished turn left one line in Lead's daily log, sourced to the chat.
     await expect.poll(() => dailyLogs(fixture.info.dataDir).some((log) => log.path.includes(lead.id) && /from (chat|thread) /.test(log.text)), { timeout: 10_000 }).toBe(true);
     const logged = dailyLogs(fixture.info.dataDir).find((log) => log.path.includes(lead.id))!;
     expect(logged.text).toMatch(/^- \d{2}:\d{2} · from (chat|thread) .+ · .+/m);
 
-    // A room turn: the brief names what Lead said in the 1:1, and the room is told.
     // SAFETY: the groups route returns the created room under `group`
     const { group } = await api("POST", "/api/groups", {
       name: "Standup", memberIds: [lead.id, helper.id],
@@ -93,14 +83,18 @@ it("carries a bot's recent 1:1 work into a room turn, tells the room, logs the t
     expect(chips).toHaveLength(1);
     expect(chips[0]!.tool!.name).toBe("Lead's recent-work brief covers 1 private chat with you");
 
-    // Back the other way: Lead's next 1:1 turn knows what it said in the room.
     await runControlOmb(["send", "--bot", lead.id, "--text", "And now?"], { env });
     await runControlOmb(["wait", "--bot", lead.id, "--timeout", "30"], { env });
     const second = given();
     expect(second).toContain("Your recent work");
     expect(second).toContain('room "Standup" · you said: "');
-    // the room turn was logged too, sourced to the room
     expect(dailyLogs(fixture.info.dataDir).find((log) => log.path.includes(lead.id))!.text).toContain('from room "Standup"');
+    const journal = await api("GET", `/api/bots/${lead.id}/memory/journal`) as { entries: Array<{ path: string; actor: string; via: string; threadId?: string }> };
+    const logRows = journal.entries.filter((entry) => entry.path.startsWith("memory/log/"));
+    expect(logRows.map((row) => `${row.actor}/${row.via}`)).toEqual(["bot/turn", "bot/turn", "bot/turn"]);
+    // SAFETY: /api/bots lists every bot with its main thread
+    const leadThread = ((await api("GET", "/api/bots")) as { bots: Array<{ id: string; threadId: string }> }).bots.find((bot) => bot.id === lead.id)!.threadId;
+    expect(logRows.map((row) => row.threadId).sort()).toEqual([leadThread, leadThread, group.threadId].sort());
   } finally {
     await fixture.close();
   }

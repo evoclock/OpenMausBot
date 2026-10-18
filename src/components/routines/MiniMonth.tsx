@@ -24,7 +24,6 @@ export interface MiniMonthProps {
   onSelect: (at: number) => void;
 }
 
-/** A compact, Monday-first month picker for the calendar sidebar. */
 export function MiniMonth({ anchor, onSelect }: MiniMonthProps) {
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(anchor));
 

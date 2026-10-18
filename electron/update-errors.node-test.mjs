@@ -29,7 +29,6 @@ test("only failures the person must fix are theirs to see when nobody asked", ()
     assert.equal(updateErrorNeedsPerson(new Error(message)), true, message);
   }
   assert.equal(updateErrorNeedsPerson(Object.assign(new Error("sha512 mismatch"), { code: "ERR_UPDATER_CHECKSUM_MISMATCH" })), true);
-  // These may pass by themselves: the next hourly check tries again.
   for (const message of ["ETIMEDOUT", "ECONNRESET", "HTTP 503 Service Unavailable", "net::ERR_INTERNET_DISCONNECTED", "Cannot find latest-mac.yml: 404", "net::ERR_CERT_AUTHORITY_INVALID", "unknown failure"]) {
     assert.equal(updateErrorNeedsPerson(new Error(message)), false, message);
   }
@@ -49,7 +48,6 @@ test("actionable messages do not permit retrying failed native staging", async (
     throw error;
   };
   updater.quitAndInstall = () => { installs++; };
-  // The hourly check finds the update, and it downloads by itself.
   updater.checkForUpdates = async () => { updater.emit("update-available", { version: "2.0.0" }); };
   await coordinator.check();
   await new Promise((resolve) => setImmediate(resolve));

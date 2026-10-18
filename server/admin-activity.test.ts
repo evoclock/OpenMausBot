@@ -112,7 +112,6 @@ describe("what a row records", () => {
     expect(more).toContain('["-k","[hidden]","-p","8080"]');
     expect(more).toContain("https://mcp.zapier.com/api/mcp/s/[hidden]/sse");
     expect(more).toContain("https://[hidden]@mcp.example.com/sse");
-    // readable names and ids stay readable
     expect(more).toContain("getting-started-guide-2024");
     expect(more).toContain("4575b1f7-c16c-4afa-82ce-bcc2fdc70374");
     expect(values).toContain('"--api-key","[hidden]","--token=[hidden]","--verbose","--port","8080"');
@@ -124,6 +123,17 @@ describe("what a row records", () => {
     const after = botAuditSnapshot({ approvalMode: "auto", composio: false });
     expect(botChangeRows({ id: "b" }, before, after, ["composio"]).map((row) => row.changed)).toEqual([["composio"]]);
     expect(botChangeRows({ id: "b" }, before, after).map((row) => row.changed)).toEqual([["approvalMode", "composio"]]);
+  });
+
+  it("follows a bot's helper-model switch: putting a bot back on the helper decides where its text may go", () => {
+    const off = botAuditSnapshot({ id: "b", helperModel: false });
+    const on = botAuditSnapshot({ id: "b", helperModel: true });
+    const unset = botAuditSnapshot({ id: "b" });
+    expect(botChangeRows({ id: "b", name: "Legal" }, off, on)).toEqual([
+      { category: "bot", action: "bot.update", target: { kind: "bot", id: "b", name: "Legal" }, changed: ["helperModel"], before: { helperModel: false }, after: { helperModel: true } },
+    ]);
+    expect(botChangeRows({ id: "b" }, unset, off).map((row) => [row.action, row.changed, row.after])).toEqual([["bot.update", ["helperModel"], { helperModel: false }]]);
+    expect(botChangeRows({ id: "b" }, off, off)).toEqual([]);
   });
 
   it("knows when more than one person signs in", () => {

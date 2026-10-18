@@ -26,8 +26,7 @@ const COLORS = [
 ] as const satisfies readonly MausColor[];
 
 const RESPONDER_KINDS = new Set(["member", "everyone", "mentions", "auto"]);
-/** A responder kind from a newer release reads as "no responder": the room
- * is created with the default lead, never refused. */
+/** A responder kind from a newer release reads as "no responder": the room gets the default lead, never a refusal. */
 const responderSchema = z.preprocess(
   (value) => {
     const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
@@ -121,7 +120,6 @@ export interface ParsedTeamManifest {
     name: string;
     description?: string;
     members: TeamManifestMember[];
-    /** Present on legacy v1 files. New imports intentionally do not create it. */
     room?: TeamManifestRoom;
   };
 }
@@ -154,7 +152,6 @@ interface ExportableTeam {
   memberIds: string[];
 }
 
-/** Parse an untrusted shared file into the small, portable subset we support. */
 export function parseTeamManifest(value: TeamManifestV2): TeamManifestV2;
 export function parseTeamManifest(value: TeamManifestInput): ParsedTeamManifest;
 export function parseTeamManifest(value: TeamManifestInput): ParsedTeamManifest {
@@ -210,7 +207,6 @@ export function parseTeamManifest(value: TeamManifestInput): ParsedTeamManifest 
   return result;
 }
 
-/** What one imported member is allowed to become: persona only. */
 export interface ImportedMemberProfile {
   name: string;
   title: string;
@@ -221,38 +217,11 @@ export interface ImportedMemberProfile {
   mascotBody?: MascotBodyId;
 }
 
-/** Everything an untrusted manifest may seed into a brand-new bot — and
- * nothing else.
- *
- * A team file can come from the remote catalog, a GitHub repo, or a file
- * someone shared, so import is additive-only: a manifest is a persona
- * description, never a grant, and never a handle on records the user
- * already has. Two rules are enforced here, at the single point where a
- * member becomes bot fields:
- *
- * 1. Allowlist, not blocklist. The returned object is built field by field
- *    from the parsed member, so every privilege-bearing BotRecord field —
- *    approvalMode, autoApprove, alwaysAllow, chiefOfStaff, approvePeerComms, composio,
- *    connectorTools, computer, cloudBackend, cwd — is structurally absent, whatever the
- *    file claimed. parseTeamManifest already drops unknown member keys;
- *    this keeps the guarantee even if the schema grows a field later,
- *    because nothing new can reach a bot record without someone
- *    consciously widening this return type. The caller must still force
- *    composio: false (and connectorTools: {}) on the created record —
- *    composio is the one privilege where *absence* means allowed, so
- *    leaving it unset is not safe.
- *
- * 2. No name captures. Display names are identity wherever bots address
- *    each other — @mention resolution in rooms, the Chief of Staff roster,
- *    peer-approval prompts — so an imported member wearing an existing
- *    bot's name could be mentioned, granted, or listed as if it were that
- *    bot. A colliding name is therefore visibly numbered ("Scout" →
- *    "Scout 2"), the same convention the name generator uses when its pool
- *    runs out. Matching is case-insensitive because @mention matching is.
- *    `takenNames` (lowercased) is mutated as names are claimed, so one
- *    import batch also stays unique against itself; a suffixed name never
- *    exceeds the member-name cap.
- */
+/** Everything an untrusted manifest may seed into a new bot, and nothing else:
+ * - an allowlist built field by field, so privilege-bearing fields are structurally absent; the caller must still
+ *   force composio: false and connectorTools: {} (absence means allowed);
+ * - no name captures: names are identity for @mentions, rosters and approvals, so a collision is numbered
+ *   ("Scout 2"), case-insensitively; `takenNames` (lowercased) is mutated as names are claimed. */
 export function importedMemberProfile(
   member: TeamManifestMember,
   takenNames: Set<string>,
@@ -266,11 +235,7 @@ export function importedMemberProfile(
     color: member.appearance.color,
   };
   if (member.appearance.mascotExpression) profile.mascotExpression = member.appearance.mascotExpression;
-  // The manifest carries the body as free text (parseTeamManifest only
-  // bounds its length); an untrusted or stale value must never reach a
-  // BotRecord unvalidated, so it is safe-parsed here — the one point where
-  // an imported member becomes bot fields — falling back to the default
-  // body rather than rejecting the whole import over a cosmetic field.
+  // Free text in the manifest: safe-parsed so an untrusted value never reaches a BotRecord unvalidated.
   if (member.appearance.mascotBody) profile.mascotBody = botMascotBody(member.appearance.mascotBody);
   return profile;
 }
@@ -320,7 +285,6 @@ export function createTeamManifest(team: ExportableTeam, bots: ExportableBot[]):
       members,
     },
   };
-  // Keep export and import in lockstep: a file produced here must satisfy
-  // the exact same limits and normalization as an untrusted shared file.
+  // Export and import share the parser, so a file produced here meets the same limits as an untrusted one.
   return parseTeamManifest(manifest);
 }

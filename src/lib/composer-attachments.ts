@@ -1,8 +1,6 @@
 import { isCitationAttachment, serializeCitation, type CitationAttachment } from "./citations.ts";
+export { dataContextFor, type DataContext, type DataViewContext } from "../../shared/data-context.ts";
 
-// What is attached to the next message: text too long for the input or a
-// file dropped onto the window. Chips fold back into a normal prompt on
-// send, so every driver receives the same message shape.
 export type PasteAttachment = {
   kind: "paste";
   id: string;
@@ -26,8 +24,6 @@ export type ImageAttachment = {
   name: string;
   size: number;
   mime: string;
-  /** Browser-local pixels shown immediately while the durable upload is in
-   * flight and briefly handed to the transcript after Send. Never persisted. */
   previewUrl?: string;
   uploading?: boolean;
 };
@@ -70,8 +66,6 @@ function validSize(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-/** Past this, a paste stops reading as typing and becomes an attachment.
- * Long-but-narrow (a stack trace, a log) counts by line, not just chars. */
 export const PASTE_CHARS = 900;
 export const PASTE_LINES = 12;
 
@@ -87,10 +81,7 @@ function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `a${Math.random().toString(36).slice(2)}`;
 }
 
-/** The upload id is a server-validated UUID and remains stable across the
- * one recovery attempt. That makes a lost success response safe to retry:
- * the server returns the already committed attachment instead of creating a
- * second file. */
+/** Stable across the one retry, so a lost success response cannot create a second file. */
 function newUploadId(): string {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -111,8 +102,7 @@ export function fileAttachment(name: string, path: string, size: number): FileAt
   return { kind: "file", id: newId(), path, name, size };
 }
 
-/** Matches the server's IMAGE_MAX_BYTES — checked client-side so an
- * oversized paste is refused before the upload starts, not mid-stream. */
+/** Must match the server's IMAGE_MAX_BYTES. */
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const FILE_MAX_BYTES = 25 * 1024 * 1024;
 
@@ -160,12 +150,6 @@ export function documentMime(file: Pick<File, "name" | "type">): string | null {
   return DOCUMENT_MIMES[extension] ?? null;
 }
 
-/**
- * Checks if a given file or descriptor has a supported image MIME type.
- *
- * @param file - Object with a MIME `type` and optional `size`.
- * @returns `true` if the file is a supported image format (PNG, JPEG, GIF, WebP).
- */
 export function isImageFile(file: { type: string; size?: number }): boolean {
   return (
     file.type.startsWith("image/") &&
@@ -173,14 +157,7 @@ export function isImageFile(file: { type: string; size?: number }): boolean {
   );
 }
 
-/**
- * Extracts valid image files from clipboard data, checking items first because
- * Chromium on macOS exposes screenshots and copied image bitmaps via items
- * while clipboardData.files may remain empty.
- *
- * @param clipboardData - The clipboard DataTransfer object or mock data.
- * @returns Array of valid image File objects found in the clipboard.
- */
+/** Items first: Chromium on macOS exposes screenshots via items while clipboardData.files may stay empty. */
 export function clipboardImageFiles(
   clipboardData: {
     files?: Iterable<File> | null;
@@ -206,12 +183,6 @@ export function clipboardImageFiles(
   return [];
 }
 
-/**
- * Detects if the clipboard data contains any image items or files.
- *
- * @param clipboardData - The clipboard DataTransfer object or mock data.
- * @returns `true` if any image file or item is present in the clipboard.
- */
 export function clipboardHasImages(
   clipboardData: {
     files?: Iterable<{ type: string; size?: number }> | null;
@@ -247,9 +218,6 @@ function retryableUploadStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
-/** Retry only failures where the server may already have committed the body.
- * A validation/authentication response is final, while a network failure or
- * transient response gets one replay with the same upload id. */
 async function uploadWithRetry<T>(url: string, init: RequestInit): Promise<T> {
   for (let attempt = 0; attempt < UPLOAD_ATTEMPTS; attempt += 1) {
     let response: Response;
@@ -292,9 +260,6 @@ function canonicalImageName(originalName: string, path: string, mime: string): s
   return `${stem}${extension}`;
 }
 
-/** Persist a pasted image server-side and return the attachment chip data.
- * The server writes ~/.openmausbot/attachments/<uuid>.<ext> and answers
- * with the path; the prompt references that path so every CLI can open it. */
 export function optimisticImageAttachment(file: File): ImageAttachment | null {
   if (!isImageFile(file)) return null;
   if (file.size > IMAGE_MAX_BYTES) throw Object.assign(new Error(`${file.name} exceeds 10 MB`), { status: 413 });
@@ -339,9 +304,7 @@ export async function imageAttachmentFromFile(
   };
 }
 
-/** Copy a supported document or audio file into the private attachment store. The prompt
- * then carries the same durable path for the local agent and paired phones,
- * instead of exposing an arbitrary Finder path to the companion route. */
+/** Copied into the private store so the companion route never sees an arbitrary Finder path. */
 export async function fileAttachmentFromFile(file: File): Promise<FileAttachment | null> {
   const declared = file.type.split(";", 1)[0]!.trim().toLowerCase();
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
@@ -365,13 +328,9 @@ export async function fileAttachmentFromFile(file: File): Promise<FileAttachment
 
 export function pasteAttachment(text: string): PasteAttachment {
   const id = newId();
-  // measured once, here: a chip re-renders on every keystroke in the
-  // composer, and encoding half a megabyte each time would be felt
   return { kind: "paste", id, text, size: byteLength(text), lines: countLines(text) };
 }
 
-/** Move a pasted attachment into the editable composer draft without
- * running the text back through the paste threshold. */
 export function appendPastedText(text: string, pasted: string): string {
   if (!text) return pasted;
   return `${text}${text.endsWith("\n") ? "" : "\n\n"}${pasted}`;
@@ -382,10 +341,6 @@ export const INLINE_DROP_LIMIT = 512 * 1024;
 export type DroppedFile = Pick<File, "name" | "size" | "type" | "text"> &
   Partial<Pick<File, "arrayBuffer">>;
 
-/** Turn a browser drop into composer attachments. Electron-backed files
- * keep their disk path; small pathless text drops keep their contents.
- * Promise.all preserves the user's drop order even when text reads finish
- * in a different order. */
 export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
   files: readonly T[],
   getPath: (file: T) => string,
@@ -396,14 +351,12 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
       try {
         path = getPath(file);
       } catch {
-        // A browser or older desktop shell has no disk path to expose.
       }
       if (path) return { attachment: fileAttachment(file.name, path, file.size) };
       if (isInlineText(file) && file.size <= INLINE_DROP_LIMIT) {
         try {
           return { attachment: pasteAttachment(await file.text()) };
         } catch {
-          // Treat an unreadable browser drag like any other pathless file.
         }
       }
       return { rejectedName: file.name };
@@ -424,13 +377,10 @@ function isInlineText(file: DroppedFile): boolean {
   return file.type.startsWith("text/") || file.type === "application/json";
 }
 
-/** What the paste actually weighs — String#length counts UTF-16 units, so
- * it reads a third under on accented text and half under on CJK. */
 export function byteLength(text: string): number {
   return new TextEncoder().encode(text).length;
 }
 
-/** "12 lines, 3.4 KB" — what the chip says under the preview. */
 export function pasteSummary(a: { lines: number; size: number }): string {
   return `${a.lines} lines, ${formatSize(a.size)}`;
 }
@@ -441,10 +391,6 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The prompt the bot receives: what was typed, then one block per
- * attachment. Tagged blocks rather than fences — pasted code and markdown
- * carry fences of their own, and nesting them loses the boundary. A file
- * carries its path for the agent and its original name for the transcript. */
 export function composeMessage(text: string, attachments: Attachment[]): string {
   const parts = [text.trim()];
   attachments.forEach((a, i) => {
@@ -461,8 +407,7 @@ export function composeMessage(text: string, attachments: Attachment[]): string 
   return parts.filter(Boolean).join("\n\n");
 }
 
-/** File paths are untrusted prompt content. Keep them inside the quoted
- * attribute even when a filename contains XML characters or line breaks. */
+/** File paths are untrusted prompt content: keep them inside the quoted attribute. */
 export function escapeAttribute(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -492,8 +437,7 @@ export type TranscriptAttachments = {
   files: TranscriptFileAttachment[];
 };
 
-/** Decode only entities emitted by escapeAttribute. A second encoded pass
- * stays encoded, rather than turning attacker-controlled text into markup. */
+/** A second encoded pass stays encoded rather than turning attacker-controlled text into markup. */
 function decodeAttachmentAttribute(value: string): string {
   return value.replace(/&(quot|lt|gt|amp);|&#(9|10|13);/g, (entity, named: string | undefined, numeric: string | undefined) => {
     if (numeric === "9") return "\t";
@@ -507,9 +451,7 @@ function decodeAttachmentAttribute(value: string): string {
   });
 }
 
-/** Keep transcript-provided names compact and visually honest. File chips
- * are deliberately not links, but control and bidi characters can still
- * make an untrusted name misleading. */
+/** Control and bidi characters can make an untrusted name misleading. */
 function transcriptFileName(path: string, suppliedName?: string): string {
   const decoded = suppliedName ? decodeAttachmentAttribute(suppliedName) : attachmentBasename(path);
   const clean = (value: string) => Array.from(value, (character) => {
@@ -537,15 +479,10 @@ type TranscriptBlock =
   | { kind: "untilBlank" }
   | { kind: "untilToken"; closingToken: string; hiddenWrapper?: boolean };
 
-/** The exact wrapper lines composeMessage writes around a pasted block. The
- * bot needs them to tell pasted from typed text; a person reading their own
- * message does not. Anything else on the line keeps the tag visible. */
 const PASTED_TEXT_OPEN = /^ {0,3}<pasted-text(?:[\t ]+index="\d+")?[\t ]*>[\t ]*$/i;
 const PASTED_TEXT_CLOSE = /^[\t ]*<\/pasted-text>[\t ]*$/i;
 
-/** Recognise CommonMark-style fenced code without pulling a Markdown parser
- * into the composer bundle. An unterminated fence deliberately protects the
- * rest of the message: examples must never turn into actionable attachments. */
+/** An unterminated fence protects the rest of the message: examples must never become actionable attachments. */
 function transcriptFenceMarker(line: string): (TranscriptFence & { remainder: string }) | null {
   let index = 0;
   while (index < line.length && index < 4 && line[index] === " ") index += 1;
@@ -580,10 +517,7 @@ const COMMONMARK_TYPE_7 = new RegExp(
   `^ {0,3}(?:<[A-Za-z][A-Za-z0-9-]*${HTML_ATTRIBUTE}*[\\t ]*/?>|</[A-Za-z][A-Za-z0-9-]*[\\t ]*>)[\\t ]*$`,
 );
 
-/** Attachment-looking examples inside CommonMark HTML blocks stay literal.
- * Types 1-5 use their specified terminator; types 6-7 last through the next
- * blank line. The app's pasted-text wrapper is deliberately stronger than a
- * generic custom tag and lasts through its closing tag, including blanks. */
+/** CommonMark HTML blocks: types 1-5 end at their terminator, types 6-7 at the next blank line. */
 function transcriptBlockStarting(line: string): TranscriptBlock | null {
   const lower = line.toLowerCase();
   const commentStart = lower.indexOf("<!--");
@@ -637,10 +571,6 @@ function transcriptBlockStarting(line: string): TranscriptBlock | null {
 const TRANSCRIPT_ATTACHMENT_TAG =
   /^<attached-(image|file)[\t ]+path="([^"\r\n]*)"(?:[\t ]+name="([^"\r\n]*)")?[\t ]*\/>[\t ]*$/;
 
-/** Split a stored user message into its display text and attachments for
- * transcript rendering. Markdown exports preserve whitespace; bubbles trim it.
- * Bubbles also hide the `<pasted-text>` wrapper lines and show only what was
- * pasted; exports keep the message exactly as the bot received it. */
 export function splitTranscriptAttachments(
   text: string,
   trimDisplay = true,
@@ -712,14 +642,11 @@ export function splitTranscriptAttachments(
   return { display: trimDisplay ? display.trim() : display, images, files };
 }
 
-/** Kept for callers outside the desktop bundle that used the old helper. */
 export function splitAttachedImages(text: string): { display: string; images: string[] } {
   const { display, images } = splitTranscriptAttachments(text);
   return { display, images: images.map((image) => image.path) };
 }
 
-/** The bare filename a saved attachment path ends in — what the serving
- * route expects. Works for POSIX and Windows separators. */
 export function attachmentBasename(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] ?? "";
@@ -733,8 +660,6 @@ function revokeBlobUrl(url: string | undefined): void {
   URL.revokeObjectURL(url);
 }
 
-/** Keep the already-decoded local image visible while the canonical message
- * and its cacheable server URL replace the optimistic row. */
 export function handoffAttachmentImagePreview(path: string, previewUrl: string | undefined): void {
   if (!path || !previewUrl?.startsWith("blob:")) return;
   const previous = previewHandoffs.get(path);
@@ -751,8 +676,6 @@ export function handoffAttachmentImagePreview(path: string, previewUrl: string |
   previewHandoffs.set(path, { url: previewUrl, timer });
 }
 
-/** Remove a draft image and its local pixels. Sent images deliberately skip
- * this path so their optimistic-to-server handoff can finish. */
 export function releaseAttachmentImagePreview(attachment: ImageAttachment): void {
   const handed = attachment.path ? previewHandoffs.get(attachment.path) : undefined;
   if (handed && handed.url === attachment.previewUrl) {
@@ -762,10 +685,7 @@ export function releaseAttachmentImagePreview(attachment: ImageAttachment): void
   revokeBlobUrl(attachment.previewUrl);
 }
 
-/** The renderer never loads a transcript-provided URL directly. Only names
- * the attachment server itself can have generated become same-origin image
- * URLs; malformed and executable-image paths render nothing, while a string
- * that looks remote can at most resolve to a local generated filename. */
+/** The renderer never loads a transcript-provided URL directly; only server-generated names become same-origin URLs. */
 export function attachmentImageUrl(path: string): string | null {
   const local = previewHandoffs.get(path);
   if (local) return local.url;
@@ -774,18 +694,12 @@ export function attachmentImageUrl(path: string): string | null {
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
-/** Voice notes park as bare generated .mp3 filenames; anything else stays
- * out of an <audio> src rather than 404ing on a private path. */
 export function attachmentAudioUrl(path: string): string | null {
   const name = attachmentBasename(path);
-  if (!/^[A-Za-z0-9-]+\.mp3$/.test(name)) return null;
+  if (!/^[A-Za-z0-9-]+\.(?:mp3|wav)$/.test(name)) return null;
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
-/** One intake path for files arriving by drop OR by the composer's attach
- * button, so a picked file and a dropped one can never behave differently.
- * Uploaders are injected for deterministic tests: callers own the network,
- * while this function owns ordering and the sentence shown on failure. */
 export async function intakeFiles<T extends DroppedFile & { type: string }>(
   _files: readonly T[],
   _opts: {
@@ -801,8 +715,6 @@ export async function intakeFiles<T extends DroppedFile & { type: string }>(
     if (!file.arrayBuffer) return null;
     return fileAttachmentFromFile(file as unknown as File);
   });
-  // Promise.all starts every optimistic image preview immediately while its
-  // result array still preserves the order in which files were selected.
   const results = await Promise.all(files.map(async (file): Promise<{
     attachments: Attachment[];
     rejectedNames: string[];
@@ -848,13 +760,6 @@ export async function intakeFiles<T extends DroppedFile & { type: string }>(
   };
 }
 
-/**
- * Whether the composer may pull keyboard focus back into its textarea after an
- * attachment lands. The draft was the writer's place when focus is still there,
- * has fallen to the page (a disabled element drops it), or sits on a control
- * inside the composer such as the paperclip button after the file dialog. A
- * focused control elsewhere — a dialog, the thread list — is left alone.
- */
 export function composerShouldRefocus(active: FocusNode | null, input: ComposerInputNode): boolean {
   if (!active || active === input) return true;
   const root = input.ownerDocument;
@@ -863,13 +768,6 @@ export function composerShouldRefocus(active: FocusNode | null, input: ComposerI
   return Boolean(composer?.contains(active));
 }
 
-/**
- * Whether a freshly opened thread's composer should take keyboard focus.
- * Opening a thread from the sidebar leaves focus on the row or the New thread
- * button, so the composer takes it from any plain control. It never takes it
- * from another text field (the sidebar search, a rename) or from an open
- * dialog, where the person is typing or deciding something else.
- */
 export function composerTakesFocusOnOpen(active: OpenFocusNode | null, input: ComposerInputNode): boolean {
   if (composerShouldRefocus(active, input)) return true;
   if (!active) return true;
@@ -878,18 +776,11 @@ export function composerTakesFocusOnOpen(active: OpenFocusNode | null, input: Co
   return !active.closest?.("[role=dialog], [role=alertdialog], [aria-modal=true]");
 }
 
-/**
- * Whether a change of reply target should put the caret in the composer.
- * Choosing a message to reply to means the next thing is typing the reply,
- * so a newly chosen target takes focus (MOCA-263). Clearing the reply, or the
- * same target arriving again as the draft re-renders, does not.
- */
 export function replyTargetTakesFocus(previousId: string | null | undefined, nextId: string | null | undefined): boolean {
   return Boolean(nextId) && nextId !== previousId;
 }
 
-// This file is also compiled for the server, which has no DOM types; the rule
-// only needs these members of the real elements.
+// Also compiled for the server, which has no DOM types.
 type FocusNode = object;
 interface OpenFocusNode {
   tagName?: string;

@@ -1,15 +1,5 @@
-// OAuth sign-in for URL MCP servers, the way MCP clients do it: discover
-// the authorization server from the MCP server's 401, sign in as the app
-// the person registered for this server or else register as a public
-// client when the server allows it, run PKCE through the person's browser
-// with a loopback callback (or a URL pasted from another computer), then
-// keep the tokens fresh.
-// Engines never see this: they get an ordinary Authorization header.
-//
-// The loopback listener and callback checks follow
-// drivers/chatgpt-plan-auth.ts: one pending sign-in per server, a state
-// compared in constant time, single-valued parameters, and a listener that
-// lives only until the sign-in settles.
+// Engines never see this, only an Authorization header. Callbacks: one pending sign-in per server, state
+// compared in constant time, single-valued parameters, and a listener that lives only until the sign-in settles.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 
@@ -26,6 +16,12 @@ export interface McpSignInStatus {
   authorizationUrl: string | null;
   expiresAt: string;
   message?: string;
+  pasteBack?: boolean;
+}
+
+export interface McpSignInBrowser {
+  remote: boolean;
+  origin?: string | null;
 }
 
 export type McpOAuthFailure = "not-oauth" | "no-registration" | "port-busy";
@@ -42,12 +38,10 @@ export class McpOAuthError extends Error {
 export type McpAuthState = "signed-in" | "needs-sign-in" | "none";
 
 const DEFAULT_LIFETIME_MS = 5 * 60_000;
-/** Refresh a token this close to expiry, so a turn never starts on one
- * that lapses mid-way. */
 const REFRESH_MARGIN_MS = 2 * 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-const CALLBACK_PATH = "/mcp-oauth/callback";
-/** complete()'s answer for a flow that ended while its code was spent. */
+export const MCP_OAUTH_CALLBACK_PATH = "/mcp-oauth/callback";
+const CALLBACK_PATH = MCP_OAUTH_CALLBACK_PATH;
 const DISCARDED = "discarded";
 
 interface Flow {
@@ -60,7 +54,7 @@ interface Flow {
   redirectUri: string;
   client: ClientAuth;
   meta: McpAuthMetadata;
-  server: Server;
+  server: Server | null;
   consumed: boolean;
   expiry: ReturnType<typeof setTimeout>;
 }
@@ -68,6 +62,7 @@ interface Flow {
 interface StartingFlow {
   owner: string;
   url: string;
+  browser: McpSignInBrowser;
   cancelled: boolean;
   promise: Promise<McpSignInStatus>;
 }
@@ -81,8 +76,6 @@ export class McpSignInError extends Error {
   }
 }
 
-/** A port derived from the server URL: the same redirect URI on every
- * attempt, so a registered client can be reused instead of re-registered. */
 function preferredPort(url: string): number {
   let hash = 0x811c9dc5;
   for (const char of url) {
@@ -92,16 +85,30 @@ function preferredPort(url: string): number {
   return 20_000 + (hash % 20_000);
 }
 
-/** The redirect URI a sign-in for this server uses, to register with an
- * app made in advance for it. */
 export function mcpOAuthRedirectUri(url: string): string {
   return `http://127.0.0.1:${preferredPort(url)}${CALLBACK_PATH}`;
 }
 
+function httpsOrigin(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && value.replace(/\/+$/, "") === url.origin ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The browser's proven origin wins when it is configured or none is; never a Host header nobody vouched for. */
+export function mcpCallbackOrigin(browserOrigin: string | null, configured: ReadonlyArray<string | null | undefined>): string | null {
+  const known = configured.map(httpsOrigin).filter((origin): origin is string => origin !== null);
+  const proven = httpsOrigin(browserOrigin);
+  if (proven && (known.length === 0 || known.includes(proven))) return proven;
+  return known[0] ?? null;
+}
+
 type TokenAuthMethod = "none" | "client_secret_post" | "client_secret_basic";
 
-/** Who is asking at the token endpoint: a public client by its id, or an
- * app with a secret, sent the way the authorization server accepts it. */
 interface ClientAuth {
   id: string;
   secret?: string;
@@ -159,7 +166,6 @@ async function postForm(
     const parsed: unknown = await response.json();
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) body = parsed as Record<string, unknown>;
   } catch {
-    // an empty or non-JSON body is judged by its status alone
   }
   return { status: response.status, body };
 }
@@ -175,6 +181,8 @@ function tokensFrom(body: Record<string, unknown>, previous?: McpOAuthTokens): M
   };
 }
 
+class RegistrationRefused extends Error {}
+
 export class McpOAuthManager {
   private readonly store: McpOAuthStore;
   private readonly lifetimeMs: number;
@@ -184,8 +192,7 @@ export class McpOAuthManager {
   private readonly refreshing = new Map<string, Promise<string | null>>();
   private readonly clients: (name: string, url: string) => McpOAuthClientConfig | undefined;
 
-  /** `clients` reads the app registered for a server from its config, at
-   * the moment it is needed: its secret is never copied into this store. */
+  /** `clients` is read when needed: an app's secret is never copied into this store. */
   constructor(options: { file: string; lifetimeMs?: number; clients?: (name: string, url: string) => McpOAuthClientConfig | undefined; isOwnerLive?: (owner: string) => boolean }) {
     this.store = new McpOAuthStore(options.file);
     this.isOwnerLive = options.isOwnerLive ?? (() => true);
@@ -193,8 +200,6 @@ export class McpOAuthManager {
     this.clients = options.clients ?? (() => undefined);
   }
 
-  /** How to authenticate as the client a record was signed in with; null
-   * when its app (or the app's secret) is no longer configured. */
   private recordClient(name: string, record: McpOAuthRecord): ClientAuth | null {
     if (!record.clientId) return null;
     if (!record.tokenAuth) return { id: record.clientId, method: "none" };
@@ -210,14 +215,12 @@ export class McpOAuthManager {
     return record.state === "signed-in" && record.tokens ? "signed-in" : "needs-sign-in";
   }
 
-  /** The server answered 401 asking for OAuth: stop mounting it and show
-   * Sign in. Any tokens it had are no longer accepted, so they go. */
   markNeedsSignIn(name: string, url: string): void {
     const { tokens: _dropped, ...rest } = this.store.get(name, url) ?? { url };
     this.store.put(name, { ...rest, url, state: "needs-sign-in" });
   }
 
-  start(name: string, url: string, wwwAuthenticate?: string | null, owner = "loopback"): Promise<McpSignInStatus> {
+  start(name: string, url: string, wwwAuthenticate?: string | null, owner = "loopback", browser: McpSignInBrowser = { remote: false }): Promise<McpSignInStatus> {
     const current = this.flows.get(name);
     if (current?.status.phase === "waiting" && !this.isOwnerLive(current.owner)) {
       this.finish(current, "cancelled", "Your session ended. Start again.");
@@ -233,7 +236,7 @@ export class McpOAuthManager {
       }
       return pending.promise;
     }
-    const starting: StartingFlow = { owner, url, cancelled: false, promise: undefined! };
+    const starting: StartingFlow = { owner, url, browser, cancelled: false, promise: undefined! };
     starting.promise = this.begin(name, url, starting, wwwAuthenticate).finally(() => this.starting.delete(name));
     this.starting.set(name, starting);
     return starting.promise;
@@ -283,7 +286,18 @@ export class McpOAuthManager {
     return { ...flow.status };
   }
 
-  /** Revoke with the server when it offers that (best effort), then forget. */
+  /** The scheme is the redirect URI's: a proxy in front of this server may end TLS. */
+  async publicCallback(host: string | undefined, search: string): Promise<{ status: number; text: string }> {
+    const state = new URLSearchParams(search).get("state") ?? "";
+    let match: Flow | undefined;
+    for (const flow of this.flows.values()) {
+      const expected = new URL(flow.redirectUri);
+      if (!flow.server && expected.host === host?.trim().toLowerCase() && sameSecret(state, flow.state)) match = flow;
+    }
+    if (!match) return { status: 400, text: "Invalid sign-in callback. Return to OpenMausBot and try again." };
+    return this.answer(match, new URL(`${new URL(match.redirectUri).origin}${CALLBACK_PATH}${search.startsWith("?") ? search : ""}`));
+  }
+
   async signOut(name: string, url: string): Promise<void> {
     this.cancel(name);
     const record = this.store.get(name, url);
@@ -294,15 +308,12 @@ export class McpOAuthManager {
     this.store.delete(name);
   }
 
-  /** Drop everything for a server that was removed or pointed elsewhere. */
   forget(name: string): void {
     this.cancel(name);
     this.flows.delete(name);
     this.store.delete(name);
   }
 
-  /** A usable access token for this server at this URL, refreshed when it
-   * is close to expiry; null when the server needs a (new) sign-in. */
   accessToken(name: string, url: string): Promise<string | null> {
     const record = this.store.get(name, url);
     if (!record || record.state !== "signed-in" || !record.tokens) return Promise.resolve(null);
@@ -338,13 +349,10 @@ export class McpOAuthManager {
         resource: record.url,
       }, client);
     } catch {
-      // offline or the server is down: keep what still works, retry next turn
       return stillValid ? tokens.access : null;
     }
     const next = answer.status >= 200 && answer.status < 300 ? tokensFrom(answer.body, tokens) : null;
     if (!next) {
-      // Only a refused grant or client means the sign-in is over; a rate
-      // limit, a proxy page or an outage keeps what still works.
       const dead = (answer.status === 400 || answer.status === 401)
         && (answer.body.error === "invalid_grant" || answer.body.error === "invalid_client");
       if (!dead) return stillValid ? tokens.access : null;
@@ -357,7 +365,6 @@ export class McpOAuthManager {
     return next.access;
   }
 
-  /** The WWW-Authenticate challenge of an unauthenticated request, if any. */
   private async challenge(url: string): Promise<string | null> {
     try {
       const response = await fetch(url, {
@@ -374,9 +381,7 @@ export class McpOAuthManager {
     }
   }
 
-  /** A fresh public client per sign-in. Sign-ins are rare, and a cached id
-   * goes stale when an authorization server prunes idle clients, after
-   * which every sign-in would fail at its authorize page. */
+  /** A fresh public client per sign-in: authorization servers prune idle clients, so a cached id goes stale. */
   private async register(meta: McpAuthMetadata, redirectUri: string): Promise<string> {
     if (!meta.registrationEndpoint) {
       throw new McpOAuthError("no-registration", "This server only signs in apps registered with it in advance. Edit the server and add that app's client ID under Sign-in app.");
@@ -396,7 +401,7 @@ export class McpOAuthManager {
     });
     const body = await response.json().catch(() => ({})) as { client_id?: unknown };
     if (!response.ok || typeof body.client_id !== "string" || !body.client_id) {
-      throw new Error("This server would not register OpenMausBot for sign-in. Try again later.");
+      throw new RegistrationRefused("This server would not register OpenMausBot for sign-in. Try again later.");
     }
     return body.client_id;
   }
@@ -408,11 +413,21 @@ export class McpOAuthManager {
     if (!meta) throw new McpOAuthError("not-oauth", "This server does not offer an OAuth sign-in. Add its token as a header instead.");
     const registered = this.clients(name, url);
 
+    if (!registered && starting.browser.remote && starting.browser.origin) {
+      const redirectUri = `${starting.browser.origin}${CALLBACK_PATH}`;
+      let clientId: string | null = null;
+      try {
+        clientId = await this.register(meta, redirectUri);
+      } catch (error) {
+        if (!(error instanceof RegistrationRefused)) throw error;
+      }
+      if (clientId) return { ...this.open(name, url, starting, meta, redirectUri, { id: clientId, method: "none" }, null, meta.scopes).status };
+    }
+
     const server = createServer();
     try {
       await listen(server, preferredPort(url));
     } catch {
-      // An app registered in advance was given this exact redirect URI.
       if (registered) {
         throw new McpOAuthError("port-busy", `Port ${preferredPort(url)} on this computer is in use, and sign-ins for this server's app return there. Close what is using it and try again.`);
       }
@@ -426,45 +441,53 @@ export class McpOAuthManager {
         ? { id: registered.clientId, ...(registered.clientSecret ? { secret: registered.clientSecret } : {}), method: tokenAuthMethod(meta, registered.clientSecret) }
         : { id: await this.register(meta, redirectUri), method: "none" };
       const scopes = registered?.scopes?.length ? registered.scopes : meta.scopes;
-      if (starting.cancelled || !this.isOwnerLive(starting.owner)) throw new McpSignInError("Sign-in cancelled because the session or server changed.", 409);
-      const state = randomBytes(32).toString("base64url");
-      const verifier = randomBytes(32).toString("base64url");
-      const authorize = new URL(meta.authorizationEndpoint);
-      authorize.searchParams.set("response_type", "code");
-      authorize.searchParams.set("client_id", client.id);
-      authorize.searchParams.set("redirect_uri", redirectUri);
-      authorize.searchParams.set("state", state);
-      authorize.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
-      authorize.searchParams.set("code_challenge_method", "S256");
-      authorize.searchParams.set("resource", meta.resource);
-      if (scopes?.length) authorize.searchParams.set("scope", scopes.join(" "));
-
-      const status: McpSignInStatus = {
-        phase: "waiting",
-        flowId: randomUUID(),
-        authorizationUrl: authorize.toString(),
-        expiresAt: new Date(Date.now() + this.lifetimeMs).toISOString(),
-      };
-      const flow: Flow = {
-        owner: starting.owner, name, url, status, state, verifier, redirectUri, client, meta, server, consumed: false,
-        expiry: setTimeout(() => this.finish(flow, "expired", "Sign-in expired. Start again."), this.lifetimeMs),
-      };
-      flow.expiry.unref();
+      const flow = this.open(name, url, starting, meta, redirectUri, client, server, scopes);
       server.on("request", (request, response) => void this.callback(flow, request, response));
-      this.flows.set(name, flow);
-      return { ...status };
+      return { ...flow.status };
     } catch (error) {
       server.close();
       throw error;
     }
   }
 
+  private open(
+    name: string, url: string, starting: StartingFlow, meta: McpAuthMetadata, redirectUri: string,
+    client: ClientAuth, server: Server | null, scopes: string[] | undefined,
+  ): Flow {
+    if (starting.cancelled || !this.isOwnerLive(starting.owner)) throw new McpSignInError("Sign-in cancelled because the session or server changed.", 409);
+    const state = randomBytes(32).toString("base64url");
+    const verifier = randomBytes(32).toString("base64url");
+    const authorize = new URL(meta.authorizationEndpoint);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("client_id", client.id);
+    authorize.searchParams.set("redirect_uri", redirectUri);
+    authorize.searchParams.set("state", state);
+    authorize.searchParams.set("code_challenge", createHash("sha256").update(verifier).digest("base64url"));
+    authorize.searchParams.set("code_challenge_method", "S256");
+    authorize.searchParams.set("resource", meta.resource);
+    if (scopes?.length) authorize.searchParams.set("scope", scopes.join(" "));
+
+    const status: McpSignInStatus = {
+      phase: "waiting",
+      flowId: randomUUID(),
+      authorizationUrl: authorize.toString(),
+      expiresAt: new Date(Date.now() + this.lifetimeMs).toISOString(),
+      ...(server && starting.browser.remote ? { pasteBack: true } : {}),
+    };
+    const flow: Flow = {
+      owner: starting.owner, name, url, status, state, verifier, redirectUri, client, meta, server, consumed: false,
+      expiry: setTimeout(() => this.finish(flow, "expired", "Sign-in expired. Start again."), this.lifetimeMs),
+    };
+    flow.expiry.unref();
+    this.flows.set(name, flow);
+    return flow;
+  }
+
   private async callback(flow: Flow, request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse): Promise<void> {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Content-Type", "text/plain; charset=utf-8");
     response.setHeader("Referrer-Policy", "no-referrer");
-    // A kept-alive browser connection would carry the next sign-in's
-    // callback to this listener after it has closed to new connections.
+    // A kept-alive connection would carry the next sign-in's callback here after the listener stopped accepting.
     response.setHeader("Connection", "close");
     let callback: URL;
     try {
@@ -475,21 +498,24 @@ export class McpOAuthManager {
       response.writeHead(400).end("Invalid sign-in callback. Return to OpenMausBot and try again.");
       return;
     }
+    const answer = request.method === "GET"
+      ? await this.answer(flow, callback)
+      : { status: 400, text: "Invalid or expired sign-in. Return to OpenMausBot and try again." };
+    response.writeHead(answer.status).end(answer.text);
+  }
+
+  /** Words fit for a plain page: never the code or the server's own text. */
+  private async answer(flow: Flow, callback: URL): Promise<{ status: number; text: string }> {
     try {
-      if (request.method !== "GET") throw new McpSignInError("Invalid sign-in callback.", 400);
       await this.acceptCallback(flow, callback);
-      if (flow.status.phase === "failed") {
-        response.writeHead(400).end(`${flow.status.message} You can close this tab.`);
-      } else {
-        response.end("Signed in. You can close this tab and return to OpenMausBot.");
-      }
+      return flow.status.phase === "failed"
+        ? { status: 400, text: `${flow.status.message} You can close this tab.` }
+        : { status: 200, text: "Signed in. You can close this tab and return to OpenMausBot." };
     } catch (error) {
-      response.writeHead(error instanceof McpSignInError ? error.status : 400)
-        .end("Invalid or expired sign-in. Return to OpenMausBot and try again.");
+      return { status: error instanceof McpSignInError ? error.status : 400, text: "Invalid or expired sign-in. Return to OpenMausBot and try again." };
     }
   }
 
-  /** Both the listener and authenticated paste-back use the same one-shot checks. */
   private async acceptCallback(flow: Flow, callback: URL): Promise<void> {
     if (!this.isOwnerLive(flow.owner)) this.finish(flow, "cancelled", "Your session ended. Start again.");
     if (flow.status.phase === "waiting" && !flow.consumed && Date.now() >= Date.parse(flow.status.expiresAt)) {
@@ -516,7 +542,6 @@ export class McpOAuthManager {
     this.finish(flow, failure ? "failed" : "succeeded", failure ?? undefined);
   }
 
-  /** Spend the code; the error message on failure, null on success. */
   private async complete(flow: Flow, params: URLSearchParams): Promise<string | null> {
     if (params.has("error")) return "Sign-in was not approved.";
     const code = params.get("code");
@@ -531,8 +556,7 @@ export class McpOAuthManager {
       }, flow.client);
       const tokens = answer.status >= 200 && answer.status < 300 ? tokensFrom(answer.body) : null;
       if (!tokens) return "The server did not accept this sign-in. Start again.";
-      // Cancelled, signed out or removed while the code was being spent:
-      // hand the tokens back rather than resurrect a sign-in.
+      // Ended while the code was being spent: hand the tokens back rather than resurrect a sign-in.
       if (!this.isOwnerLive(flow.owner)) this.finish(flow, "cancelled", "Your session ended. Start again.");
       if (this.flows.get(flow.name) !== flow || flow.status.phase !== "waiting") {
         if (flow.meta.revocationEndpoint) {
@@ -560,16 +584,14 @@ export class McpOAuthManager {
   private finish(flow: Flow, phase: McpSignInPhase, message?: string): void {
     if (flow.status.phase !== "waiting") return;
     clearTimeout(flow.expiry);
-    flow.server.close();
-    flow.server.closeIdleConnections();
+    flow.server?.close();
+    flow.server?.closeIdleConnections();
     flow.status = { ...flow.status, phase, authorizationUrl: null, ...(message ? { message } : {}) };
   }
 }
 
 const isUrlServer = (server: McpServerSpec): server is Extract<McpServerSpec, { url: string }> => "url" in server;
 
-/** The servers a turn may mount: a URL server waiting for sign-in would
- * only answer 401 mid-turn, so it stays out until someone signs in. */
 export function withoutPendingSignIn(
   servers: Record<string, McpServerSpec>,
   manager: McpOAuthManager,
@@ -578,23 +600,20 @@ export function withoutPendingSignIn(
     !isUrlServer(server) || manager.authState(name, server.url) !== "needs-sign-in"));
 }
 
-/** Give each signed-in URL server a fresh bearer token, replacing any
- * Authorization header it was configured with. A server whose token can
- * no longer be had is left out. The input is not modified. */
 export async function withMcpSignIn(
   servers: Record<string, McpServerSpec>,
   manager: McpOAuthManager,
 ): Promise<Record<string, McpServerSpec>> {
+  const entries = await Promise.all(Object.entries(withoutPendingSignIn(servers, manager)).map(
+    async ([name, server]): Promise<[string, McpServerSpec] | null> => {
+      if (!isUrlServer(server) || manager.authState(name, server.url) !== "signed-in") return [name, server];
+      const token = await manager.accessToken(name, server.url);
+      if (!token) return null;
+      const headers = Object.fromEntries(Object.entries(server.headers).filter(([key]) => key.toLowerCase() !== "authorization"));
+      return [name, { ...server, headers: { ...headers, Authorization: `Bearer ${token}` } }];
+    },
+  ));
   const out: Record<string, McpServerSpec> = {};
-  for (const [name, server] of Object.entries(withoutPendingSignIn(servers, manager))) {
-    if (!isUrlServer(server) || manager.authState(name, server.url) !== "signed-in") {
-      out[name] = server;
-      continue;
-    }
-    const token = await manager.accessToken(name, server.url);
-    if (!token) continue;
-    const headers = Object.fromEntries(Object.entries(server.headers).filter(([key]) => key.toLowerCase() !== "authorization"));
-    out[name] = { ...server, headers: { ...headers, Authorization: `Bearer ${token}` } };
-  }
+  for (const entry of entries) if (entry) out[entry[0]] = entry[1];
   return out;
 }

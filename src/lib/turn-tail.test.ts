@@ -18,17 +18,13 @@ describe("showWorkingDots", () => {
   });
 
   it("keeps the dots hidden after the reply settles, while busy winds down", () => {
-    // the end-of-stream window: reply landed, turn.completed + busy:false
-    // still in flight — re-showing the dots here is the jitter
     expect(showWorkingDots(true, msg({}))).toBe(false);
   });
 
   it("rooms: a settled reply only covers the bot that said it", () => {
     const fromA = msg({ from: { botId: "a", name: "A", color: "blue" } });
     expect(showWorkingDots(true, fromA, "a")).toBe(false);
-    // the floor moved on — the next speaker's dots are real information
     expect(showWorkingDots(true, fromA, "b")).toBe(true);
-    // no attribution (older data) — fail toward showing the indicator
     expect(showWorkingDots(true, msg({}), "a")).toBe(true);
   });
 });

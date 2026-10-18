@@ -1,5 +1,3 @@
-// Double-click a title to rename it in place. Settings still exists for
-// the rest of the profile — this is just the fast path for the name.
 import { useEffect, useState } from "react";
 import { t } from "@/lib/i18n";
 import { Pencil } from "lucide-react";
@@ -15,16 +13,16 @@ export function RenameTitle({
   onActivate,
   showEditButton = false,
   className,
+  editButtonClassName,
   inputClassName,
 }: {
   value: string;
   onCommit: (next: string) => void;
   onEditingChange?: (editing: boolean) => void;
-  /** Optional single-click action for locations where the title opens a profile. */
   onActivate?: () => void;
-  /** Preserve deliberate inline rename beside an onActivate title. */
   showEditButton?: boolean;
   className?: string;
+  editButtonClassName?: string;
   inputClassName?: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -102,7 +100,7 @@ export function RenameTitle({
           onClick={startRename}
           aria-label={t("rename.named", { name: value })}
           title={t("rename.agent")}
-          className="flex size-10 shrink-0 items-center justify-center rounded text-ink-secondary opacity-70 hover:bg-raised hover:text-ink hover:opacity-100"
+          className={cn("flex size-10 shrink-0 items-center justify-center rounded text-ink-secondary opacity-70 hover:bg-raised hover:text-ink hover:opacity-100", editButtonClassName)}
         >
           <Pencil size={12} />
         </button>

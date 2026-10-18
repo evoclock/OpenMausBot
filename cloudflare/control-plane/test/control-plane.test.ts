@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { applyD1Migrations, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 
 import { createAuth } from "../src/auth";
@@ -196,11 +196,76 @@ describe("control-plane migrations and health", () => {
     expect(endpointColumns.results.map((column) => column.name)).toEqual(expect.arrayContaining([
       "cleanup_attempts",
       "last_cleanup_attempt_at",
+      "provider_account",
       "reclaim_requested_at",
     ]));
+    // The one-row table from 0006 stays, since an older Worker still writes it.
     const capacityRows = await env.DB.prepare("SELECT id, scan_page FROM managed_endpoint_capacity")
       .all<{ id: number; scan_page: number }>();
     expect(capacityRows.results).toEqual([{ id: 1, scan_page: 1 }]);
+    const accountIndex = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'installation_endpoints' AND name = ?",
+    ).bind("installation_endpoints_account_status_idx").first<{ name: string }>();
+    expect(accountIndex?.name).toBe("installation_endpoints_account_status_idx");
+  });
+
+  it("ties every existing endpoint to the original account and carries its capacity state over", async () => {
+    const db = env.MIGRATION_DB;
+    const accounts = env.TEST_MIGRATIONS.findIndex((migration) => migration.name.startsWith("0007_"));
+    expect(accounts).toBeGreaterThan(0);
+    await applyD1Migrations(db, env.TEST_MIGRATIONS.slice(0, accounts));
+    // What a Worker from before 0007 left behind.
+    await db.batch([
+      db.prepare(
+        `INSERT INTO installation_endpoints
+          (installation_id, hostname, tunnel_name, tunnel_id, dns_record_id, status,
+           last_reconciled_at, created_at, updated_at)
+         VALUES ('before-0007', ?, ?, '10000000-0000-4000-8000-000000000001', 'dns-1', 'ready', 5, 1, 5)`,
+      ).bind(`c-${"a".repeat(32)}.openmausbot.com`, `omb-c-${"a".repeat(32)}`),
+      db.prepare(
+        `UPDATE managed_endpoint_capacity
+            SET scan_page = 7, tunnel_count = 1000, dns_record_count = 990, reclaim_pending = 3,
+                checked_at = 123, capacity_rejected_at = 456, capacity_rejected_code = 'cf_api_1045',
+                updated_at = 789
+          WHERE id = 1`,
+      ),
+    ]);
+
+    await applyD1Migrations(db, env.TEST_MIGRATIONS);
+
+    expect(await db.prepare(
+      "SELECT provider_account, hostname, status FROM installation_endpoints WHERE installation_id = 'before-0007'",
+    ).first()).toEqual({
+      provider_account: env.CLOUDFLARE_ACCOUNT_ID,
+      hostname: `c-${"a".repeat(32)}.openmausbot.com`,
+      status: "ready",
+    });
+    // A Worker that predates the column keeps inserting into the same account.
+    await db.prepare(
+      `INSERT INTO installation_endpoints (installation_id, hostname, tunnel_name, status, created_at, updated_at)
+       VALUES ('older-worker', ?, ?, 'pending', 1, 1)`,
+    ).bind(`c-${"b".repeat(32)}.openmausbot.com`, `omb-c-${"b".repeat(32)}`).run();
+    expect(await db.prepare(
+      "SELECT provider_account FROM installation_endpoints WHERE installation_id = 'older-worker'",
+    ).first()).toEqual({ provider_account: env.CLOUDFLARE_ACCOUNT_ID });
+    await expect(db.prepare(
+      `INSERT INTO installation_endpoints
+        (installation_id, provider_account, hostname, tunnel_name, status, created_at, updated_at)
+       VALUES ('bad-account', 'short', 'c-x.example', 'omb-c-x', 'pending', 1, 1)`,
+    ).run()).rejects.toThrow(/CHECK/);
+    expect(await db.prepare("SELECT * FROM managed_endpoint_account_capacity").all().then((rows) => rows.results))
+      .toEqual([{
+        provider_account: env.CLOUDFLARE_ACCOUNT_ID,
+        scan_page: 7,
+        tunnel_count: 1000,
+        dns_record_count: 990,
+        reclaim_pending: 3,
+        dormant_endpoints: 0,
+        checked_at: 123,
+        capacity_rejected_at: 456,
+        capacity_rejected_code: "cf_api_1045",
+        updated_at: 789,
+      }]);
   });
 
   it("serves a no-store health response without CORS wildcards", async () => {
@@ -232,15 +297,16 @@ describe("control-plane migrations and health", () => {
     // its own, which bounds how far the report can trail D1.
     expect(second.headers.get("cache-control")).toBe("no-store");
     const cache = await caches.open("healthz-capacity");
-    const copy = await cache.match(new URL("/__internal/healthz-capacity-row/v1", env.BETTER_AUTH_URL));
+    const copy = await cache.match(new URL("/__internal/healthz-capacity-row/v2", env.BETTER_AUTH_URL));
     expect(copy?.headers.get("cache-control")).toBe("max-age=120");
     prepare.mockRestore();
   });
 
   it("reads capacity from D1 when the data-center cache is unavailable", async () => {
     await env.DB.prepare(
-      "UPDATE managed_endpoint_capacity SET tunnel_count = 950, checked_at = ? WHERE id = 1",
-    ).bind(Date.now()).run();
+      `INSERT INTO managed_endpoint_account_capacity (provider_account, tunnel_count, checked_at, updated_at)
+       VALUES (?, 950, ?, 0)`,
+    ).bind(env.CLOUDFLARE_ACCOUNT_ID, Date.now()).run();
     const unavailable = () => Promise.reject(new Error("cache unavailable"));
     const brokenCache = { delete: unavailable, match: unavailable, put: unavailable } as unknown as Cache;
     const open = vi.spyOn(caches, "open")
@@ -288,11 +354,8 @@ describe("control-plane migrations and health", () => {
       reclaimMode: "observe",
       tunnelLimit: 2500,
     });
-    // Reclaim can never be configured to treat a tunnel offline for less than
-    // a week as idle, and the sweep cannot outgrow its subrequest budget. A bad
-    // value falls back to the default instead of taking sign-in down, and a bad
-    // reclaim mode only observes.
-    expect(readConfig(withVars({ OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "6" })).capacity.offlineReclaimMs).toBe(21 * 24 * 60 * 60 * 1_000);
+    expect(readConfig(withVars({ OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "2" })).capacity.offlineReclaimMs).toBe(21 * 24 * 60 * 60 * 1_000);
+    expect(readConfig(withVars({ OMB_TUNNEL_OFFLINE_RECLAIM_DAYS: "3" })).capacity.offlineReclaimMs).toBe(3 * 24 * 60 * 60 * 1_000);
     expect(readConfig(withVars({ OMB_CLEANUP_SWEEP_LIMIT: "51" })).capacity.cleanupSweepLimit).toBe(20);
     expect(readConfig(withVars({ OMB_TUNNEL_LIMIT: "1e3" })).capacity.tunnelLimit).toBe(1000);
     expect(readConfig(withVars({ OMB_TUNNEL_RECLAIM: "yes" })).capacity.reclaimMode).toBe("observe");
@@ -310,6 +373,11 @@ describe("control-plane migrations and health", () => {
       CLOUDFLARE_ZONE_ID: env.CLOUDFLARE_ZONE_ID,
       COMPANION_HOST_SUFFIX: env.COMPANION_HOST_SUFFIX,
       CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN,
+      CLOUDFLARE_ENDPOINT_ACCOUNTS: env.CLOUDFLARE_ENDPOINT_ACCOUNTS,
+      CLOUDFLARE_API_TOKEN_MAUSBOT_SI: env.CLOUDFLARE_API_TOKEN_MAUSBOT_SI,
+      HIGHLEVEL_CLIENT_ID: env.HIGHLEVEL_CLIENT_ID,
+      HIGHLEVEL_REDIRECT_URL: env.HIGHLEVEL_REDIRECT_URL,
+      HIGHLEVEL_SCOPES: env.HIGHLEVEL_SCOPES,
       OMB_TUNNEL_LIMIT: env.OMB_TUNNEL_LIMIT,
       OMB_DNS_RECORD_LIMIT: env.OMB_DNS_RECORD_LIMIT,
       OMB_TUNNEL_RECLAIM: env.OMB_TUNNEL_RECLAIM,

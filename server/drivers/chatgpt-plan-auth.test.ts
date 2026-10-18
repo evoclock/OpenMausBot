@@ -10,8 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { ChatGptPlanAuthController } from "./chatgpt-plan-auth.ts";
 
-// Real loopback callback + signed synthetic OIDC/JWKS/token/model endpoints.
-// No provider account, user home, real token, or paid inference is touched.
+// Real loopback callback and signed synthetic OIDC/JWKS/token/model endpoints; no real account or token.
 describe("official ChatGPT plan OAuth", () => {
   let home: string;
   let directory: string;

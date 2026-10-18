@@ -1,15 +1,6 @@
-// Cross-platform process spawning for the agent CLIs. Four Windows
-// differences are exposed to drivers through this module:
-//   1. CreateProcess can't exec npm .cmd/.bat shims or node-shebang scripts
-//      directly. env-path resolves those to their real .exe / `node script`
-//      entry without a shell, so quoting-sensitive JSON argv stays intact.
-//   2. No process-group kill (kill(-pid) is POSIX) — taskkill /T reaps the
-//      whole tree, CLI + its spawned MCP proxies alike.
-//   3. Console apps spawned from the GUI shell flash a console window
-//      unless windowsHide is set.
-//   4. CreateProcess has a 32,767-character command-line limit. Keep prompt
-//      bodies on stdin or in private files and fail clearly if a future
-//      driver accidentally puts one back in argv.
+// Windows differences for agent CLIs: CreateProcess cannot exec .cmd/.bat shims or shebang scripts (env-path
+// resolves them without a shell), there is no process-group kill (taskkill /T), GUI-spawned consoles flash without
+// windowsHide, and the command line is capped at 32,767 characters (prompts go on stdin or in files).
 import {
   spawn,
   execFile,
@@ -18,6 +9,7 @@ import {
   type ExecFileOptions,
   type SpawnOptions,
 } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { resolveCliSpawn, type ResolvedSpawn } from "./env-path.ts";
@@ -26,13 +18,9 @@ export function resolveCli(cli: string, args: string[] = [], env?: NodeJS.Proces
   return resolveCliSpawn(cli, args, env);
 }
 
-/** Leave headroom below CreateProcess' 32,767 UTF-16 code-unit limit for
- * libuv's quoting and environment-specific executable expansion. */
+/** Headroom below CreateProcess' 32,767 UTF-16 code-unit limit for libuv's quoting and executable expansion. */
 export const WINDOWS_SAFE_COMMAND_LINE_CHARS = 30_000;
 
-/** Conservative size of the command line libuv will give CreateProcess.
- * JSON string quoting escapes every slash/quote case Windows quoting needs,
- * so this can over-count but cannot hide a dangerous launch. */
 export function estimatedWindowsCommandLineChars(resolved: ResolvedSpawn): number {
   return [resolved.command, ...resolved.args].reduce(
     (total, value) => total + JSON.stringify(value).length + 1,
@@ -53,40 +41,56 @@ export function assertSafeCliArgv(
   throw error;
 }
 
-// Only spawnCli establishes a private POSIX group. A plain spawned child
-// (for example inside an MCP gate) may share our own group: never signal it.
+// Only spawnCli makes a private POSIX group; a plain child may share ours, so never signal its group.
 const cliGroups = new WeakSet<ChildProcess>();
 const stopping = new WeakMap<ChildProcess, Promise<boolean>>();
+
+const MAX_ENDED_SESSIONS = 4_096;
+const engineSessions = { live: new Set<number>(), ended: new Set<number>() };
+
+/** POSIX session ids of the engines that run bots' turns (each leads its own session). A server opened by any
+ * process in one counts as the bot's, even after the shell that started it exits. */
+export function botEngineSessions(): { live: ReadonlySet<number>; ended: ReadonlySet<number> } {
+  return engineSessions;
+}
+
+function rememberEngineSession(child: ChildProcess): void {
+  const pid = child.pid;
+  if (!pid) return;
+  engineSessions.live.add(pid);
+  child.once("exit", () => {
+    engineSessions.live.delete(pid);
+    engineSessions.ended.add(pid);
+    if (engineSessions.ended.size > MAX_ENDED_SESSIONS) engineSessions.ended.delete(engineSessions.ended.values().next().value!);
+  });
+}
+
+/** `bot`: an engine running bots' turns, whose own servers that bot's browser may open on a server host.
+ * `openmausbot`: everything else (logins, probes, the browser engine itself). */
+export type CliOwner = "bot" | "openmausbot";
 
 export function spawnCli(
   cli: string,
   args: string[],
   opts: SpawnOptions,
+  owner: CliOwner = "openmausbot",
 ): ChildProcessByStdio<Writable, Readable, Readable> {
   const resolved = resolveCli(cli, args);
   assertSafeCliArgv(resolved);
   const child = spawn(resolved.command, resolved.args, {
     ...opts,
-    // posix: own process group so kill(-pid) reaps child MCP servers;
-    // win32: taskkill /T does the reaping instead (see killCliTree)
+    // POSIX: own group so kill(-pid) reaps child MCP servers; Windows: taskkill /T does it.
     ...(process.platform === "win32" ? { windowsHide: true } : { detached: true }),
-  }) as ChildProcessByStdio<Writable, Readable, Readable>; // callers always pipe all three
+  }) as ChildProcessByStdio<Writable, Readable, Readable>;
   if (process.platform !== "win32") cliGroups.add(child);
+  if (process.platform !== "win32" && owner === "bot") rememberEngineSession(child);
 
-  // A write to a dying child's stdin fails differently per platform, and one
-  // of the ways is fatal. On POSIX the kill is synchronous, the stream is
-  // already destroyed by the time anything writes, and the write throws into
-  // the caller's try/catch. On Windows killCliTree goes through taskkill — a
-  // subprocess — so there is a window where the child is dead but its pipe is
-  // not, and a write during it errors *asynchronously* on the stream. No
-  // driver listens for that, an unlistened stream error is an uncaught
-  // exception, and the whole harness exits over one dead CLI. The error
-  // carries no information the drivers don't already get from `close`, which
-  // is where every one of them settles the turn — so it is swallowed, not
-  // logged.
+  // On Windows a stdin write between taskkill and pipe close errors asynchronously; unlistened, that crashes the harness.
   child.stdin?.on("error", () => {});
   return child;
 }
+
+const EXEC_KILL_GRACE_MS = 2_000;
 
 export function execCli(
   cli: string,
@@ -101,23 +105,28 @@ export function execCli(
     queueMicrotask(() => cb(error instanceof Error ? error : new Error(String(error)), "", ""));
     return;
   }
-  execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) =>
-    cb(err, stdout, stderr),
-  );
+  let escalate: NodeJS.Timeout | undefined;
+  const child = execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) => {
+    clearTimeout(escalate);
+    cb(err, stdout, stderr);
+  });
+  // Node (24) calls back only once the child exits, and a CLI wrapper that traps SIGTERM outlives the timeout's signal.
+  // Only the child is stopped: execFile starts no process group, so a grandchild that ignores SIGTERM can outlive it.
+  if (opts.timeout) {
+    escalate = setTimeout(() => void killCliTree(child, 0), opts.timeout + EXEC_KILL_GRACE_MS);
+    escalate.unref?.();
+  }
 }
 
-/** Human wording for a failed CLI spawn.
- *
- * Node reports these as bare errno strings — "spawn grok ENOENT" — which
- * reads as a crash. On a CLI spawn the common codes mean exactly one thing
- * each, and both are setup problems the user can fix, so say which. The
- * `setup` flag lets the UI offer "Install" instead of a "Retry" that is
- * guaranteed to fail the same way. */
+/** Node reports a missing cwd as the CLI's own ENOENT, so pass `cwd` to tell a moved folder from a missing CLI. */
 type SpawnFailure = { message: string; setup: boolean };
 
-export function describeSpawnFailure(err: NodeJS.ErrnoException, cli: string): SpawnFailure {
-  if (err.code === "ENOENT")
+export function describeSpawnFailure(err: NodeJS.ErrnoException, cli: string, cwd?: string): SpawnFailure {
+  if (err.code === "ENOENT") {
+    if (cwd && !existsSync(cwd))
+      return { message: `This chat's working folder no longer exists: ${cwd}. Choose another folder in the bot's settings, or create it again.`, setup: false };
     return { message: `\`${cli}\` isn't installed, or isn't on this app's PATH`, setup: true };
+  }
   if (err.code === "EACCES" || err.code === "EPERM")
     return { message: `\`${cli}\` isn't executable — check its file permissions`, setup: true };
   if (err.code === "ENAMETOOLONG")
@@ -128,9 +137,7 @@ export function describeSpawnFailure(err: NodeJS.ErrnoException, cli: string): S
   return { message: `spawn failed: ${err.message}`, setup: false };
 }
 
-/** Stop an owned CLI group, including helpers after its root exits. timeoutMs
- * is the TERM grace period; SIGKILL gets one further second to settle. Helpers
- * that deliberately detach into another group are outside this ownership. */
+/** timeoutMs is the TERM grace; SIGKILL gets one more second. Helpers that detach into another group are not covered. */
 export function killCliTree(child: ChildProcess, timeoutMs = 5_000): Promise<boolean> {
   const existing = stopping.get(child);
   if (existing) return existing;
@@ -140,8 +147,7 @@ export function killCliTree(child: ChildProcess, timeoutMs = 5_000): Promise<boo
 
   const run = stopCliTree(child, pid, Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 5_000);
   stopping.set(child, run);
-  // A failed attempt may be retried. Remember success so a delayed caller
-  // cannot signal a reused PID/group after this child's group disappeared.
+  // Remember success, so a delayed caller cannot signal a reused PID/group.
   void run.then((stopped) => { if (!stopped) stopping.delete(child); });
   return run;
 }
@@ -166,15 +172,19 @@ async function stopCliTree(child: ChildProcess, pid: number, timeoutMs: number):
         if (group) process.kill(-pid, value);
         else child.kill(value);
       } catch {
-        try { child.kill(value); } catch { /* report uncertainty below */ }
+        try { child.kill(value); } catch {}
       }
     };
     const wait = async (ms: number) => {
       const deadline = Date.now() + ms;
       while (!settled()) {
         const remaining = deadline - Date.now();
-        if (remaining <= 0) return false;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(25, remaining)));
+        if (remaining <= 0) {
+          // Timers run before libuv's poll phase reads SIGCHLD: a blocked loop reaches the deadline with the exit unread.
+          await new Promise((resolve) => setImmediate(resolve));
+          return settled();
+        }
+        await exitOrDelay(child, Math.min(25, remaining));
       }
       return true;
     };
@@ -206,31 +216,44 @@ async function stopCliTree(child: ChildProcess, pid: number, timeoutMs: number):
     execFile("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true }, (err) => {
       if (finished) return;
       if (!err) {
-        // taskkill can finish before Node observes the process exit. Do not
-        // report success until both have happened; callers may rename the
-        // executable immediately. Conversely, inherited pipes can delay
-        // close after exit, so a confirmed exit need not wait for those pipes.
+        // taskkill can finish before Node sees the exit, and callers may rename the executable at once: wait for both, not for inherited pipes.
         if (exited()) done(true);
         else child.once("exit", closed);
         return;
       }
       try {
-        // taskkill is unavailable or the tree lookup failed. At least stop
-        // the process we own instead of leaving the entire turn running.
         child.kill();
       } catch {
-        /* already gone */
       }
     });
   });
 }
 
-/** Per-turn broker channel: unix socket on POSIX, named pipe on Windows
- * (Node can't listen on a filesystem socket path there — EACCES). */
+function exitOrDelay(child: ChildProcess, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      child.off("exit", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    child.once("exit", done);
+  });
+}
+
+/** True once the process itself has exited, within `ms`; members it left in its group are not counted. */
+export async function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  const deadline = Date.now() + ms;
+  while (!exited() && Date.now() < deadline) await exitOrDelay(child, Math.min(250, deadline - Date.now()));
+  if (!exited()) await new Promise((resolve) => setImmediate(resolve));
+  return exited();
+}
+
+/** Unix socket on POSIX, named pipe on Windows (Node cannot listen on a filesystem socket path there: EACCES). */
 export function brokerSocketPath(dataDir: string, tag: string): string {
   return process.platform === "win32"
-    // Named pipes share a global namespace; DATA_DIR cannot isolate two
-    // concurrent app instances the way a POSIX socket directory does.
+    // Named pipes share a global namespace that DATA_DIR cannot isolate.
     ? `\\\\.\\pipe\\openmausbot-perm-${process.pid}-${tag}`
     : join(dataDir, `perm-${tag}.sock`);
 }

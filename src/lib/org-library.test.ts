@@ -47,7 +47,6 @@ describe("the shelf card", () => {
     expect(orgCardAction(entry({ release: null, blob: "unavailable" }))).toBe("noRelease");
     expect(orgCardAction(entry({ installed: { installId: "b".repeat(32), release: "1.3.0", status: "installed" } }))).toBe("added");
     expect(orgCardAction(entry({ installed: { installId: "b".repeat(32), release: "1.3.0", status: "withdrawn" } }))).toBe("added");
-    // Removed locally: the person may add it again.
     expect(orgCardAction(entry({ installed: { installId: "b".repeat(32), release: "1.3.0", status: "removed" } }))).toBe("add");
   });
 
@@ -112,8 +111,6 @@ describe("the preview and the provenance line", () => {
 
   it("says where a bot came from, and when its release was withdrawn", () => {
     expect(packageProvenance(undefined)).toBeNull();
-    // A bot imported from a file (old records have no source) shows nothing
-    // new: with no organization, Bot settings stays as it was.
     expect(packageProvenance({ id: "sales-desk", name: "Sales desk", release: "1.3.0", requiredApps: [] })).toBeNull();
     expect(packageProvenance({ id: "sales-desk", name: "Sales desk", release: "1.3.0", requiredApps: [], source: "file", installId: "f".repeat(32) })).toBeNull();
     const stamp = { id: "sales-desk", name: "Sales desk", release: "1.3.0", requiredApps: [], source: "org" as const, installId: "d".repeat(32),

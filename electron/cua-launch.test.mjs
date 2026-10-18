@@ -187,7 +187,6 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
     let attempts;
     try {
       attempts = [retry(event), retry(event)];
-      // Both complete IPC flows must wait for the same old host to stop.
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(fixture.hosts).toHaveLength(1);
       expect(fixture.hosts[0].stop).toHaveBeenCalledOnce();
@@ -238,9 +237,7 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
 
 it("does not add blocking subprocess calls to Electron runtime modules", () => {
   const root = dirname(fileURLToPath(import.meta.url));
-  // These existing synchronous ownership checks need separate lifecycle work:
-  // one cached boot ID read, one Windows process-creation-time query, and
-  // Linux's driver/private-group validation.
+  // These synchronous ownership checks need separate lifecycle work: the boot ID read, the Windows creation-time query, Linux group validation.
   const allowed = { "data-dir-lease.mjs": 3, "cua-linux.cjs": 2 };
   for (const entry of readdirSync(root, { recursive: true })) {
     const name = String(entry).replaceAll("\\", "/");

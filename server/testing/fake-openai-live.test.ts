@@ -117,7 +117,6 @@ describe("fake GPT-Live answer", () => {
   it("answers every offered section in order, with the same mids, bundled", () => {
     const answer = fakeAnswerSdp(OFFER);
     expect(answer.endsWith("\r\n")).toBe(true);
-    // CRLF only: no bare LF anywhere
     expect(answer.replaceAll("\r\n", "")).not.toContain("\n");
     const all = lines(answer);
     expect(all.slice(0, 4)).toEqual(["v=0", expect.stringMatching(/^o=- \d+ 2 IN IP4 127\.0\.0\.1$/), "s=-", "t=0 0"]);
@@ -142,7 +141,6 @@ describe("fake GPT-Live answer", () => {
       expect(section.find((line) => line.startsWith("a=ice-pwd:"))).toMatch(/^a=ice-pwd:[0-9a-f]{32}$/);
       expect(section.find((line) => line.startsWith("a=fingerprint:"))).toMatch(/^a=fingerprint:sha-256 [0-9A-F]{2}(:[0-9A-F]{2}){31}$/);
     }
-    // its own credentials, not the offer's
     expect(answer).not.toContain("a=ice-ufrag:abcd");
     expect(fakeAnswerSdp(OFFER)).not.toBe(answer);
   });

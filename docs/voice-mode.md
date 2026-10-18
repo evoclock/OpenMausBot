@@ -79,7 +79,7 @@ call behind an invisible card.
 ~100–250ms, against an agent turn of 5–60s. The agent dominates by 50–100x, so
 voice choice is a quality decision, not a latency one. The way to make a call
 feel conversational is to put the bot you call on a fast model and let it
-delegate real work to specialists over `ask_bot` — no new machinery required.
+hand real work to specialists with `coordinate_bots` — no new machinery required.
 
 ## Rejected
 

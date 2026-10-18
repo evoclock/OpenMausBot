@@ -1,6 +1,3 @@
-// PATH augmentation contract (issues #8, #12): a CLI living in a
-// well-known install dir — or an nvm bin dir — must be findable even
-// when the process itself started with a bare GUI PATH.
 import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -136,7 +133,7 @@ describe("augmentedPath", () => {
       process.env.SHELL = shell;
       delete process.env.VITEST;
 
-      // Control: unsealed, the product scans both. This is the leak.
+      // Control: unsealed, the product scans both dirs; that is the leak.
       delete process.env.OMB_TEST_SEALED_PATH;
       resetPathCacheForTests();
       expect(augmentedPath().split(delimiter)).toEqual(expect.arrayContaining(machineDirs));
@@ -147,7 +144,6 @@ describe("augmentedPath", () => {
       resetPathCacheForTests();
       const sealed = augmentedPath().split(delimiter);
       for (const dir of machineDirs) expect(sealed).not.toContain(dir);
-      // Its own home is still where a test plants a CLI for it to find.
       expect(sealed).toContain(ownBin);
       // The unsealed probe above landed well inside this; the sealed one never starts.
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -203,10 +199,30 @@ describe("augmentedPath", () => {
     }
   });
 
-  // MOCA-272: OMB installs Cursor from Settings with cursor.com's Windows
-  // script, which puts cursor-agent.* (and `agent` copies) in
-  // %LOCALAPPDATA%\cursor-agent and adds that to the user PATH — which a
-  // running app never sees. Simulated so it runs on every platform.
+  it("finds a Kimi install after launch with an unchanged Windows process PATH", () => {
+    const platform = process.platform;
+    const previousExt = process.env.PATHEXT;
+    const bin = join(homedir(), ".kimi-code", "bin");
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.PATHEXT = ".cmd;.exe";
+      resetPathCacheForTests();
+      expect(findCliCandidates("kimi-fixture")).toEqual([]);
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "kimi-fixture.cmd"), "@echo off\n");
+      resetPathCache();
+      expect(findCliCandidates("kimi-fixture")).toContain(join(bin, "kimi-fixture.cmd"));
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform });
+      if (previousExt === undefined) delete process.env.PATHEXT;
+      else process.env.PATHEXT = previousExt;
+      resetPathCacheForTests();
+      rmSync(bin, { recursive: true, force: true });
+    }
+  });
+
+  // Cursor's Windows install script puts cursor-agent.* (and `agent` copies) in %LOCALAPPDATA%\cursor-agent and adds it to the
+  // user PATH, which a running app never sees. Simulated so it runs on every platform.
   it("finds Cursor installed after launch on Windows", () => {
     const realPlatform = process.platform;
     const previous = { LOCALAPPDATA: process.env.LOCALAPPDATA, PATHEXT: process.env.PATHEXT };
@@ -230,6 +246,32 @@ describe("augmentedPath", () => {
       }
       resetPathCacheForTests();
       rmSync(localAppData, { recursive: true, force: true });
+    }
+  });
+
+  // MOCA-152: the Podman installer (and Podman Desktop's) puts podman.exe in %ProgramFiles%\RedHat\Podman.
+  it("finds Podman installed after launch on Windows", () => {
+    const realPlatform = process.platform;
+    const previous = { ProgramFiles: process.env.ProgramFiles, PATHEXT: process.env.PATHEXT };
+    const programFiles = mkdtempSync(join(tmpdir(), "omb-programfiles-"));
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.ProgramFiles = programFiles;
+      process.env.PATHEXT = ".com;.exe;.bat;.cmd";
+      const podmanDir = join(programFiles, "RedHat", "Podman");
+      mkdirSync(podmanDir, { recursive: true });
+      writeFileSync(join(podmanDir, "podman.exe"), "");
+      resetPathCacheForTests();
+      expect(augmentedPath().split(delimiter)).toContain(podmanDir);
+      expect(findCliCandidates("podman").map((path) => path.toLowerCase())).toContain(join(podmanDir, "podman.exe").toLowerCase());
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      resetPathCacheForTests();
+      rmSync(programFiles, { recursive: true, force: true });
     }
   });
 });
@@ -265,9 +307,8 @@ describe("userHome / harnessHome", () => {
   });
 });
 
-// Windows CLI resolution — spawn(cli) alone finds nothing on Windows (no
-// PATHEXT in libuv, no #!, and a .cmd throws outright since Node's
-// CVE-2024-27980 fix). Fixtures are the two real npm shim shapes.
+// spawn(cli) alone finds nothing on Windows (no PATHEXT in libuv, no #!, and a .cmd throws since Node's CVE-2024-27980 fix).
+// Fixtures are the two real npm shim shapes.
 const winOnly = describe.skipIf(process.platform !== "win32");
 
 // the exact bytes npm writes for a CLI whose bin is a native binary

@@ -1,5 +1,3 @@
-// Simple mode's Settings: at most five pages, several of them stacking what
-// Advanced shows as separate pages, and every old deep link still landing.
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,11 +97,9 @@ describe("Settings in Simple mode", () => {
     const html = render();
     expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account"]);
     expect(SIMPLE_PAGES.length).toBeLessThanOrEqual(5);
-    // a flat list: no group headings, no per-section rail entries
     expect(html).not.toContain("data-settings-group=");
     expect(html).not.toContain("data-settings-section=");
     for (const hidden of ["usage", "backups", "experimental", "workspaces", "skills"]) expect(html).not.toContain(`value="${hidden}"`);
-    // the narrow-window picker offers the same five pages
     const picker = html.match(/<select aria-label="Settings"[\s\S]*?<\/select>/)![0];
     expect([...picker.matchAll(/<option value="([^"]+)"/g)].map((match) => match[1])).toEqual(["general", "appearance", "ai", "computers", "account"]);
   });
@@ -112,8 +108,6 @@ describe("Settings in Simple mode", () => {
     const placed = SIMPLE_PAGES.flatMap((page) => page.sections);
     expect(new Set(placed).size).toBe(placed.length);
     const hidden = SECTIONS.map((entry) => entry.id).filter((id) => !placed.includes(id));
-    // Skills (the shared library, main's new page) is Advanced-only too, so
-    // Simple stays at five pages; a deep link still opens it.
     expect(hidden).toEqual(["skills", "usage", "backups", "workspaces", "experimental"]);
     for (const id of hidden) expect(SIMPLE_HIDDEN_SECTIONS).toContain(id);
   });
@@ -137,13 +131,13 @@ describe("Settings in Simple mode", () => {
     expect(html).toContain("More providers for OpenCode bots");
   });
 
-  it("stacks Remote access, Servers, Local VM and the built-in browser on Computers", () => {
+  it("stacks Remote access, Servers, Local VM, the built-in browser and Logins on Computers", () => {
     fixture.section = "companion";
     const html = render();
     expect(currentPage(html)).toBe("computers");
-    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces", "computer", "browser"]);
+    expect(blocks(html)).toEqual(["companion", "desktopWorkspaces", "computer", "browser", "logins"]);
     const headings = [...html.matchAll(/<h3[^>]*>([^<]+)<\/h3>/g)].map((match) => match[1]);
-    expect(headings).toEqual(["Remote access", "Servers", "Local VM", "Built-in browser"]);
+    expect(headings).toEqual(["Remote access", "Servers", "Local VM", "Built-in browser", "Logins"]);
     expect(html).toContain('aria-label="Enable the built-in browser"');
   });
 
@@ -159,13 +153,11 @@ describe("Settings in Simple mode", () => {
     fixture.ownerOrAdmin = true;
     fixture.section = "people";
     const html = render();
-    // no Servers page without the desktop bridge, and no desktop-only account pages
     expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account"]);
     expect(blocks(html)).toEqual(["people", "activity"]);
   });
 
   it("drops Account when nothing on it is shown", () => {
-    // an OMB Cloud home in a browser: no desktop account pages, nobody to invite, not an admin
     vi.stubGlobal("window", {});
     fixture.config = { ...fixture.config, cloudHome: true };
     expect(pages(render())).toEqual(["general", "appearance", "ai", "computers"]);
@@ -209,7 +201,7 @@ describe("Settings in Simple mode", () => {
     const html = render();
     expect(pages(html)).toEqual(["general", "appearance", "ai", "computers", "account", section]);
     expect(currentPage(html)).toBe(section);
-    if (content === "skillAuthoring") expect(html).toContain("Bots may draft skills for your review");
+    if (content === "skillAuthoring") expect(html).toContain("Bots may write their own skills");
     else expect(markers(html)).toContain(content);
   });
 
@@ -234,7 +226,6 @@ describe("the built-in browser switch", () => {
     fixture.section = "computer";
     const html = render();
     if (advanced) {
-      // Advanced: it heads the Local VM page
       expect(html.indexOf('aria-label="Enable the built-in browser"')).toBeLessThan(html.indexOf("MARKER:computer;"));
     } else {
       expect(html.indexOf("MARKER:computer;")).toBeLessThan(html.indexOf('aria-label="Enable the built-in browser"'));
@@ -254,7 +245,7 @@ describe("the built-in browser switch", () => {
     fixture.section = "experimental";
     const html = render();
     expect(html).not.toContain('aria-label="Enable the built-in browser"');
-    expect(html).toContain("Bots may draft skills for your review");
+    expect(html).toContain("Bots may write their own skills");
     expect(browserSwitch()).toBeUndefined();
   });
 

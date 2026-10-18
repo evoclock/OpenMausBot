@@ -1,14 +1,8 @@
-// Grouping a transcript's tool chips into runs.
-//
-// A bot working through a task emits one chip per tool call, and a long
-// stretch of them buries the thing you actually came to read: what the bot
-// SAID. Consecutive finished steps fold into a single row that names them;
-// text between two stretches breaks the run, so the bot's words always
-// separate one run from the next.
 import type { Message } from "@/state/store";
 import { formatElapsed } from "@/lib/working-time";
 import { t } from "@/lib/i18n";
 import { failedTurnCause } from "../../shared/failed-turn";
+import { isStoppedTurnName } from "../../shared/client-cancel";
 import { localDay } from "@/lib/transcript-derivations";
 
 export type ActivityTranscriptItem =
@@ -19,17 +13,14 @@ export type TranscriptItem =
   | ActivityTranscriptItem
   | { kind: "turn"; id: string; turnId: string; label: string; messages: Message[] };
 
-/** A status row rather than a tool step: `recovery:` when automatic recovery
- * changes this conversation's engine, `notice:` when the engine runs another
- * model than the saved one. Both must remain visible and are never folded. */
-export function statusActivity(message: Message): { kind: "recovery" | "notice"; text: string } | null {
+export function statusActivity(message: Message): { kind: "recovery" | "notice" | "stopped"; text: string } | null {
   const name = message.kind === "activity" ? message.tool?.name : undefined;
   if (name?.startsWith("recovery:")) return { kind: "recovery", text: name.slice("recovery:".length).trim() };
   if (name?.startsWith("notice:")) return { kind: "notice", text: name.slice("notice:".length).trim() };
+  if (name && isStoppedTurnName(name)) return { kind: "stopped", text: name.slice("stopped:".length).trim() };
   return null;
 }
 
-/** Recovery changes this conversation's engine and must remain visible. */
 export function isRecoveryActivity(message: Message): boolean {
   return statusActivity(message)?.kind === "recovery";
 }
@@ -38,23 +29,19 @@ export function isStatusActivity(message: Message): boolean {
   return statusActivity(message) !== null;
 }
 
-/** A step that may be folded away: finished, a real tool, and not a
- * bot⇄bot or opened-thread chip (those are navigation, not work) or a
- * failed turn (that renders as an error). A step still running stays out,
- * so live progress is never hidden behind a fold. */
-function foldable(message: Message): boolean {
+export function isToolStep(message: Message): message is Message & { tool: NonNullable<Message["tool"]> } {
   const tool = message.tool;
   if (message.kind !== "activity" || !tool) return false;
-  if (message.comm || message.threadRef || isStatusActivity(message)) return false;
-  if (tool.ok !== true) return false;
+  if (message.comm || message.threadRef || message.dataResult || isStatusActivity(message)) return false;
   return failedTurnCause(tool.name) === null;
+}
+
+function foldable(message: Message): boolean {
+  return isToolStep(message) && message.tool.ok === true;
 }
 
 type TurnFold = Extract<TranscriptItem, { kind: "turn" }>;
 
-/** Settled providers may emit several ordinary assistant messages around
- * tool calls. Keep the terminal answer in the transcript and replace the
- * earlier narration with one reversible row, matching T3 Code's turn fold. */
 function assistantTurnFolds(messages: Message[]): {
   byAnchorId: Map<string, TurnFold>;
   hiddenIds: Set<string>;
@@ -106,6 +93,23 @@ function assistantTurnFolds(messages: Message[]): {
   return { byAnchorId, hiddenIds };
 }
 
+export function roomTurnFolds(messages: Message[]): {
+  byTerminalId: Map<string, TurnFold>;
+  hiddenIds: Set<string>;
+} {
+  const { byAnchorId, hiddenIds } = assistantTurnFolds(messages);
+  const terminals = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role === "bot" && message.kind === "text" && message.turnId && message.turnTerminal) terminals.set(message.turnId, message.id);
+  }
+  const byTerminalId = new Map<string, TurnFold>();
+  for (const fold of byAnchorId.values()) {
+    const terminalId = terminals.get(fold.turnId);
+    if (terminalId) byTerminalId.set(terminalId, fold);
+  }
+  return { byTerminalId, hiddenIds };
+}
+
 function group(messages: Message[], foldAssistantTurns: boolean): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const folds = foldAssistantTurns
@@ -113,7 +117,6 @@ function group(messages: Message[], foldAssistantTurns: boolean): TranscriptItem
     : { byAnchorId: new Map<string, TurnFold>(), hiddenIds: new Set<string>() };
   let run: Message[] = [];
   const flush = () => {
-    // one step on its own is cheaper to read than a fold that hides it
     if (run.length > 1) items.push({ kind: "run", id: `run:${run[0].id}`, messages: run });
     else for (const message of run) items.push({ kind: "message", message });
     run = [];
@@ -156,12 +159,10 @@ export function groupTranscript(messages: Message[]): TranscriptItem[] {
 
 const MAX_NAMES = 3;
 
-/** The one line a folded run has to earn its place with: how much work it
- * was and which tools did it. Failed steps are never folded. */
-export function describeRun(messages: Message[]): string {
+export function describeRun(messages: Message[], label: (tool: NonNullable<Message["tool"]>) => string = (tool) => tool.name): string {
   const counts = new Map<string, number>();
   for (const message of messages) {
-    const name = message.tool?.name ?? "";
+    const name = message.tool ? label(message.tool) : "";
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   const names = [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name));

@@ -6,8 +6,9 @@ The npm CLI supports a managed public tunnel, Tailscale, or your own proxy.
 
 > **Security first:** by default a self-hosted server trusts loopback as its
 > owner — any process that can reach `127.0.0.1:8799` has full control,
-> including the shell your bots can use. **Never expose that port directly
-> and never bind it to a public interface.** Reach it through an SSH tunnel, a
+> including the shell your bots can use. A browser is the exception: even on
+> this machine it signs in once (see [A browser signs in](#a-browser-signs-in)).
+> **Never expose that port directly and never bind it to a public interface.** Reach it through an SSH tunnel, a
 > private network you trust, or an authenticated remote path below. Requests
 > through the managed tunnel or a correctly configured proxy require a paired
 > session. If several people use one server, read
@@ -35,6 +36,9 @@ Runs fully on a server:
   (`npx openmausbot browser install`, or nothing to do in the Docker image,
   which ships it): each bot gets its own isolated, persistent session.
   Watching it live from the app is the next step (docs/plans/browser-engine.md).
+  It reaches the public internet and the dev servers a bot starts itself,
+  not this server's network or other services unless `browserEngine.egress.allow`
+  lists them ([what a bot's browser can reach](browser-packaging.md#what-a-bots-browser-can-reach)).
 
 Desktop-only for now (needs the Mac/Linux app):
 
@@ -91,8 +95,11 @@ is present. Three ways to make the server reachable from elsewhere:
   that address. The first run downloads `cloudflared` (pinned version and
   digest) into the data dir. Only traffic through the tunnel reaches the
   server, and it still has to pair: the tunnel lands on a separate listener
-  the server treats as "through a proxy", never as the owner. `npx openmausbot
-  logout` releases the address. The account credentials live in
+  the server treats as "through a proxy", never as the owner. That listener
+  also gzips JSON replies of 1 KB or more when the client accepts gzip, since
+  the hop to Cloudflare runs on this machine's upload uncompressed; the
+  loopback port never compresses. `npx openmausbot logout` releases the
+  address. The account credentials live in
   `~/.openmausbot/tunnel-account.json` (mode 0600).
   Starting it from a fleet or a container, where nobody can type an emailed
   code? Set `OMB_INSTALLATION_CREDENTIAL` to the installation credential the
@@ -248,6 +255,15 @@ Upgrade with `docker compose pull omb && docker compose up -d` (or
 `git pull && docker compose up -d --build`). State (chats, routines,
 engine logins, paired sessions) is on the `data` volume; back that up.
 
+The published image installs the current Chrome for Testing whenever a new
+Stable ships. A build from source keeps the Chrome (and any `ENGINES`) it
+installed first, because those layers sit beneath the app and stay cached
+across code changes. To pick up the current ones, rebuild with a new tag:
+
+```sh
+docker compose build --build-arg CHROME_CACHE_TAG=$(date +%F) omb && docker compose up -d
+```
+
 ## From source
 
 Requirements: Node 24+, pnpm, and at least one agent CLI installed and
@@ -320,7 +336,7 @@ Like `opencode` in a terminal, it reads provider keys from its environment
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
 `KIMI_API_KEY`, `MOONSHOT_API_KEY`, `MINIMAX_API_KEY`) and offers those
 providers' models, billed to that key. It does so only where the server's
-environment is one person's own: never on an OMB Cloud home, a hosted team
+environment is one person's own: never on MausBot Cloud, a hosted team
 workspace, an organisation-managed desktop, or a server whose sign-in list
 lets other people in (users, more than one admin, or a whole domain).
 Providers added with `opencode auth login` work everywhere.
@@ -476,8 +492,8 @@ bots or conversations. If sign-out cannot reach the server, the app warns you;
 revoke its session there when reachable again, or if the device is gone.
 
 What this changes about the trust model: the server still binds loopback
-and still trusts loopback as the owner. A **paired session** is the second
-way in: a bearer token or the cookie, same-origin only, with a scope (`admin`
+and still trusts programs on loopback as the owner, though never a browser
+(below). A **paired session** is the second way in: a bearer token or the cookie, same-origin only, with a scope (`admin`
 by default, `--client` for a device that may chat but not change settings or
 pair others). Five bad codes from one address lock that address out for ten
 minutes. Over plain HTTP (a LAN address without TLS) the cookie is not
@@ -499,12 +515,41 @@ address of its own:
 
 ```sh
 ssh -L 8799:localhost:8799 you@your-server
-# then open http://localhost:8799 — loopback, so no pairing needed
+# then run `openmausbot pair` on the server and open the "this computer:" link it prints
 ```
 
-(With `OMB_LOOPBACK_TRUST=service`, below, a tunnel is loopback without a
-session: the page asks you to sign in or pair first, because it no longer
-makes you the owner.)
+The browser signs in once through the tunnel, like any browser on the server
+itself.
+
+### A browser signs in
+
+A browser never gets loopback trust, on any server: a request that carries
+the `Sec-Fetch-Site` or `Sec-Fetch-Dest` header (every browser sends them to a
+loopback address, and a page cannot remove them), or a WebSocket handshake
+with an `Origin`, needs a session: a web page is not the person who owns the
+server, even when it runs on the same machine. Programs are unaffected: the
+CLI, scripts, `curl` and the companion send neither header.
+
+So the first time you open the web UI in a browser on the server's own
+machine, it shows the sign-in page. `openmausbot serve` and `openmausbot pair`
+print a link for it:
+
+```
+this computer: http://127.0.0.1:8799/pair#code=XXXX-XXXX-XXXX
+```
+
+Open it and choose **Connect** (or type the code on the sign-in page); the browser
+keeps its session cookie from then on. `openmausbot` (the guided start) prints
+the same link when it opens the browser. The desktop app is unaffected:
+its window adds the app's own per-launch owner header to every request and
+WebSocket it sends to its server, and no other Electron session may reach the
+server at all.
+
+For development, `pnpm dev:server` sets `OMB_DEV_TRUST_LOCAL_BROWSER=1`, so a
+browser on Vite's dev page (`pnpm dev`) is the owner as before. The server
+honours it only when it runs from source with owner trust, logs a warning, and
+ignores it in a build, the desktop app, a hosted workspace and MausBot Cloud.
+Run `OMB_DEV_TRUST_LOCAL_BROWSER=0 pnpm dev:server` to try the sign-in.
 
 ### Loopback trust: owner or service
 
@@ -538,7 +583,7 @@ Set `OMB_LOOPBACK_TRUST=service` on a self-hosted server people share (with
 an email sign-in list, say), or `OMB_LOOPBACK_TRUST=owner` to opt a hosted
 workspace back into the old behaviour (the log then warns). Any other value
 means `service`. The desktop app ignores the setting: its local changes
-already need the app's own per-launch capability. An OMB Cloud home ignores
+already need the app's own per-launch capability. MausBot Cloud ignores
 it too and is always `service` (docs/cloud-pro.md).
 
 With `service` on a self-hosted server:
@@ -633,8 +678,8 @@ and only when the card can be traced to a person:
 
 - a card for a request a user sent, or in a thread a user opened, is
   theirs to answer (admins and the owner may answer any card);
-- a thread a bot opened while working on someone's request (a delegated or
-  coordinated job) is traced back to that person, so the cards of work done
+- a thread a bot opened while working on someone's request (a job it handed
+  a teammate with `coordinate_bots`) is traced back to that person, so the cards of work done
   for them are theirs too;
 - a card that names nobody — sent by the owner on this machine, by a
   routine or webhook, from Slack (until Slack passes the asker through), or
@@ -692,7 +737,7 @@ alone.
   recorded in the admin activity log.
 - **Teams.** A team (sidebar section) is listed to a user only when it
   holds a bot or room they can see.
-- **Bots working together.** A bot reaches a teammate (asks, delegations,
+- **Bots working together.** A bot reaches a teammate (`coordinate_bots`,
   its roster and `list_bots`, @mentions, a Chief's team) only when exactly
   the same people can see both: otherwise one bot's thread could carry the
   other's answers to people who cannot see it. Bots nobody restricted all
@@ -707,7 +752,7 @@ alone.
   a message in a thread, a bot's picture — is hidden from that user. A
   file nothing uses yet (someone's own upload) is served; its name is random.
 - **Not covered.** Words already quoted into a conversation a user can
-  see (an earlier delegation, a message copied by hand, or something a bot
+  see (an earlier hand-off, a message copied by hand, or something a bot
   wrote into its own memory files with its file tools while it shared a room
   with a restricted bot) stay there. A bot's
   shell can still read files on the server, as it always could. Slack is
@@ -804,7 +849,7 @@ Older way, still supported, and only useful on a LAN or a tailnet: run the
 companion sidecar next to the harness and pair by its own QR. It advertises
 on your private networks (Tailscale-aware) and issues its own per-device
 credentials, which are **not** `openmausbot sessions` and are revoked from
-its own page on `127.0.0.1:8811`. It also serves phones over cleartext HTTP
+its own page at the `127.0.0.1:8811/#token=…` link it prints. It also serves phones over cleartext HTTP
 on port 8810, so do not expose it from a public server. It ships only in a
 git checkout: neither the npm package nor the Docker image contains it.
 
@@ -833,6 +878,23 @@ curl -H "Authorization: Bearer $TOKEN" -o usage.csv \
 Dates are inclusive, UTC, at most a year apart; without them you get the
 current month to date.
 
+### When an engine runs out
+
+When a person's turn ends on its engine's quota or usage limit (a
+subscription's weekly limit, an API key out of credit), the conversation gets
+one card offering up to three other engines that can take over, and "Not
+now". An engine is offered only if it can run a turn now (installed, signed
+in, allowed by your organisation), has the tools and the working folder the
+current one has, and can run the conversation's approval level as it stands.
+Nothing changes until the person picks one: that conversation alone moves to
+the engine's default model, the bot's own model and its other conversations
+stay where they are, and their message is sent again. Turns nobody typed
+(routines, webhooks, a teammate's work) get no card.
+
+The offer is on by default. To switch it off, start the server with
+`OMB_QUOTA_SWITCH=0`; any other value, or none, leaves it on. It has no
+setting in `config.json` yet.
+
 ### The decision log
 
 Every approval decision — a rule that let a tool call through, a card that
@@ -855,6 +917,61 @@ curl -H "Authorization: Bearer $TOKEN" -o decisions.csv \
 The CSV has one line per decision (time, decision, source, bot, tool,
 summary, rule, unattended, answered by, thread, request); cells that would
 start a spreadsheet formula are prefixed with `'`.
+
+### The safety floor
+
+Full access answers every permission request for a bot, and a saved command
+answers one. The safety floor is a short never-list that neither can answer:
+a recursive delete of the filesystem root, of the home directory or of a
+top-level system directory (`rm -rf /`, `rm -rf ~`, `rm -rf /etc`);
+formatting or overwriting a disk (`mkfs` on a device, `diskutil eraseDisk`,
+`dd of=/dev/sda`, a redirection into a disk device); and a fork bomb. Making
+a filesystem in an image file or on a loop device is not on it.
+
+It is off unless you switch it on: set `safetyFloor.enabled` to `true` in
+`config.json` (or through `PUT /api/config`), or start the server with
+`OMB_SAFETY_FLOOR=1`, which turns it on whatever the file says.
+`GET /api/config` reports whether it is in force as `safetyFloor.enabled`.
+
+**It is not applied on a Windows server yet.** There the setting is accepted
+and does nothing: no command is checked, denied or held, and every approval
+behaves as it does with the setting off. The server says so once at startup
+(`[safety-floor] … not applied on a Windows server yet`), and
+`GET /api/config` reports `safetyFloor.enabled: false`. Telling cmd,
+PowerShell and Git Bash apart needs to know which shell a request is for,
+which the server does not know yet.
+
+With it on, on macOS or Linux, a command on the list that a grant was about
+to allow is denied instead. The bot is told why, the conversation shows
+`Blocked by the safety floor: …`, and the decision log gets an `auto-denied`
+row with source `safety-floor`. A card you answer yourself is not overridden:
+at "Ask for approval" the request still reaches you, and your Allow stands.
+
+A command the floor cannot read is not approved automatically either: one
+with a quote or heredoc that never closes, or longer than 32 KB. The request
+comes to you as a card instead, and the server log says so once, without the
+command. An API-key bot at Full access has no card to show, so there the call
+is refused.
+
+It reads a command as a POSIX shell line. cmd commands (`rd /s /q`,
+`format C:`) are not evaluated: a Mac or Linux machine does not run them, so
+a server there that drives a Windows machine gets no protection for what
+runs on it. PowerShell is the exception, because PowerShell 7 runs on macOS
+and Linux: what follows `pwsh -c` or `powershell -Command` is read too, both
+as a POSIX line and as PowerShell, so `pwsh -c 'rm -rf /'` and
+`pwsh -c 'Remove-Item -Recurse -Force $HOME'` are blocked.
+
+It holds wherever the engine asks the server, and only there. API-key models
+(the chat runtime) are covered in full, at Full access and under "Always
+allow this session". So is any shell request Claude Code, Codex, Muse Code or
+an ACP agent sends, whether a saved command, a kept session allow or Full
+access would have answered it: the engine's command line travels with the
+request, so it is read even when its working directory is not known. An
+engine running its own no-ask mode never sends a request, so the floor does
+not see the command: at Full access that is Claude Code
+(`bypassPermissions`), Codex (approvals off) and the ACP agents started in
+their own yolo mode. Treat it as a net under saved commands and API-key bots,
+not as a sandbox.
 
 ### Admin activity
 
@@ -933,8 +1050,8 @@ the list does not know. Both are plain settings in `config.json` (`budgets`,
 Some engines have their own long-running front door — a Hermes Agent Telegram
 gateway, a Slack bot, an OpenClaw session. That process is the same bot with
 the same workspace and memory, but the server did not spawn it, so it holds
-none of the turn-scoped capabilities the peer-comms tools need and cannot ask
-or delegate to its teammates.
+none of the turn-scoped capabilities the peer-comms tools need and cannot hand
+work to its teammates.
 
 Give it a standing one with `external-runtimes.json` in the data directory,
 mapping the bot's id to a secret of at least 32 characters and one existing
@@ -972,16 +1089,24 @@ OMB_HARNESS_URL=http://127.0.0.1:8799 OMB_BOT_ID=$BOT_ID OMB_THREAD_ID=$THREAD_I
 ```
 
 Scope is deliberately narrow: the token is an *agents* capability for that
-bot's pinned thread only, and the server accepts just four routes with it — list
-peers, ask, delegate, and read the status of its own delegations. Opening
-threads, creating bots or rooms, skills, memory and every other internal route
-answer 403. External mode advertises only `list_bots`, `ask_bot`, `delegate_bot`,
-`check_delegation` and `wait_delegation`. It can check a delegation from the
-same long-running process without inventing a turn end, and a settled handoff
-never wakes the bot's own engine on that thread to answer it again. The server
-still enforces peer access and approval settings. An idle source starts dispatch
-immediately; a busy teammate is queued until available. Regular in-app turns
-keep their existing dispatch timing.
+bot's pinned thread only, and the server accepts just three kinds of route
+with it — list peers (`GET /api/internal/agents`), hand work on
+(`POST /api/internal/coordinate-bots`) and read how it went
+(`GET /api/internal/assignment-status`). Opening threads, creating bots or
+rooms, skills, memory and every other internal route answer 403. The bridge
+offers the one tool surface every turn gets (docs/runtime-contract.md §9):
+`coordinate_bots` (work; a question with `consult: true`; a one-way notice
+with `reply: "none"`) and the read-only `assignment_status`. Every call from
+the standing capability is its own root on the job
+runtime with `reply: poll`: it completes without a turn once the teammates'
+work settles, and the runtime reads the results with `assignment_status`,
+long-polling `wait_ms` (at most 240 s) on the root's `rootId` or a receipt's
+`requestId` from the same long-running process, without inventing a turn end.
+A settled hand-off never wakes the bot's own engine on that thread. The
+server still enforces peer access and approval settings. A free teammate
+starts at once; a busy one is queued on the runtime until a slot frees
+(docs/runtime-contract.md §2). Regular in-app turns keep their existing
+dispatch timing.
 
 The credentials stay on this server and are excluded from workspace backups;
 restoring a backup preserves destination registrations. Never put this token
@@ -989,6 +1114,38 @@ in chat or source control. Everything else the server offers still needs the
 owner's session or a per-turn capability.
 
 Verification: [external runtime fixture](verification/external-runtime.md).
+
+## A bot stuck on a failing command
+
+Every server shows a chat notice when a bot repeats the same tool call 5, 10
+and 20 times in one turn. That notice only tells you. The loop guard, which is
+off by default, also tells the bot:
+
+- Set `loopGuard.enabled` to `true` in `config.json` (or through
+  `PUT /api/config`), or start the server with `OMB_LOOP_GUARD=1`. When the
+  same whole shell command fails the same way five times in a row
+  (`loopGuard.steerAt`, 2-1000), the server puts one short note into the
+  running turn saying so. A command that succeeds, or that fails differently,
+  ends the count, so a turn that re-runs its tests after each edit or polls a
+  build is left alone.
+- Stopping the turn is a separate choice. Set `loopGuard.stopAt` (2-1000), or
+  `OMB_LOOP_GUARD_STOP_AT`, and the turn is stopped at that many identical
+  failures in a row, with a line in the chat that names the command and offers
+  Retry. Leave it unset and the guard never stops a turn. A wait that fails
+  until something is ready (`curl -f` against a server that is still starting)
+  counts as a failing command, which is why the stop is not on by default.
+
+The note needs an engine that accepts a message in the middle of a turn
+(Claude Code, Codex, Pi, Muse Code). ACP agents cannot take one, so they get
+only the stop, and only if you set it. The note and the stop do not cover bots
+on API models or turns in a room yet.
+
+Bots on API models (xAI, Mistral, Groq, Cerebras, Meta, MiniMax or an
+OpenAI-compatible endpoint) end a turn as failed when a tool call failed and
+the bot then answered. With the loop guard on, set `loopGuard.correctiveRounds`
+(0-5, default 0) and such a bot is sent back to re-run the failed call up to
+that many times first; the turn counts as done only if the tools it runs after
+that succeed. A tool call that was denied is never sent back.
 
 ## Updating
 
@@ -1002,8 +1159,11 @@ docker compose -f deploy/docker-compose.yml pull omb && docker compose -f deploy
 git pull && pnpm install && sudo systemctl restart openmausbot          # from source
 ```
 
-Routines and queued work survive restarts; in-flight turns do not, so
-update between runs.
+Routines and queued work survive restarts. A teammate turn in flight runs
+again once at the next start, told to check what it already did, and the bot
+that asked for it is told. A person's own turn and a running routine are not
+run again: the conversation says it was interrupted. Update between runs
+where you can.
 
 Stop the server before a filesystem backup so SQLite is copied consistently.
 Back up the entire app data directory and, separately, the service user's

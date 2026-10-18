@@ -1,20 +1,13 @@
-// What the harness does with a provider's permission request.
-//
-// Nothing here decides whether an action is safe. Each approval level is a
-// provider's own permission mode passed straight through (Claude `auto`,
-// Grok `--permission-mode`, Codex `approvalsReviewer`, …), and a request that
-// reaches this process is one the provider left for a person. The grants the
-// app applies are Full access and the person's exact saved commands. Approve
-// for me also allows a web search, and that is the one action the app itself
-// grants. Questions never come through here: a bot's question always reaches
-// a human.
+// Nothing here decides whether an action is safe: each level is the provider's own permission mode passed through, and a
+// request reaching this process is one the provider left for a person. The app's own grants are Full access, the person's
+// exact saved commands and remembered MCP read tools, and Approve for me's web search. A bot's question always reaches a human.
 
 import { supportsApprovalMode, type ApprovalMode } from "../shared/approval-mode.ts";
+import { failedTurnTool, type FailedTurnTool } from "../shared/failed-turn.ts";
 import { isOutboundTool } from "../shared/outbound.ts";
 import type { ProviderAdapter, RequestOutcome } from "./contracts.ts";
 
-/** A failed delivery is a runtime error, not another permission decision.
- * An expired ask must never become a fresh Allow/Deny card. */
+/** An expired ask must never become a fresh Allow/Deny card. */
 export async function deliverFullAccessApproval(
   adapter: Pick<ProviderAdapter, "respondToRequest" | "interruptTurn"> | undefined,
   threadId: string,
@@ -26,51 +19,33 @@ export async function deliverFullAccessApproval(
   try {
     return await adapter.respondToRequest(threadId, requestId, { behavior: "allow" });
   } catch {
-    // Some adapters ignore the optional native turn id. Recheck the
-    // server's owning generation before interrupting that thread.
+    // Some adapters ignore the native turn id, so recheck the owning generation before interrupting.
     if (turnId && isCurrent()) await adapter.interruptTurn(threadId, turnId).catch(() => {});
     return "failed";
   }
 }
 
-/** Full access is the person's explicit grant to this receiving bot, including
- * delegated work. It never inherits the sender's mode or elevates another bot
- * — with the one exception below (delegatedApprovalMode), applied
- * where a Chief's delegated thread is created rather than here.
- * Custom is a provider-config choice rather than an app Full-access grant, so
- * peer-started Custom turns use Auto. Provider support and grant confirmation
- * are checked by the caller. */
+/** Full access is the person's grant to this receiving bot: never inherited from a sender (delegatedApprovalMode aside), and
+ * peer-started Custom turns run as Auto. */
 export function approvalModeForOrigin(mode: ApprovalMode, origin: { peerInitiated: boolean }): ApprovalMode {
   if (mode === "custom" && origin.peerInitiated) return "auto";
   return mode;
 }
 
-/** Levels by how much runs without asking. Custom is a provider config of
- * its own and is never compared. */
+/** Custom is a provider config of its own and is never compared. */
 const LEVEL_RANK: Partial<Record<ApprovalMode, number>> = { ask: 0, edits: 1, auto: 2, full: 3 };
 
-/** The level work a bot hands to a teammate starts at, or null to keep the
- * teammate's own. A Chief of Staff's level flows down: the person set it on
- * the Chief so the team's work runs that way, and switching every thread the
- * Chief opens with a teammate back off "Ask for approval" was the friction
- * people reported. Only a Chief passes its level on, only the level of the
- * conversation it delegates from, and only upward: a teammate already on a
- * higher level keeps it, and one on Custom keeps its own config. The level
- * is capped at what the teammate's engine implements (Full or Auto-accept
- * edits are not everywhere), stepping down to the next level it has. A bot
- * never raises itself this way. */
+/** A Chief of Staff's level flows down: only a Chief's, only from the conversation it delegates from, only upward, and capped
+ * at what the teammate's engine implements. A bot never raises itself this way; null keeps the teammate's own. */
 export function delegatedApprovalMode(input: {
   senderIsChief: boolean;
-  /** The Chief's level in the conversation it is delegating from. */
   senderMode: ApprovalMode;
   sameBot: boolean;
-  /** The teammate's own level for the thread the work runs in. */
   recipientMode: ApprovalMode;
   recipientDriverKind: string | undefined;
 }): ApprovalMode | null {
   if (!input.senderIsChief || input.sameBot) return null;
-  // A Chief's Custom config is its own; for a teammate it reads as Approve
-  // for me, as for any peer-started Custom turn (approvalModeForOrigin).
+  // A Chief's Custom reads as Approve for me for a teammate, like any peer-started Custom turn.
   const sender = LEVEL_RANK[approvalModeForOrigin(input.senderMode, { peerInitiated: true })] ?? 0;
   const own = LEVEL_RANK[input.recipientMode];
   if (own === undefined) return null;
@@ -83,46 +58,32 @@ export function delegatedApprovalMode(input: {
   return null;
 }
 
-// Tools that ask a PERSON something. A question exists so that a human
-// decides; any mode answering one on their behalf defeats the only reason
-// it was asked. They normally arrive typed as questions and never reach a
-// verdict at all — this is the backstop for the path where one arrives
-// mis-typed as a permission (a malformed AskUserQuestion call falls back to
-// the permission path in permission-proxy). Approving it there does not
-// produce an answer: the CLI runs the tool with none and the model is told
-// "The user did not answer the questions." — a question silently lost.
+// Tools that ask a person: a malformed AskUserQuestion falls back to the permission path, and approving it runs the tool with
+// no answer ("The user did not answer the questions."), so no mode may answer one.
 const ASKS_A_PERSON = new Set(["askuserquestion", "ask_user"]);
 
-// A web search is a low-level read. Approve for me allows these names and
-// nothing wider: a bare search, a page fetch, and every other tool stay a
-// prompt. The name is the same shape as a question — one mcp__<server>__
-// prefix removed, then compared case-insensitively.
+// Approve for me allows these names and nothing wider: a page fetch and every other tool stay a prompt.
 const WEB_SEARCH = new Set(["websearch", "web_search", "web-search", "search_web"]);
 
 function bareToolName(tool: string): string {
   return tool.replace(/^mcp__[^_]+__/, "").toLowerCase();
 }
 
-/** Why a permission request landed where it did — the decision log's "which
- * rule". `full-access` and `command-allowlist` are explicit user grants;
- * `web-search` is the one action Approve for me grants itself;
- * `native-approval` is a card the provider's own reviewer (Auto, or Custom's
- * config) left for the person; `explicit-approval-block` is a sandbox
- * widening only Full may answer; `no-grant` is an Ask or Edits card, where
- * asking is the whole point. */
+/** The decision log's "which rule": `full-access` and `command-allowlist` are user grants, `web-search` Approve for me's own,
+ * `native-approval` a card the provider's reviewer left, `explicit-approval-block` a sandbox widening only Full may answer. */
 export type AutoVerdictSource =
   | "full-access"
   | "command-allowlist"
+  | "tool-allowlist"
   | "web-search"
   | "native-approval"
   | "explicit-approval-block"
   | "outbound-guard"
+  | "safety-floor"
   | "no-grant";
 
 export interface AutoVerdict {
-  /** Chip text when the app answers for the person, null when a human
-   * decides. The string becomes the chip in the transcript, so an
-   * auto-approved action is never invisible. */
+  /** The chip text when the app answers, so an auto-approved action is never invisible; null when a human decides. */
   approve: string | null;
   source: AutoVerdictSource;
 }
@@ -131,28 +92,23 @@ export function autoVerdict(
   mode: ApprovalMode,
   tool: string,
   context?: {
-    /** The provider is asking to widen its configured sandbox rather than
-     * perform one ordinary action. Only explicit Full may synthesize this. */
+    /** The provider asks to widen its sandbox rather than perform one action; only explicit Full may answer. */
     requiresExplicitApproval?: boolean;
     /** Exact bot/provider/folder/command match against the person's saved rules. */
     commandAllowed?: boolean;
+    /** Exact provider/server/tool/config match against a person's saved MCP read grant. */
+    toolAllowed?: boolean;
   },
 ): AutoVerdict {
-  // A question is for a person, whatever channel it arrived on — and
-  // whatever the mode: even Full has no answer to give, only an approval
-  // that would run the tool with none.
   if (ASKS_A_PERSON.has(bareToolName(tool))) {
     return { approve: null, source: "no-grant" };
   }
-  // Full's promise is literal: even a sandbox widening is approved. Entering
-  // Full is separately consent-gated by the bot PATCH endpoint, and the
-  // request.opened caller invokes this for permissions only, never questions.
+  // Full's promise is literal, sandbox widening included; entering Full is consent-gated by the bot PATCH endpoint.
   if (mode === "full") return { approve: `approved ${tool} (full access)`, source: "full-access" };
   if (context?.requiresExplicitApproval) return { approve: null, source: "explicit-approval-block" };
   if (isOutboundTool(tool)) return { approve: null, source: "outbound-guard" };
   if (context?.commandAllowed) return { approve: `approved ${tool} (saved command)`, source: "command-allowlist" };
-  // The one action the app itself grants. A fetch of an arbitrary URL is not
-  // a search and stays a prompt, in this mode and every other.
+  if (context?.toolAllowed) return { approve: `approved ${tool} (always allowed)`, source: "tool-allowlist" };
   if (mode === "auto" && WEB_SEARCH.has(bareToolName(tool))) {
     return { approve: `approved ${tool} (web search)`, source: "web-search" };
   }
@@ -160,13 +116,18 @@ export function autoVerdict(
   return { approve: null, source: "no-grant" };
 }
 
-/** Every fixed note a held card can show, by catalog key.
- *
- * The card is the last thing between a bot and someone's filesystem, so the
- * one line explaining why it stopped should not be the one line still in
- * English. The client translates by key and falls back to this text, which
- * the server keeps sending: cards saved before the key existed still render,
- * and so do the free-text apply errors that have no key at all. */
+/** `unavailable` and `allowed-once` have no transcript row, so callers do not ask for one. */
+export function undeliveredApprovalTool(
+  outcome: Exclude<RequestOutcome, "allowed-once" | "unavailable"> | "failed",
+  source: AutoVerdictSource,
+): FailedTurnTool | { name: string; ok: false } {
+  if (outcome !== "rejected") return failedTurnTool("could not deliver approval to the provider; retry the task after reconnecting.");
+  const grant = source === "command-allowlist" ? "the saved command permission"
+    : source === "tool-allowlist" ? "the saved tool permission" : "Full access";
+  return { name: `The provider rejected this action despite ${grant}.`, ok: false };
+}
+
+/** The client translates by key and falls back to this text, which the server keeps sending for older cards. */
 export const HELD_NOTE = {
   "approval.held.outbound": "This sends something on your behalf, so it always asks first.",
   "approval.held.native": "The provider requires your approval for this action.",
@@ -178,11 +139,8 @@ export const HELD_NOTE = {
 
 export type HeldNoteKey = keyof typeof HELD_NOTE;
 
-/** Which note, as a key. approvalHeldReason is this plus the English text, so
- * the branching that decides the note lives in exactly one place. */
 export function approvalHeldNote(context: {
   source?: AutoVerdictSource;
-  /** Questions are not permissions and are never held for a mode reason. */
   permission: boolean;
 }): HeldNoteKey | undefined {
   if (!context.permission) return undefined;
@@ -192,8 +150,6 @@ export function approvalHeldNote(context: {
   return undefined;
 }
 
-/** The note a card shows above its buttons, explaining why the bot stopped
- * rather than answering for itself. */
 export function approvalHeldReason(context: {
   source?: AutoVerdictSource;
   permission: boolean;

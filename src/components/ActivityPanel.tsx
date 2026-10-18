@@ -1,10 +1,3 @@
-// A bot's activity: what it did, in plain words, with the outcome. The
-// receipt view — for the person who wants to know what ran while they were
-// away, not the wire-level inspector next to it.
-//
-// Nothing here is captured for the panel's sake. The harness folds the
-// thread's runtime events and the decision log into rows (server/activity.ts);
-// this only asks for them, and asks again when a turn settles.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListChecks, RefreshCw, X } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
@@ -18,6 +11,7 @@ import {
   type ChipTone,
 } from "@/lib/activity";
 import { listenLiveFrames } from "@/lib/live-events";
+import { t } from "@/lib/i18n";
 
 const LIMIT = 300;
 
@@ -30,7 +24,7 @@ const TONE_CLASS: Record<ChipTone, string> = {
 
 export function ActivityPanel({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
-  const { padClass } = useCaptionChrome();
+  const { padClass, dragProps } = useCaptionChrome();
   const [rows, setRows] = useState<ActivityRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loadAbort = useRef<AbortController | null>(null);
@@ -42,8 +36,7 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     try {
       const res = await fetch(`/api/bots/${bot.id}/activity?limit=${LIMIT}`, { signal: controller.signal });
       if (!res.ok) throw new Error(`${res.status}`);
-      // SAFETY: this same-version renderer calls the harness's typed
-      // activity endpoint; malformed transport data is handled by catch.
+      // SAFETY: the same-version harness's typed activity endpoint; malformed transport data is handled by catch.
       const next = (await res.json()) as { rows: ActivityRow[] };
       if (controller.signal.aborted) return;
       setRows(next.rows);
@@ -62,9 +55,6 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
     return () => loadAbort.current?.abort();
   }, [load]);
 
-  // Re-read when one of this bot's turns settles or a card is answered
-  // (both change what a row says), and when the app's live stream lost
-  // frames it could not replay.
   const threadIds = useMemo(
     () => new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]),
     [bot.threadId, bot.tasks],
@@ -104,24 +94,24 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
   };
 
   return (
-    <aside aria-label={`${bot.name} activity`} className="animate-panel-in flex h-full w-[400px] max-w-full shrink-0 flex-col border-l border-hairline/40 bg-panel max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-30">
-      <div className={cn("flex items-center justify-between px-4 py-3", padClass)}>
+    <aside aria-label={t("activity.panel.aria", { name: bot.name })} className="animate-panel-in flex h-full w-[400px] max-w-full shrink-0 flex-col border-l border-hairline/40 bg-panel max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-30">
+      <div {...dragProps} className={cn("flex items-center justify-between px-4 py-3", padClass)}>
         <span className="flex items-center gap-2 text-[15px] font-semibold text-ink">
-          <ListChecks size={16} className="text-ink-secondary" /> Activity
+          <ListChecks size={16} className="text-ink-secondary" /> {t("activity.panel.title")}
         </span>
         <span className="flex items-center gap-1">
           <button
             onClick={() => void load()}
             className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-            title="Reload"
-            aria-label="Reload activity"
+            title={t("activity.panel.reload")}
+            aria-label={t("activity.panel.reload")}
           >
             <RefreshCw size={14} />
           </button>
           <button
             onClick={() => dispatch({ type: "toggleActivity", open: false })}
-            aria-label="Close Activity"
-            title="Close Activity"
+            aria-label={t("activity.panel.close")}
+            title={t("activity.panel.close")}
             className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <X size={18} />
@@ -130,17 +120,17 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
       </div>
 
       <p className="border-b border-hairline/40 px-4 pb-3 text-[12px] text-ink-secondary">
-        Every tool {bot.name} used and every approval it asked for, newest first.
+        {t("activity.panel.subtitle", { name: bot.name })}
       </p>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {error && <div className="px-4 py-3 text-[13px] text-danger">couldn&apos;t load: {error}</div>}
+        {error && <div className="px-4 py-3 text-[13px] text-danger">{t("activity.panel.error", { message: error })}</div>}
         {rows && rows.length === 0 && !error && (
           <div className="px-4 py-6 text-[13px] text-ink-secondary">
-            Nothing yet. Once {bot.name} runs a tool or asks for an approval, it shows up here.
+            {t("activity.panel.empty", { name: bot.name })}
           </div>
         )}
-        {!rows && !error && <div className="px-4 py-6 text-[13px] text-ink-secondary">Loading…</div>}
+        {!rows && !error && <div className="px-4 py-6 text-[13px] text-ink-secondary">{t("activity.panel.loading")}</div>}
         {days.map((day) => (
           <section key={day.key}>
             <h3 className="sticky top-0 bg-panel px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide text-ink-secondary uppercase">
@@ -163,7 +153,7 @@ function ActivityLine({ row, current, onJump }: { row: ActivityRow; current: boo
       type="button"
       onClick={onJump}
       className="flex w-full items-start gap-3 border-b border-hairline/20 px-4 py-2 text-left hover:bg-raised/60"
-      title={current ? row.tool : `${row.tool} — in another task; click to open it`}
+      title={current ? row.tool : t("activity.panel.openOtherTask", { tool: row.tool })}
     >
       <span className="mt-[2px] shrink-0 tabular-nums text-[11px] text-ink-secondary">{formatActivityTime(row.at)}</span>
       <span className="min-w-0 flex-1">

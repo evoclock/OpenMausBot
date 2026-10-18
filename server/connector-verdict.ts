@@ -1,34 +1,11 @@
-// The harness-side verdict for connected-app tool calls (issue #1736, part
-// of the per-bot Composio tool grants umbrella #1734).
-//
-// Every Composio tool call crosses POST /api/internal/connectors/mcp: the
-// provider CLIs talk to the stdio bridge, and the bridge forwards each
-// JSON-RPC frame there. So the grants verdict lives on the harness side,
-// where the loopback token already names the bot and the decision log is
-// native — the bridge never sees a key it could have to enforce with.
-//
-// Three shapes reach this module:
-//
-//   * a direct per-toolkit call — params.name is the tool itself, e.g.
-//     GMAIL_SEND_EMAIL;
-//   * the executor meta-tool — COMPOSIO_MULTI_EXECUTE_TOOL, whose
-//     arguments name one or many target tools;
-//   * everything else — connection cards, discovery, notifications —
-//     which passes through untouched (advertisement filtering is slice 3).
-//
-// Unrecognized argument shapes are denied by default: a call whose target
-// tools cannot be read is a call whose tools cannot be checked, and the
-// grants promise — "this bot may call exactly these tools" — must hold
-// even against a model that garbles the protocol.
+// The harness-side verdict for connected-app tool calls: every Composio call crosses POST /api/internal/connectors/mcp,
+// where the loopback token names the bot. Unrecognized argument shapes are denied: "this bot may call exactly these tools"
+// must hold even against a model that garbles the protocol.
 import { CONNECTOR_TOOL_NAME_PATTERN, type ConnectorToolGrant } from "../shared/wire.ts";
 
-/** The executor meta-tool: the only meta-tool whose arguments name target
- * tools. Discovery and connection meta-tools keep their existing flows. */
+/** The only Composio meta-tool whose arguments name target tools. */
 export const COMPOSIO_MULTI_EXECUTE_TOOL = "COMPOSIO_MULTI_EXECUTE_TOOL";
 
-/** One tools/call frame, classified for the verdict. names carries every
- * target tool in call order (duplicates preserved for the audit summary;
- * the verdict itself judges distinct names). */
 export type ConnectorCall =
   | { kind: "passthrough" }
   | { kind: "tools"; invoked: string; names: string[] }
@@ -44,29 +21,19 @@ export interface ConnectorDenial {
 
 export interface ConnectorVerdict {
   allowed: boolean;
-  /** the bot carries no connectorTools record: legacy all-tools behavior. */
   legacy: boolean;
   denials: ConnectorDenial[];
-  /** the grant key that allowed the first tool, for the allow row. */
   rule: string;
 }
 
-/** The service a Composio tool name belongs to: the upper-snake prefix
- * before the first underscore, lowercased (GMAIL_SEND_EMAIL to gmail). A
- * name with no underscore names no service, so no grant can cover it. */
+/** Composio's upper-snake prefix before the first underscore, lowercased (GMAIL_SEND_EMAIL → gmail); no underscore, no service. */
 export function serviceSlugFor(tool: string): string | null {
   const underscore = tool.indexOf("_");
   if (underscore <= 0) return null;
   return tool.slice(0, underscore).toLowerCase();
 }
 
-/** The service a Composio tool name belongs to when the caller knows the
- * real service slugs. Slugs may contain underscores (bland_ai), which the
- * plain first-segment split above cannot see — BLAND_AI_MAKE_CALL splits
- * as "bland". When a known candidate matches the name's prefix, the
- * longest candidate wins (bland_ai over bland), so an underscored service
- * keeps its own tools; with no matching candidate the caller falls back
- * to serviceSlugFor. */
+/** Real slugs may contain underscores (bland_ai), so the longest matching candidate wins over the plain split. */
 export function serviceSlugForCandidates(tool: string, candidates: readonly string[]): string | null {
   let match: string | null = null;
   for (const candidate of candidates) {
@@ -77,8 +44,6 @@ export function serviceSlugForCandidates(tool: string, candidates: readonly stri
   return match;
 }
 
-/** Classify one relayed JSON-RPC frame. Anything that is not a tools/call,
- * or is a discovery/connection/platform meta-tool, passes through. */
 export function connectorCallFromFrame(payload: unknown): ConnectorCall {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { kind: "passthrough" };
   const frame = payload as { method?: unknown; params?: unknown };
@@ -94,9 +59,6 @@ export function connectorCallFromFrame(payload: unknown): ConnectorCall {
   if (name === COMPOSIO_MULTI_EXECUTE_TOOL) {
     return multiExecuteCall(name, (params as { arguments?: unknown }).arguments);
   }
-  // Platform meta-tools (search, schemas, remote workbench) are not
-  // connected-app tools; grants are keyed by service slug, and slice 3
-  // owns what the model is even shown.
   if (name.startsWith("COMPOSIO_")) return { kind: "passthrough" };
   // Per-service connection cards keep their card flow in any spelling.
   if (name.endsWith("_MANAGE_CONNECTIONS") || name.endsWith("_WAIT_FOR_CONNECTIONS")) {
@@ -108,10 +70,7 @@ export function connectorCallFromFrame(payload: unknown): ConnectorCall {
   return { kind: "tools", invoked: name, names: [name] };
 }
 
-/** Read the target tools out of COMPOSIO_MULTI_EXECUTE_TOOL arguments:
- * the upstream schema is a 1-50 item tools array of { tool_slug,
- * arguments }; a legacy single { tool_slug } object is accepted too.
- * Anything else cannot be checked, so it is denied. */
+/** Composio's schema is a 1-50 item `tools` array of { tool_slug, arguments } (a legacy single { tool_slug } is accepted); anything else is denied. */
 function multiExecuteCall(invoked: string, args: unknown): ConnectorCall {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     return { kind: "unrecognized", invoked, reason: "the arguments were not an object" };
@@ -140,18 +99,8 @@ function multiExecuteCall(invoked: string, args: unknown): ConnectorCall {
   return { kind: "unrecognized", invoked, reason: "the arguments named no tools to execute" };
 }
 
-/** Judge distinct target names against a bot's grants. grants undefined
- * is the legacy all-tools bot and passes everything; an explicit record —
- * including the empty one — allows only what it names. Service keys are
- * read as own properties only: a name like CONSTRUCTOR_X maps to the
- * "constructor" service, and the inherited property must never pose as
- * a grant.
- * candidates are the caller's connected-service slugs: the real backend
- * slugs, so an underscored service (bland_ai) keeps its own tools instead
- * of a plain-prefix grant (bland) capturing them. An empty list means the
- * connected-service catalog was unreachable, and the plain first-segment
- * split stands as the fallback — call-time enforcement degrades open, the
- * same way advertisement filtering does. */
+/** No record is the legacy all-tools bot; a record, even empty, allows only what it names. Service keys are own properties
+ * only, so CONSTRUCTOR_X never matches an inherited property. Empty `candidates` (catalog unreachable) degrades open. */
 export function evaluateConnectorTools(
   names: string[],
   grants: Record<string, ConnectorToolGrant> | undefined,
@@ -176,9 +125,7 @@ export function evaluateConnectorTools(
   return { allowed: denials.length === 0, legacy: false, denials, rule };
 }
 
-/** Safe to hand straight to the model: names the refused tool and says who
- * can change it. It never lists what the bot could have called instead —
- * a refusal that enumerates adjacent grants teaches the model to probe. */
+/** Never lists what the bot could have called instead: enumerating adjacent grants teaches the model to probe. */
 export function connectorRefusalText(denials: ConnectorDenial[]): string {
   const named = denials.map((denial) => '"' + denial.tool + '"').join(", ");
   const one = denials.length === 1;
@@ -189,12 +136,19 @@ export function connectorRefusalText(denials: ConnectorDenial[]): string {
   ].join(" ");
 }
 
-/** The unrecognized-shape refusal: names the meta-tool and what could not
- * be read, and still points at the person rather than at any tool list. */
 export function connectorUnrecognizedText(invoked: string, reason: string): string {
   return [
     "A " + invoked + " call arrived in a shape OpenMausBot could not read (" + reason + "), so it was not performed.",
-    "Send a well-formed call that names the tools to execute.",
+    invoked === COMPOSIO_MULTI_EXECUTE_TOOL
+      ? "Send it again with the tools to execute as tools: [{ tool_slug, arguments }]."
+      : "Send a well-formed call that names the tools to execute.",
     "Ask the person to grant any tool this bot needs.",
   ].join(" ");
+}
+
+export function connectorScopeRefusalText(call: ConnectorCall, reason: "app" | "write", bot: string, app: string, tool: string): string {
+  if (call.kind === "unrecognized") return connectorUnrecognizedText(call.invoked, call.reason);
+  return reason === "app"
+    ? `OpenMausBot did not run this: ${bot} has not been given access to ${app}. Ask the user to allow it under the bot's Access settings, and do not retry.`
+    : `OpenMausBot did not run this: ${app} is read-only for ${bot}, and ${tool} would write to it. Ask the user before trying again.`;
 }

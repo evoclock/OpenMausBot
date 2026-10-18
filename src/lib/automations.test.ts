@@ -1,0 +1,119 @@
+import { describe, expect, it } from "vitest";
+
+import type { Routine, RoutineRun } from "@/lib/routines";
+import type { WebhookTrigger } from "@/lib/webhooks";
+import {
+  automationSentence, automationsFrom, automationStatus, doesPhrase, lastWhen, nextWhen, orderAutomations, plainWhen, runLine, sourcePhrase, statusLine, type Automation,
+} from "./automations";
+
+const NOW = new Date(2026, 9, 17, 12, 0).getTime(); // Saturday Oct 17 2026, noon local
+const at = (days: number, hours: number, minutes = 0) => { const day = new Date(NOW); day.setDate(day.getDate() + days); day.setHours(hours, minutes, 0, 0); return day.getTime(); };
+const routine = (overrides: Partial<Routine> = {}): Routine => ({
+  id: "brief", name: "Morning summary", prompt: "Send me a summary of my inbox: who wrote and what they need.", target: "bot", botId: "scout", runOn: "maus", enabled: true,
+  schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] }, durationMinutes: 30, nextRunAt: at(2, 9), createdAt: 0, updatedAt: 0, ...overrides,
+});
+const webhook = (overrides: Partial<WebhookTrigger> = {}): WebhookTrigger => ({
+  id: "hook", endpointId: "wh_x", name: "Sales form leads", prompt: "Draft a short follow-up email for the lead.", botId: "scout", runOn: "maus", enabled: true,
+  createdAt: 0, updatedAt: 0, deliveryCount: 0, ...overrides,
+});
+let sequence = 0;
+const run = (status: RoutineRun["status"], startedAt: number, extra: Partial<RoutineRun> = {}): RoutineRun => ({
+  id: `run-${++sequence}`, routineId: "brief", routineName: "Morning summary", target: "bot", botId: "scout", runOn: "maus", scheduledFor: startedAt, startedAt,
+  createdAt: startedAt, status, manual: false, ...extra,
+});
+const automation = (runs: RoutineRun[], overrides: Partial<Routine> = {}): Automation => automationsFrom({ routines: [routine(overrides)], webhooks: [], runs })[0]!;
+
+describe("the plain sentence", () => {
+  it("says when, who and what for a schedule, turning the instructions into a short phrase addressed to the person", () => {
+    expect(automationSentence(automation([]), "Scout")).toBe("Every weekday at 9 AM, Scout sends you a summary of your inbox");
+  });
+
+  it("says who sends and what the bot does for something another app sends", () => {
+    const [hook] = automationsFrom({ routines: [], webhooks: [webhook()], runs: [] });
+    expect(automationSentence(hook!, "Scout")).toBe("When your sales form sends something, Scout drafts a short follow-up email for the lead");
+    const [unnamed] = automationsFrom({ routines: [], webhooks: [webhook({ name: "Webhook 2", prompt: "" })], runs: [] });
+    expect(automationSentence(unnamed!, "Scout")).toBe("When another app sends something, Scout does what it's asked");
+  });
+
+  it("names sources plainly and shortens long instructions at a word", () => {
+    expect(sourcePhrase("Typeform")).toBe("your Typeform");
+    expect(sourcePhrase("GitHub push events")).toBe("your GitHub push");
+    expect(sourcePhrase("webhook")).toBe("another app");
+    expect(doesPhrase("Check every open support ticket across all of the shared inboxes and reply to the urgent ones first")).toMatch(/^checks every open support ticket across all of the shared…$/);
+    expect(doesPhrase("Reply to each new lead")).toBe("replies to each new lead");
+    expect(doesPhrase("Watch the build")).toBe("watches the build");
+    expect(doesPhrase("Summarize the inbox and post the three priorities")).toBe("summarizes the inbox and posts the three priorities");
+  });
+
+  it("puts schedules in everyday words", () => {
+    expect(plainWhen({ type: "daily", time: "09:00", weekdays: [0, 1, 2, 3, 4, 5, 6] })).toBe("Every day at 9 AM");
+    expect(plainWhen({ type: "daily", time: "17:30", weekdays: [5] })).toBe("Every Friday at 5:30 PM");
+    expect(plainWhen({ type: "interval", everyMinutes: 30, anchorAt: 0 })).toBe("Every 30 minutes");
+    expect(plainWhen({ type: "interval", everyMinutes: 120, anchorAt: 0, weekdays: [1, 2, 3, 4, 5] })).toBe("Every 2 hours on weekdays");
+  });
+});
+
+describe("times in plain words", () => {
+  it("says today, yesterday, a short weekday, or a date for what happened", () => {
+    expect(lastWhen(at(0, 9, 2), NOW)).toBe("today 9:02 AM");
+    expect(lastWhen(at(-1, 9), NOW)).toBe("yesterday");
+    expect(lastWhen(at(-3, 9), NOW)).toBe("Wed 9:00 AM");
+    expect(lastWhen(at(-20, 9), NOW)).toBe("Sep 27");
+  });
+  it("says today, tomorrow, the weekday, or a date for what comes next", () => {
+    expect(nextWhen(at(0, 15), NOW)).toBe("today 3:00 PM");
+    expect(nextWhen(at(1, 9), NOW)).toBe("tomorrow 9:00 AM");
+    expect(nextWhen(at(2, 9), NOW)).toBe("Monday 9:00 AM");
+  });
+});
+
+describe("status: Working, Paused, Needs you", () => {
+  it("is Working with no runs, after a success, and after a failure that recovered", () => {
+    expect(automationStatus(automation([])).state).toBe("working");
+    expect(automationStatus(automation([run("completed", at(0, 9))])).state).toBe("working");
+    expect(automationStatus(automation([run("completed", at(0, 9)), run("failed", at(-1, 9), { error: "Provider crashed" }), run("failed", at(-2, 9))])).state).toBe("working");
+  });
+
+  it("stays Working after one failure the person can't fix, counting only failures in a row", () => {
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Provider crashed" }), run("completed", at(-1, 9))])).state).toBe("working");
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Provider crashed" }), run("completed", at(-1, 9)), run("failed", at(-2, 9))])).state).toBe("working");
+  });
+
+  it("is Paused when switched off, whatever its runs", () => {
+    expect(automationStatus(automation([run("failed", at(0, 9)), run("failed", at(-1, 9))], { enabled: false })).state).toBe("paused");
+  });
+
+  it("needs you when signed out, out of credit, out of time, waiting on an answer, or failing again and again", () => {
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Claude is signed out. Run claude auth login." })]))).toMatchObject({ state: "needs-you", fix: "sign-in", reason: "It's signed out. Sign in again so it can run." });
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Out of credit: quota exceeded" })]))).toMatchObject({ state: "needs-you", fix: "usage" });
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Stopped after reaching the 15-minute run limit" })]))).toMatchObject({ state: "needs-you", fix: "edit" });
+    expect(automationStatus(automation([run("waiting", at(0, 9), { attention: "Approve the reply?" })]))).toMatchObject({ state: "needs-you", fix: "answer" });
+    expect(automationStatus(automation([run("failed", at(0, 9), { error: "Provider crashed" }), run("missed", at(-1, 9)), run("completed", at(-2, 9))])))
+      .toMatchObject({ state: "needs-you", fix: "run", reason: "It didn't finish the last 2 times." });
+  });
+
+  it("ignores runs still waiting to start and runs a person stopped when judging the last run", () => {
+    expect(automationStatus(automation([run("queued", at(0, 11)), run("cancelled", at(0, 10)), run("completed", at(0, 9))])).state).toBe("working");
+    expect(automationStatus(automation([run("queued", at(0, 11)), run("cancelled", at(0, 10)), run("failed", at(0, 9)), run("failed", at(-1, 9))])).state).toBe("needs-you");
+  });
+});
+
+describe("order and the grey line", () => {
+  it("lists Needs you first, then Working by the soonest next run, then Paused", () => {
+    const working = automationsFrom({ routines: [routine({ id: "a", name: "A", nextRunAt: at(3, 9) }), routine({ id: "b", name: "B", nextRunAt: at(1, 9) })], webhooks: [], runs: [] });
+    const paused = automationsFrom({ routines: [routine({ id: "p", name: "P", enabled: false })], webhooks: [], runs: [] });
+    const failing = automationsFrom({ routines: [routine({ id: "f", name: "F", nextRunAt: at(5, 9) })], webhooks: [], runs: [run("failed", at(0, 9), { routineId: "f", error: "signed out" })] });
+    expect(orderAutomations([...paused, ...working, ...failing]).map((item) => item.id)).toEqual(["f", "b", "a", "p"]);
+  });
+
+  it("reads Working · last ran · next, and says when it hasn't run yet", () => {
+    expect(statusLine(automation([run("completed", at(0, 9, 2))]), NOW)).toBe("Working · last ran today 9:02 AM · next Monday 9:00 AM");
+    expect(statusLine(automation([]), NOW)).toBe("Working · hasn't run yet · next Monday 9:00 AM");
+    expect(statusLine(automation([run("completed", at(-1, 9))], { enabled: false }), NOW)).toBe("Paused · last ran yesterday");
+  });
+
+  it("writes recent runs as a time, a mark and one line", () => {
+    expect(runLine(run("completed", at(0, 9, 2), { output: "3 emails overnight.\nMore detail." }), NOW)).toEqual({ when: "Today 9:02 AM", mark: "✓", text: "3 emails overnight." });
+    expect(runLine(run("failed", at(-1, 9), { error: "token expired, sign in again" }), NOW)).toMatchObject({ mark: "✗", text: "It's signed out. Sign in again so it can run." });
+  });
+});

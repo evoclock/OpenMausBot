@@ -150,6 +150,10 @@
           "bot": "lead",
           "status": "completed",
           "hasParent": true
+        },
+        {
+          "bot": "chief",
+          "status": "completed"
         }
       ]
     },

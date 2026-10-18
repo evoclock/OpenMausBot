@@ -7,6 +7,7 @@ import {
   liveAttachUrl,
   liveBaseUrl,
   liveErrorMessage,
+  liveHistoryFrom,
   LiveSessionError,
   liveInitialInput,
   liveInstructions,
@@ -51,7 +52,6 @@ describe("createLiveSession", () => {
       { type: "message", role: "user", content: [{ type: "input_text", text: "Check the release notes" }] },
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done: two fixes." }] },
     ]);
-    // the key is a header, never part of the session body
     expect(String(init?.body)).not.toContain("sk-live-secret");
   });
 
@@ -117,15 +117,35 @@ describe("live startup context", () => {
     for (const item of input) expect(item.content[0].text.length).toBeLessThanOrEqual(600);
   });
 
+  it("takes the chat's text lines as history, and never a finished call's row", () => {
+    expect(liveHistoryFrom([
+      { role: "user", kind: "text", text: "what is six times seven" },
+      { role: "bot", kind: "activity" },
+      { role: "bot", kind: "text", text: "Six times seven is 42." },
+      { role: "bot", kind: "call", text: "Call with Ada · 0:42" },
+      { role: "bot", kind: "options", text: "Approve?" },
+    ])).toEqual([
+      { role: "user", text: "what is six times seven" },
+      { role: "assistant", text: "Six times seven is 42." },
+    ]);
+  });
+
+  it("skips a text row that carries no text, so the voice is never given an empty line", () => {
+    expect(liveHistoryFrom([
+      { role: "user", kind: "text" },
+      { role: "bot", kind: "text" },
+      { role: "user", kind: "text", text: "and the other one?" },
+    ])).toEqual([
+      { role: "user", text: "and the other one?" },
+    ]);
+  });
+
   it("writes one-line instructions from the bot's own profile", () => {
     const text = liveInstructions({ name: "  Rigel\n", title: "QA", description: "Line one\nline two" });
     expect(text.split("\n")[0]).toBe("You are Rigel, QA, an AI agent that runs in OpenMausBot on the user's own computer. Line one line two");
     expect(text).toContain("Never answer it yourself.");
   });
 
-  // On a Cloud the harness is a server in the cloud: a voice that says it
-  // runs on the person's own computer offers what it cannot reach. It names
-  // the place in the bot's own words (cloudHomePrompt), so the two cannot drift.
   it("on a Cloud, says the voice runs on the user's My Cloud, not their own computer", () => {
     const text = liveInstructions({ name: "Rigel", title: "QA" }, { cloudHome: true });
     expect(text.split("\n")[0]).toBe(`You are Rigel, QA, an AI agent that runs on ${CLOUD_HOME_PLACE}.`);
@@ -134,8 +154,6 @@ describe("live startup context", () => {
     expect(liveInstructions({ name: "Rigel" }, { cloudHome: false }).split("\n")[0]).toBe("You are Rigel, an AI agent that runs in OpenMausBot on the user's own computer.");
   });
 
-  // The bot's work happens where it runs: on a Cloud that is My Cloud, never
-  // "the computer" just after the voice was told it is not on their computer.
   it("says the bot changes things where it runs", () => {
     const backend = (cloudHome: boolean) => liveInstructions({ name: "Rigel" }, { cloudHome }).split("\n").find((line) => line.startsWith("- Rigel:"));
     expect(backend(true)).toContain("It researches, writes, changes things on My Cloud, and answers questions");
@@ -149,8 +167,6 @@ describe("live startup context", () => {
     expect(text).toContain("While you work you get quiet status notes");
   });
 
-  // The voice called itself "the voice layer" and offered to "ask the backend"
-  // when asked which AI model it is. It is the bot, and it checks without asking.
   it("makes the voice the bot itself: first person, no backend talk, no asking to check", () => {
     const text = liveInstructions({ name: "CFO", title: "Chief Financial Officer" });
     expect(text.split("\n")[0]).toBe("You are CFO, Chief Financial Officer, an AI agent that runs in OpenMausBot on the user's own computer.");

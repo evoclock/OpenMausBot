@@ -166,7 +166,6 @@ describe("optional Company cloud backup settings", () => {
     expect(html).toContain("Daily company backups are paused until this computer reconnects");
     expect(html).toContain("Waiting for this installation and the company connection to be ready.");
     expect(bridge.list).not.toHaveBeenCalled();
-    // The schedule row itself: render it directly to reach its switch.
     const saved = () => { fixture.index = 0; fixture.effects = []; const tree = SavedCompanyBackupSchedule({ bridge }); return nodes(tree); };
     fixture.values = [];
     saved(); effects(); await flush();

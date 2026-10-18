@@ -7,6 +7,11 @@ import { formatUpdatedAt } from "./SidebarThreadRow";
 import { GroupTaskPicker, TaskPicker } from "./TaskPicker";
 
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
+// Threads are an Advanced-mode surface (Simple keeps one conversation per bot), so these render as Advanced.
+vi.mock("@/lib/interface-mode", async (original) => ({
+  ...await original<typeof import("@/lib/interface-mode")>(),
+  useAdvancedMode: () => true,
+}));
 
 const bot: Bot = {
   id: "maus", threadId: "idle", name: "Maus", title: "", description: "", notifications: true,
@@ -19,7 +24,6 @@ const bot: Bot = {
   ],
 };
 
-// A bot row hands its thread list the row's props (see botRowProps).
 const threadList = (candidate: Bot, query = "") => createElement(BotThreadList, {
   ...botRowProps(initialState, vi.fn(), candidate, { density: "comfortable", quiet: false, query, onMenu: vi.fn() }),
   selected: true,
@@ -32,8 +36,6 @@ describe("sidebar bot threads", () => {
     expect(markup).toContain('data-sidebar-thread-row="idle" aria-current="page"');
     expect(markup).toContain(`Long research · ${formatUpdatedAt(2)} · Working`);
     expect(markup).toContain(`Needs approval · ${formatUpdatedAt(3)} · Waiting · Unread`);
-    // New thread lives on the bot row as an icon beside New folder; the list
-    // carries no indent rail and no trailing text button
     expect(markup).not.toContain("New thread");
     expect(markup).not.toContain("border-l");
     expect(markup).not.toContain("disabled");
@@ -66,7 +68,6 @@ describe("sidebar bot threads", () => {
     expect(markup).toContain('aria-label="Change Research folder icon"');
     expect(markup).toContain('data-sidebar-folder-row="research" draggable="true"');
     // Native buttons do not inherit their parent's drag gesture in Chromium.
-    // Dragging from the label must start the same row-owned folder drag.
     expect(markup).toContain('<button type="button" data-sidebar-folder-label="research" draggable="true"');
     expect(markup).toContain("🧪");
     expect(markup).toContain("lucide-folder");
@@ -102,6 +103,29 @@ describe("sidebar bot threads", () => {
     }
   });
 
+  it("folds open threads another bot opened into one collapsed group outside the six visible rows", () => {
+    const openedBy = { botId: "pepper", name: "Pepper", at: 1 };
+    const own = Array.from({ length: 7 }, (_, index) => ({ threadId: `own-${index}`, title: `Own ${index}`, createdAt: 10 + index, busy: false, activity: "idle" as const }));
+    const helpers = [
+      { threadId: "email", title: "Draft launch email", createdAt: 30, busy: true, activity: "working" as const, openedBy },
+      { threadId: "pricing", title: "Check pricing page", createdAt: 31, busy: false, activity: "idle" as const, openedBy },
+      { threadId: "review", title: "Review copy", createdAt: 5, busy: false, activity: "idle" as const, openedBy, unread: true },
+    ];
+    const markup = renderToStaticMarkup(threadList({ ...bot, threadId: "own-6", tasks: [...own, ...helpers] }));
+    const group = markup.slice(markup.indexOf("data-sidebar-helper-threads"));
+    expect(group).toContain('aria-expanded="false" aria-label="Expand Opened by bots threads"');
+    expect(group).toContain('opacity-50">2</span>');
+    expect(group).toContain("animate-spin");
+    expect(markup).not.toContain('data-sidebar-thread-row="email"');
+    expect(markup).not.toContain('data-sidebar-thread-row="pricing"');
+    expect(markup).toContain('data-sidebar-thread-row="review"');
+    for (let index = 1; index < 7; index += 1) expect(markup).toContain(`data-sidebar-thread-row="own-${index}"`);
+    expect(markup).toContain("Show all 8 threads");
+    const searched = renderToStaticMarkup(threadList({ ...bot, threadId: "own-6", tasks: [...own, ...helpers] }, "pricing"));
+    expect(searched).toContain('data-sidebar-thread-row="pricing"');
+    expect(searched).not.toContain("data-sidebar-helper-threads");
+  });
+
   it("exposes group history through the same nested thread rows and All threads picker", () => {
     const group: Group = { id: "team", threadId: "group-current", name: "Launch team", memberIds: [], defaultResponder: { kind: "everyone" }, bulletin: "", unread: false, createdAt: 1, messages: [],
       tasks: [{ threadId: "group-current", title: "Launch plan", createdAt: 3 }, { threadId: "group-old", title: "Previous review", createdAt: 2 }] };
@@ -109,7 +133,6 @@ describe("sidebar bot threads", () => {
     expect(markup).toContain('aria-label="Launch team threads"');
     expect(markup).toContain('data-sidebar-thread-row="group-current" aria-current="page"');
     expect(markup).toContain("Previous review");
-    // New thread lives on the room row now, not at the end of the list
     expect(markup).not.toContain("New thread");
     const picker = renderToStaticMarkup(createElement(StoreProvider, null, createElement(GroupTaskPicker, { group })));
     expect(picker).toContain('aria-label="All threads"');

@@ -34,15 +34,20 @@ describe("VoiceNoteBubble", () => {
     expect(markup).toContain('preload="metadata"');
   });
 
-  it("renders no player for a path that is not a parked generated mp3", () => {
+  it("plays a WAV note from the built-in Mac voices", () => {
     const markup = renderToStaticMarkup(
-      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.wav" } }),
+      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.wav", mime: "audio/wav" } }),
+    );
+    expect(markup).toContain('src="/api/attachments/note.wav"');
+  });
+
+  it("renders no player for a path that is not a parked generated mp3 or wav", () => {
+    const markup = renderToStaticMarkup(
+      createElement(VoiceNoteBubble, { attachment: { ...note, path: "/attachments/note.ogg" } }),
     );
     expect(markup).toBe("");
   });
 
-  // A note played over a Live call is heard by the call's microphone (and on
-  // Android it ended the call): the play button waits, and says why.
   it("cannot be played while this window is on a Live call, and says why", () => {
     configureLiveMedia({ getUserMedia: () => new Promise<MediaStream>(() => {}) });
     void startLiveCall({ botId: "b1", threadId: "t1" });

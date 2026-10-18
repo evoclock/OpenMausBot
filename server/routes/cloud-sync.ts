@@ -1,0 +1,80 @@
+// /api/sync: Files with the owner's desktop, on a Cloud home only. Listed in ROUTES (table.ts): the service is built from
+// the data folder on first use; index.ts only says when a bot's turn ends (`noteSyncBotTurn`).
+import { createReadStream } from "node:fs";
+import { cloudHomeConfigured } from "../cloud-home.ts";
+import { DATA_DIR } from "../config.ts";
+import { SyncError, createCloudSync, type CloudSync } from "../cloud-sync.ts";
+import { PASS, type RouteContext, type RouteHandler } from "./table.ts";
+
+const FOLDER = String.raw`([\w-]{1,200})`;
+const UPLOAD = String.raw`([0-9a-f-]{36})`;
+
+export function createCloudSyncRoutes(options: {
+  dataDir: string;
+  cloudHome: () => boolean;
+  root?: string;
+  statfs?: (path: string) => { totalBytes: number; freeBytes: number };
+}): RouteHandler & { close(): void; noteBotTurn(botId: string, threadId: string): void } {
+  let sync: CloudSync | null = null;
+  const service = () => sync ??= createCloudSync({ dataDir: options.dataDir, root: options.root, statfs: options.statfs });
+  const handler = async ({ req, res, url, path, method, auth, json, readBody }: RouteContext): Promise<typeof PASS | void> => {
+    if (path !== "/api/sync" && !path.startsWith("/api/sync/")) return PASS;
+    if (!options.cloudHome()) return PASS;
+    if (auth.kind !== "session" || !auth.scopes.includes("admin")) { json(res, 403, { error: "Only your own desktop can sync with My Cloud." }); return; }
+    res.setHeader("cache-control", "no-store");
+    const s = service();
+    const match = (pattern: string) => new RegExp(`^${pattern}$`).exec(path);
+    let m: RegExpExecArray | null;
+    try {
+      if (method === "GET" && path === "/api/sync") { json(res, 200, s.summary()); return; }
+      if (method === "GET" && path === "/api/sync/changes") {
+        const abort = new AbortController();
+        req.on("close", () => abort.abort());
+        json(res, 200, await s.changes(Number(url.searchParams.get("cursor") ?? 0), Number(url.searchParams.get("waitMs") ?? 60_000), abort.signal));
+        return;
+      }
+      if (method === "GET" && path === "/api/sync/trash") { json(res, 200, s.trash()); return; }
+      if (method === "POST" && path === "/api/sync/trash/restore") { json(res, 200, await s.restore((await readBody(req, 10_000))?.entryId)); return; }
+      if (method === "POST" && path === "/api/sync/folders") { json(res, 200, { folder: s.register(await readBody(req, 100_000)) }); return; }
+      if (method === "DELETE" && (m = match(`/api/sync/folders/${FOLDER}`))) {
+        s.unregister(m[1]!, url.searchParams.get("keepCloudCopy") !== "0");
+        res.writeHead(204).end();
+        return;
+      }
+      if (method === "GET" && (m = match(`/api/sync/folders/${FOLDER}/files`))) { json(res, 200, { files: await s.files(m[1]!) }); return; }
+      if (method === "POST" && (m = match(`/api/sync/folders/${FOLDER}/uploads`))) { json(res, 200, s.beginUpload(m[1]!, await readBody(req, 100_000))); return; }
+      if (method === "PUT" && (m = match(`/api/sync/uploads/${UPLOAD}`))) {
+        json(res, 200, await s.writePart(m[1]!, Number(url.searchParams.get("offset")), req as AsyncIterable<Buffer>));
+        return;
+      }
+      if (method === "POST" && (m = match(`/api/sync/uploads/${UPLOAD}/commit`))) { json(res, 200, await s.commit(m[1]!)); return; }
+      if (method === "GET" && (m = match(`/api/sync/folders/${FOLDER}/file`))) {
+        const file = await s.download(m[1]!, url.searchParams.get("path"));
+        const range = /^bytes=(\d+)-$/.exec(String(req.headers.range ?? ""));
+        const start = range ? Math.min(Number(range[1]), file.size) : 0;
+        res.writeHead(range ? 206 : 200, {
+          "content-type": "application/octet-stream", "content-length": String(file.size - start), "x-omb-sha256": file.sha256,
+          "x-content-type-options": "nosniff", "content-disposition": "attachment", "content-security-policy": "sandbox",
+          ...(range ? { "content-range": `bytes ${start}-${Math.max(file.size - 1, start)}/${file.size}` } : {}),
+        });
+        if (file.size === start) { res.end(); return; }
+        // A bot may remove or lock the file before it is read: end this response, never the server.
+        const stream = createReadStream(file.file, { start });
+        stream.on("error", () => res.destroy());
+        res.on("close", () => stream.destroy());
+        stream.pipe(res);
+        return;
+      }
+      if (method === "POST" && (m = match(`/api/sync/folders/${FOLDER}/ops`))) { json(res, 200, await s.ops(m[1]!, await readBody(req, 4_000_000))); return; }
+      json(res, 404, { error: `no route: ${method} ${path}` });
+    } catch (error) {
+      if (error instanceof SyncError) { json(res, error.status, error.body); return; }
+      throw error;
+    }
+  };
+  // Before the desktop's first call there is nobody to tell: its first pass reads every folder.
+  return Object.assign(handler, { close: () => { sync?.close(); sync = null; }, noteBotTurn: (botId: string, threadId: string) => sync?.noteBotTurn(botId, threadId) });
+}
+
+export const cloudSyncRoutes = createCloudSyncRoutes({ dataDir: DATA_DIR, cloudHome: () => cloudHomeConfigured() });
+export const noteSyncBotTurn = (botId: string, threadId: string) => cloudSyncRoutes.noteBotTurn(botId, threadId);

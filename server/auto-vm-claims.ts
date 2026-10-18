@@ -1,8 +1,3 @@
-/** Lazy exclusive claims for auto-resolved Local VM attaches (issue #1361).
- * The table is keyed by thread and owned by the dispatch generation; the
- * claim closure itself lives in index.ts next to the turn state it needs.
- * Kept free of index.ts imports so the fire-once semantics stay unit-testable. */
-
 export interface AutoVmClaimOwner {
   threadId: string;
   generation: string;
@@ -10,82 +5,87 @@ export interface AutoVmClaimOwner {
 
 export interface AutoVmClaimSlot {
   owner: AutoVmClaimOwner;
-  /** Runs the exclusive claim sequence: bind, lease, boot. At most once. */
+  /** Bind, lease, boot; again only after a network failure. */
   claim: () => Promise<void>;
   /** Set by startAutoVmClaim; presence means the claim already fired. */
   begin?: Promise<void>;
-  /** Set when the fired claim rejected. The slot stays so the gate keeps
-   * refusing screen calls for this generation instead of forwarding them
-   * onto a VM the turn never claimed (gate finding F1). */
+  /** The fired claim rejected; the slot stays so the gate keeps refusing screen calls instead of forwarding them to an unclaimed VM. */
   failed?: boolean;
-  /** The rejection's message, so the gate can refuse honestly instead of
-   * blaming another thread. */
   failure?: string;
-  /** Set when the fired claim resolved: this turn now holds the desktop. */
+  /** The last claim failed on the network; the next screen call claims again. */
+  retryReason?: string;
+  attempts?: number;
   claimed?: boolean;
-  /** True when dispatch mounted the computer tools without claiming, so
-   * the gate must fire the claim on the first screen call. Eager attaches
-   * register the same slot shape but never need the gate. */
+  /** Dispatch mounted the computer tools without claiming, so the gate fires the claim on the first screen call. */
   lazy?: boolean;
-  /** What the gate calls this computer when a fired claim has failed
-   * ("the Local VM", "the VPS computer"). The table serves every lazily
-   * claimed desktop, not only the Local VM it was written for. */
   label?: string;
-  /** This claim mounts a local workspace, not a remote Boat/VPS desktop. */
   localVm?: boolean;
-  /** How long a computer call waits on this claim before it is answered,
-   * when the claim itself is slow: a cloud computer that has to be created
-   * or woken takes up to a minute. A slow claim is waited on by every call
-   * while it runs, not only by the call that fired it. Unset: the gate's
-   * short default, for a desktop that claims at once. */
-  graceMs?: number;
-  /** What the gate answers while this claim is still running, instead of
-   * the contention text a fast claim earns. */
   pendingReason?: string;
-  /** The Boat a cloud computer's claim created or woke (mountBotBoat):
-   * its tools reach that Boat once the claim has landed. */
   boxId?: string;
-  /** The claim itself creates or wakes the computer (mountBotBoat), so that
-   * computer is this turn's even before it is up: select_computer counts it
-   * as selected. The other lazy claims only lease a desktop that is up. */
   startsComputer?: true;
-  /** Called once, after the slot is marked failed, when the fired claim
-   * rejected (issue #1369): the turn surfaces a terminal error and ends
-   * instead of staying busy behind a gate that can only refuse. The
-   * fail-closed refusal below does not depend on it firing. */
-  onRejected?: (failure: string) => void;
+  /** Called once after the slot is marked failed; the fail-closed refusal does not depend on it firing. */
+  onRejected?: (failure: string, error?: unknown) => void;
 }
 
 export type AutoVmClaimTable = Map<string, AutoVmClaimSlot>;
 
-/** Fire a thread's lazy claim exactly once, fenced by the dispatch
- * generation. A rejected claim KEEPS the slot and marks it failed: the
- * computer-control gate then keeps answering held for that generation, so
- * the bridge refuses every later screen call instead of forwarding it onto
- * a VM this turn never claimed. `begin` staying set means the claim never
- * re-fires; turn settle (releaseTurnResources / releaseLocalVmThread in
- * index.ts) clears the slot, fenced by owner generation. A rejection
- * mutates only the slot it fired from, so a stale claim can never remove
- * or mark a newer generation's slot on the same thread. */
-export function startAutoVmClaim(table: AutoVmClaimTable, threadId: string, generation: string): void {
-  const slot = table.get(threadId);
-  if (!slot || slot.owner.threadId !== threadId || slot.owner.generation !== generation || slot.begin) return;
-  slot.begin = slot.claim().then(
-    () => { slot.claimed = true; },
-    (error: unknown) => {
-      slot.failed = true;
-      slot.failure = error instanceof Error ? error.message : String(error);
-      slot.onRejected?.(slot.failure);
-    },
-  );
+export const MAX_CLAIM_ATTEMPTS = 3;
+const NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"]);
+
+/** A claim that never got an answer: marked `transient`, a fetch timeout, or Node's fetch failing on a socket error (its `cause`). */
+export function transientClaimFailure(error: unknown): boolean {
+  for (let current = error, depth = 0; current && typeof current === "object" && depth < 4; current = (current as { cause?: unknown }).cause, depth++) {
+    const failure = current as { transient?: unknown; name?: unknown; code?: unknown };
+    if (failure.transient === true || failure.name === "TimeoutError" || (typeof failure.code === "string" && NETWORK_CODES.has(failure.code))) return true;
+  }
+  return false;
 }
 
-/** How long a computer call should wait on its thread's lazy claim, or null
- * when it should not wait: the first call waits while the claim it fires
- * lands; a slow claim (graceMs) is waited on by every call until it settles. */
-export function lazyClaimWaitMs(slot: AutoVmClaimSlot | undefined, defaultGraceMs: number): number | null {
-  if (!slot?.lazy) return null;
-  if (!slot.begin) return slot.graceMs ?? defaultGraceMs;
-  if (slot.graceMs !== undefined && !slot.claimed && !slot.failed) return slot.graceMs;
-  return null;
+/** Keeps a claim's network failure recognizable through a wrapper that rewords it for the person. */
+export function keepTransient(original: unknown, shown: unknown): unknown {
+  return shown instanceof Error && transientClaimFailure(original) ? Object.assign(shown, { transient: true }) : shown;
+}
+
+/** Once per dispatch generation, or again after a network failure, at most MAX_CLAIM_ATTEMPTS times. Any other rejection keeps
+ * its slot marked failed, and a rejection mutates only the slot it fired from, so a stale claim never touches a newer generation's. */
+export function startAutoVmClaim(table: AutoVmClaimTable, threadId: string, generation: string): void {
+  const slot = table.get(threadId);
+  if (!slot || slot.owner.threadId !== threadId || slot.owner.generation !== generation || slot.begin || slot.failed) return;
+  const attempt = (slot.attempts ?? 0) + 1;
+  slot.attempts = attempt;
+  slot.retryReason = undefined;
+  const begin: Promise<void> = slot.claim().then(
+    () => { slot.claimed = true; },
+    (error: unknown) => {
+      const failure = error instanceof Error ? error.message : String(error);
+      if (transientClaimFailure(error) && attempt < MAX_CLAIM_ATTEMPTS) {
+        slot.retryReason = failure;
+        if (slot.begin === begin) slot.begin = undefined;
+        return;
+      }
+      slot.failed = true;
+      slot.failure = failure;
+      slot.onRejected?.(slot.failure, error);
+    },
+  );
+  slot.begin = begin;
+}
+
+export function lazyClaimRetryText(slot: Pick<AutoVmClaimSlot, "label" | "retryReason">): string {
+  return `This turn could not reach ${slot.label ?? "this computer"} just now (${slot.retryReason}). This call was not performed; try it again in a moment.`;
+}
+
+export function settledWithin(work: Promise<unknown> | null, ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, Math.max(0, ms));
+    signal?.addEventListener("abort", done, { once: true });
+    work?.then(done, done);
+  });
+}
+
+export function withinBudget<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  return Promise.race([work, expired]).finally(() => clearTimeout(timer));
 }

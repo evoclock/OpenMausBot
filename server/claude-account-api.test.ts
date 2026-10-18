@@ -117,7 +117,7 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (child.exitCode !== null) throw new Error(`fixture exited: ${stderr}`);
-    try { if ((await api("GET", "/api/health")).body.pid === child.pid) break; } catch { /* Starting. */ }
+    try { if ((await api("GET", "/api/health")).body.pid === child.pid) break; } catch {}
     if (Date.now() > deadline) throw new Error(`fixture did not start: ${stderr}`);
     await new Promise(resolve => setTimeout(resolve, 100));
   }

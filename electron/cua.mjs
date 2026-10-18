@@ -1,18 +1,5 @@
-// CUA computer-use wiring for the Electron main process.
-//
-// Two modes, per cua-driver's EMBEDDING.md:
-//  - "embedded" (packaged app): spawn our own private daemon via
-//    EmbeddedCuaDriverHost so TCC grants attribute to OpenMausBot and the
-//    driver inherits them. One prompt, named OpenMausBot, out of the box.
-//  - "standalone" (dev): attach to an already-installed CuaDriver.app daemon
-//    (its own TCC identity, typically already granted on a dev machine).
-//
-// Agents never talk to the daemon socket directly — they spawn the official
-// stdio MCP proxy: `cua-driver mcp [--embedded --socket <path>]`. The proxy
-// executes nothing; the host-owned daemon does.
-//
-// The resulting connection descriptor is written to
-// <userData>/cua-connection.json for the harness server to hand to drivers.
+// Packaged: an embedded cua-driver daemon, so macOS TCC grants attribute to OpenMausBot; dev attaches to CuaDriver.app.
+// Agents use the stdio MCP proxy, which executes nothing; the host-owned daemon does.
 
 import { app, ipcMain } from "electron";
 import { execFile } from "node:child_process";
@@ -25,7 +12,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import localOriginModule from "./local-origin.cjs";
 
-// Local control answers only the local server's UI (electron/local-origin.cjs).
 const { localOnly } = localOriginModule;
 
 const require = createRequire(import.meta.url);
@@ -52,14 +38,12 @@ const CUA_ENV = { CUA_DRIVER_RS_TELEMETRY_ENABLED: "0" };
 const execFileAsync = promisify(execFile);
 process.env.CUA_DRIVER_RS_TELEMETRY_ENABLED ??= "0";
 
-// Where cua-driver installs itself on Windows: under the user profile, with
-// the packages directory holding the versioned releases. The installer's own
-// directory is kept as a fallback for machines where the layout differs.
+// Where cua-driver installs itself on Windows; the installer's own directory is the fallback.
 const WIN_INSTALLED_DRIVERS = [
   path.join(app.getPath("home"), ".cua-driver", "packages", "current", "cua-driver.exe"),
   path.join(app.getPath("home"), "AppData", "Local", "Programs", "CuaDriver", "cua-driver.exe"),
 ];
-let embeddedHost = null; // EmbeddedCuaDriverHost | null
+let embeddedHost = null;
 let startupAbort = null;
 let lifecycleGeneration = 0;
 let macRetry = null;
@@ -90,10 +74,7 @@ function ensureLinuxRuntime() {
       let bundledDriverPath;
       if (app.isPackaged && !process.env.CUA_DRIVER_PATH) {
         bundledDriverPath = path.join(process.resourcesPath, "cua-linux-x64", "cua-driver");
-        // AppImage builders may normalize the read-only resource tree to 0755
-        // or 0775. Always copy only the pinned binaries to a fresh 0700
-        // process-owned directory and verify their hashes after the copy, so
-        // every AppImage follows the same execution invariant.
+        // AppImage builders may normalize the resource tree to 0755/0775: copy the pinned binaries to a fresh 0700 dir and re-verify.
         if (process.env.APPIMAGE) {
           reapStaleAppImageCuaBundles();
           linuxBundleStage ??= stageAppImageCuaBundle({ resourcesPath: process.resourcesPath });
@@ -199,14 +180,11 @@ async function attachStandalone(signal) {
   if (!driver) return null;
   if (!(await socketAlive(STANDALONE_SOCKET))) {
     signal.throwIfAborted();
-    // Launch CuaDriver.app through LaunchServices so Accessibility /
-    // Screen Recording stay on com.trycua.driver — the identity this
-    // machine already granted — instead of the freshly signed OpenMausBot.
+    // Through LaunchServices so Accessibility/Screen Recording stay on com.trycua.driver, the identity already granted.
     const launch = execFileAsync("/usr/bin/open", ["-a", "CuaDriver"], {
       timeout: 8_000, killSignal: "SIGKILL", maxBuffer: 8_192,
     });
-    // execFile's AbortSignal path can send TERM independently of its timeout
-    // killSignal. Stop must also bound a launcher that ignores TERM.
+    // execFile's AbortSignal can send TERM regardless of killSignal; bound a launcher that ignores TERM.
     const abort = () => launch.child.kill("SIGKILL");
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
@@ -229,13 +207,10 @@ async function attachStandalone(signal) {
 }
 
 async function startEmbedded(binary, signal) {
-  // Import from the staged Resources tree in production. The app intentionally
-  // excludes general node_modules, so a bare package import only works in dev.
+  // The packaged app ships no general node_modules, so a bare package import only works in dev.
   const sdk = await loadEmbeddedSdk();
   signal.throwIfAborted();
-  // CUA's embedding contract requires grants before the child daemon starts;
-  // these SDK calls execute in Electron main so macOS attributes them to
-  // OpenMausBot rather than to a terminal or helper process.
+  // CUA's embedding contract needs grants before the daemon starts, asked from Electron main so macOS attributes them here.
   if (process.platform === "darwin") {
     const permissionStatus = sdk.requestMacOSPermissions();
     if (!sdk.hasRequiredMacOSPermissions(permissionStatus)) {
@@ -263,7 +238,6 @@ async function startEmbedded(binary, signal) {
     try {
       await host.stop();
     } catch {
-      // startup already failed; stop is best-effort before destroy
     }
     host.uniffiDestroy?.();
     throw err;
@@ -310,9 +284,7 @@ export async function startCua() {
       }
     }
   } else if (process.platform === "darwin" && (await socketAlive(STANDALONE_SOCKET))) {
-    // Dev machine with the platform CuaDriver daemon already running. Windows
-    // is deliberately excluded: there the shared pipe belongs to whatever
-    // driver the user happens to have, so it is never adopted implicitly.
+      // Never on Windows: the shared pipe belongs to whatever driver the user has, so it is never adopted implicitly.
     nextConnection = {
       mode: "standalone",
       socketPath: STANDALONE_SOCKET,
@@ -368,7 +340,6 @@ export async function stopCua() {
       await host.stop();
       host.uniffiDestroy?.();
     } catch {
-      // daemon holds a parent-liveness pipe; host death closes it anyway
     }
   }
   if (!startupAbort && connectionStore.get()) {
@@ -408,8 +379,7 @@ export function registerCuaIpc() {
   }));
   ipcMain.handle("cua:linux-retry", localOnly("cua:linux-retry", async () => {
     if (process.platform === "darwin" || process.platform === "win32") {
-      // Concurrent IPC requests share the whole stop/start sequence. A later
-      // explicit Stop (including quit) or startup cancels its delayed restart.
+      // Concurrent requests share one stop/start sequence; a later explicit Stop (or quit) cancels its delayed restart.
       const platformLabel = process.platform === "darwin" ? "macOS" : "Windows";
       macRetry ??= (async () => {
         try {

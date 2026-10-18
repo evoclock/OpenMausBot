@@ -1,14 +1,5 @@
-// Sign in with your email on a hosted server. The emailed code comes from the
-// OpenMausBot control plane (the account service the desktop companion and
-// `openmausbot login` already use), and this server decides who is welcome
-// with an allow-list its owner controls. The result is an ordinary local
-// session, the same thing a pairing code produces, so every gate applies.
-//
-// Why through the control plane rather than a mail provider per server: a
-// self-hoster then needs no email credentials at all; the code arrives from
-// accounts.openmausbot.com. The exchange happens server-side, so a browser
-// only ever talks to this server, and a server with an empty allow-list does
-// not expose the routes.
+// Email sign-in through the OpenMausBot control plane: the code exchange is server-side, so a browser only talks to this
+// server, and a server with an empty allow-list does not expose the routes. The result is an ordinary local session.
 import { resolveCompanionControlPlaneURL } from "../electron/companion-account-service.mjs";
 import { ControlPlaneError, createControlPlaneClient, normalizeAccountEmail, type ControlPlaneClient } from "../electron/control-plane-client.mjs";
 import type { Scope } from "./sessions.ts";
@@ -99,7 +90,6 @@ export function createEmailSignIn(options: {
         }
         return unavailable(error);
       }
-      // The account session on the control plane has done its job.
       void controlPlane()
         .signOut(verified.accountToken)
         .catch(() => undefined);

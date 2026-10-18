@@ -1,7 +1,8 @@
-// A failed turn is stored as an activity row named "error: <what went
-// wrong>", in a 1:1 chat and a room alike. The server writes every such row
-// through failedTurnTool and the clients read it back through
-// failedTurnCause, so the marker and the one length limit live here only.
+// A failed turn is stored as an activity row named "error: <what went wrong>",
+// in a 1:1 chat and a room alike. A place that could not be used also stores
+// its state, so the app words it again in the reader's language; the words
+// stay English and whole for the phones, which read only them.
+import type { PlaceRow } from "./place-view.ts";
 
 const MARKER = "error:";
 
@@ -18,12 +19,14 @@ export interface FailedTurnTool {
   terminal?: boolean;
   /** the installed Claude Code is too old for the model */
   claudeUpdate?: boolean;
+  /** the place this turn could not use, and where that place came from */
+  place?: PlaceRow;
 }
 
 /** The activity row a failed turn is stored as. */
 export function failedTurnTool(
   cause: string,
-  flags: { setup?: boolean; terminal?: boolean; claudeUpdate?: boolean } = {},
+  flags: { setup?: boolean; terminal?: boolean; claudeUpdate?: boolean; place?: PlaceRow } = {},
 ): FailedTurnTool {
   const words = cause.length > FAILED_TURN_MAX_CHARS ? `${cause.slice(0, FAILED_TURN_MAX_CHARS - 1)}…` : cause;
   return {
@@ -32,6 +35,7 @@ export function failedTurnTool(
     ...(flags.setup ? { setup: true } : {}),
     ...(flags.terminal ? { terminal: true } : {}),
     ...(flags.claudeUpdate ? { claudeUpdate: true } : {}),
+    ...(flags.place ? { place: flags.place } : {}),
   };
 }
 

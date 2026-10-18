@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// A blocked microphone's notice: its one button does what it says when the
-// person clicks it. Open in browser opens this page in the web browser; Try
-// again starts the call again.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -81,7 +78,6 @@ describe("LiveCallBar's notice button", () => {
     });
     const openInBrowser = vi.fn();
     configureLiveMedia({
-      // refused the first time; the person then allows it in the computer's settings
       getUserMedia: () => (allowed ? microphone() : blocked()),
       createPeer: peer,
       request: request as never,

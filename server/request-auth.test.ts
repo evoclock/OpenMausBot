@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  BROWSER_SIGN_IN,
   clearSessionCookie,
+  fromBrowser,
   clientBotPatchViolation,
   clientGroupPatchViolation,
   ipcPeer,
@@ -78,7 +80,6 @@ describe("request source for the lockout", () => {
     // SAFETY: only headers and the socket peer are read
     ({ headers, method: "POST", socket: { remoteAddress: peer } }) as unknown as IncomingMessage;
   it("takes the LAST forwarded hop, only from a proxy on this machine, and sanitises it", () => {
-    // the last hop is the one our own proxy wrote; earlier hops are client-supplied
     expect(requestSource(withPeer("127.0.0.1", { "x-forwarded-for": "1.2.3.4, 203.0.113.9" }))).toBe("203.0.113.9");
     expect(requestSource(withPeer("::ffff:127.0.0.1", { "x-forwarded-for": "203.0.113.9" }))).toBe("203.0.113.9");
     expect(requestSource(withPeer("127.0.0.1", {}))).toBe("127.0.0.1");
@@ -97,7 +98,7 @@ describe("scopes", () => {
   it("is default deny: chat, approvals, rooms, attachments, routines and own session are client; everything else admin", () => {
     for (const [method, path] of [
       ["POST", "/api/bots/x/messages"], ["POST", "/api/bots/x/respond"], ["POST", "/api/threads/t/respond"],
-      ["POST", "/api/bots/x/compact"], ["POST", "/api/bots/x/tasks/t/title"],
+      ["POST", "/api/threads/t/undo"], ["POST", "/api/bots/x/compact"], ["POST", "/api/bots/x/tasks/t/title"],
       ["PATCH", "/api/bots/x/cards/m"], ["POST", "/api/groups/g/messages"], ["PATCH", "/api/groups/g"],
       ["PATCH", "/api/bots/x"], ["PATCH", "/api/bots/x/profile"], ["POST", "/api/attachments"],
       ["GET", "/api/attachments/a.png"], ["POST", "/api/routines"], ["POST", "/api/routines/r/run"],
@@ -105,7 +106,11 @@ describe("scopes", () => {
       ["GET", "/api/bots"], ["GET", "/api/threads/t/messages"], ["GET", "/api/search"], ["GET", "/api/events"],
       ["GET", "/api/config"], ["GET", "/api/webhooks"], ["POST", "/api/tts/speak"],
       ["GET", "/api/auth/session"], ["POST", "/api/auth/stream-ticket"], ["POST", "/api/auth/logout"],
-      ["GET", "/api/bots/x/slack-management"], // a link to Admin, read-only
+      ["GET", "/api/bots/x/slack-management"],
+      ["POST", "/api/bots/x/sign-in-cards/m/done"], ["POST", "/api/bots/x/sign-in-cards/m/cancel"], ["POST", "/api/bots/x/sign-in-cards/m/save-login"],
+      ["GET", "/api/bots/x/sign-in-cards/m/save-login"],
+      ["GET", "/api/bots/x/browser/live"], ["POST", "/api/bots/x/browser/action"],
+      ["POST", "/api/bots/x/queue/q/steer"], ["POST", "/api/groups/g/queue/q/steer"],
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("client");
     for (const [method, path] of [
       ["POST", "/api/cli-test"], ["GET", "/api/cli-candidates"], ["GET", "/api/instances"], ["PATCH", "/api/instances/claude"],
@@ -118,21 +123,28 @@ describe("scopes", () => {
       ["GET", "/api/mcp/servers"], ["POST", "/api/mcp/servers"], ["POST", "/api/connectors/slack/authorize"],
       ["POST", "/api/bots/x/slack-management"], ["GET", "/api/bots/x/slack-management/extra"],
       ["PUT", "/api/config"], ["POST", "/api/auth/pairing"], ["GET", "/api/auth/sessions"], ["DELETE", "/api/auth/sessions/abc"],
-      // Live calls spend the owner's OpenAI key and reach any bot: admins only
       ["POST", "/api/live/session"], ["POST", "/api/live/call/end"], ["GET", "/api/live/call"], ["PATCH", "/api/live/settings"],
       ["POST", "/api/live/device-revoked"],
-      ["POST", "/api/auth/pair"], // handled before the gate; the gate itself never grants it
-      ["GET", "/api/something-new"], // anything unlisted is admin until listed
+      ["POST", "/api/auth/pair"],
+      ["GET", "/api/something-new"],
+      ["POST", "/api/bots/x/sign-in-cards/m/provide"], ["POST", "/api/browser-engine/install"],
+      ["GET", "/api/logins"], ["POST", "/api/logins"], ["PATCH", "/api/logins/l1"], ["DELETE", "/api/logins/l1"],
+      ["POST", "/api/logins/1password"], ["POST", "/api/logins/1password/refresh"], ["DELETE", "/api/logins/1password"],
+      ["PATCH", "/api/logins/1password/vaults/v1"], ["GET", "/api/bots/x/sign-in-cards/m/done"],
+      ["GET", "/api/bots/x/queue/q/steer"], ["POST", "/api/bots/x/queue/q/steer/more"], ["POST", "/api/groups/g/queue/q/steer/more"],
     ] as const) expect(requiredScope(method, path), `${method} ${path}`).toBe("admin");
   });
 
   it("limits a client's bot and room edits to display fields, naming the field it refused", () => {
     expect(clientBotPatchViolation({ unread: true })).toBeNull();
     expect(clientBotPatchViolation({ pinned: true, color: "green" })).toBeNull();
+    expect(clientBotPatchViolation({ avatarCrop: "mascot", avatarZoom: 1, avatarFocusX: 0.5, avatarFocusY: 0.5, avatarUrl: null })).toBeNull();
+    expect(clientBotPatchViolation({ avatarCrop: "square", name: "Renamed" })).toBe("name");
     expect(clientBotPatchViolation({ unread: true, autoApprove: true })).toBe("autoApprove");
     expect(clientBotPatchViolation({ cwd: "/" })).toBe("cwd");
+    expect(clientBotPatchViolation({ recordBrowserSteps: true })).toBe("recordBrowserSteps");
     expect(clientBotPatchViolation([])).toBe("body");
-    expect(clientGroupPatchViolation({ name: "Ops", unread: false })).toBeNull();
+    expect(clientGroupPatchViolation({ name: "Ops", unread: false, turnTimeoutMinutes: 30 })).toBeNull();
     expect(clientGroupPatchViolation({ cwd: "/tmp" })).toBe("cwd");
     expect(clientGroupPatchViolation({ memberIds: [] })).toBe("memberIds");
   });
@@ -168,12 +180,8 @@ describe("resolveRequestAuth", () => {
       ["POST", "/api/bots/b/read"], ["POST", "/api/bots/b/respond"],
       ["POST", "/api/bots/b/secret-cards/card/provide"],
       ["GET", "/api/events"], ["PATCH", "/api/bots/b/profile"],
-      // Browser control: the harness re-runs the sidecar's own allowlist, so
-      // these resolve here for the same reason the phone may ask for them.
-      // The per-device capability is the proxy's job, not this one's.
       ["GET", "/api/bots/b/browser/live"], ["POST", "/api/bots/b/browser/action"],
     ]) expect(check(method, path).auth?.kind, path).toBe("loopback");
-    // And the allowlist still closes everything else under that prefix.
     for (const [method, path] of [
       ["POST", "/api/bots/b/browser/live"], ["GET", "/api/bots/b/browser/action"],
       ["POST", "/api/bots/b/browser/restart"],
@@ -194,8 +202,6 @@ describe("resolveRequestAuth", () => {
       ["POST", "/api/internal/anything"], ["GET", "/api/auth/sessions"],
       ["POST", "/api/not-yet-supported"],
     ]) expect(check(method, path).auth, path).toBeNull();
-    // The companion's own notice that it unpaired a phone: not on the phone
-    // allowlist, but the relay's private token opens it; a forged one does not.
     expect(check("POST", "/api/live/device-revoked").auth?.kind).toBe("loopback");
     for (const overrides of forged) expect(check("POST", "/api/live/device-revoked", overrides).auth).toBeNull();
     expect(check("GET", "/api/live/device-revoked").auth).toBeNull();
@@ -244,24 +250,24 @@ describe("resolveRequestAuth", () => {
     const result = sessions.exchange({ code, label: "phone", source: "10.0.0.2" });
     if (!result.ok) throw new Error(result.error);
     const { token, session } = result;
-    clock += SESSION_TTL_MS / 2 + 1; // renewal is due from here on
+    clock += SESSION_TTL_MS / 2 + 1;
     const csrf = resolve({ host: "bots.example.com", cookie: `${cookieName}=${token}`, origin: "https://evil.example" }, "/api/bots", "POST");
     expect(csrf.error).toBe("forbidden: cross-origin request");
-    expect(sessions.list()[0]?.expiresAt).toBe(session.expiresAt); // a rejected request is not use
+    expect(sessions.list()[0]?.expiresAt).toBe(session.expiresAt);
     const overScope = resolve({ authorization: `Bearer ${token}` }, "/api/bots", "POST");
     expect(overScope.status).toBe(403);
     expect(sessions.list()[0]?.expiresAt).toBe(session.expiresAt);
     const { ticket } = sessions.issueStreamTicket(session.id);
     const stream = resolve({ host: "bots.example.com" }, `/api/events?ticket=${ticket}`);
     expect(stream.auth?.kind === "session" && stream.auth.via).toBe("ticket");
-    expect(sessions.list()[0]?.expiresAt).toBe(session.expiresAt); // a stream alone is not use
+    expect(sessions.list()[0]?.expiresAt).toBe(session.expiresAt);
     const ok = resolve({ host: "bots.example.com", cookie: `${cookieName}=${token}`, origin: "http://bots.example.com" });
     expect(ok.auth?.kind).toBe("session");
     expect(sessions.list()[0]?.expiresAt).toBe(clock + SESSION_TTL_MS);
     clock += SESSION_TTL_MS + 1;
     const expired = resolve({ host: "bots.example.com", cookie: `${cookieName}=${token}`, origin: "http://bots.example.com" });
     expect(expired.status).toBe(401);
-    expect(sessions.list()).toEqual([]); // expired: gone, not renewed
+    expect(sessions.list()).toEqual([]);
   });
 
   it("requires the packaged desktop capability for public loopback mutations", () => {
@@ -299,14 +305,12 @@ describe("resolveRequestAuth", () => {
     );
     expect(connectorRefresh.auth).toBeNull();
     expect(connectorRefresh.status).toBe(403);
-    // The remote viewer route hands out a desktop password and its RFB
-    // socket; native owners use the direct viewer instead.
     for (const path of ["/api/desktop-viewer/vps/bot-1", "/api/desktop-viewer/local/shared/websockify"]) {
       expect(resolveRequestAuth(request({ host: "127.0.0.1:8799" }, "GET"), options(path)).status).toBe(403);
     }
     expect(resolveRequestAuth(
       request({ host: "127.0.0.1:8799" }, "POST"),
-      options("/api/internal/ask-bot"),
+      options("/api/internal/coordinate-bots"),
     ).auth?.kind).toBe("loopback");
   });
 
@@ -320,7 +324,6 @@ describe("resolveRequestAuth", () => {
     expect(viaProxy.error).toMatch(/came through a proxy.*pair this device/);
     const rewritten = resolve({ host: "127.0.0.1:8799", "x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.9" });
     expect(rewritten.auth).toBeNull();
-    // a paired session through the same proxy is fine
     const token = pairedToken();
     expect(resolve({ host: "localhost", "x-forwarded-for": "203.0.113.9", authorization: `Bearer ${token}` }).auth?.kind).toBe("session");
   });
@@ -348,9 +351,7 @@ describe("resolveRequestAuth", () => {
     if (!signedIn.ok) throw new Error(signedIn.error);
     const cookie = `${cookieName}=${signedIn.token}`;
     const cloud = { host: "omb-u-0123456789ab.fly.dev", "x-forwarded-proto": "https", cookie };
-    // Reading needs nothing more.
     expect(resolve(cloud).auth?.kind).toBe("session");
-    // A change: the browser's Origin, or its Sec-Fetch-Site, must say same-origin.
     expect(resolve({ ...cloud, origin: "https://omb-u-0123456789ab.fly.dev" }, "/api/bots", "POST").auth?.kind).toBe("session");
     expect(resolve({ ...cloud, "sec-fetch-site": "same-origin" }, "/api/bots", "DELETE").auth?.kind).toBe("session");
     for (const [headers, method] of [[{}, "POST"], [{}, "PUT"], [{}, "PATCH"], [{}, "DELETE"], [{ "sec-fetch-site": "none" }, "POST"], [{ "sec-fetch-site": "cross-site" }, "POST"],
@@ -360,12 +361,10 @@ describe("resolveRequestAuth", () => {
       expect(refused.status).toBe(403);
     }
     expect(resolve(cloud, "/api/bots", "POST").error).toBe("forbidden: this browser's session makes changes only from its own page");
-    // Any other session's cookie keeps the old rule: a missing Origin passes.
     const paired = pairedToken();
     expect(resolve({ host: "omb-u-0123456789ab.fly.dev", "x-forwarded-proto": "https", cookie: `${cookieName}=${paired}` }, "/api/bots", "POST").auth?.kind).toBe("session");
     expect(provesSameOrigin(request({ host: "a.example", origin: "http://a.example" }))).toBe(true);
     expect(provesSameOrigin(request({ host: "a.example" }))).toBe(false);
-    // A foreign Origin is never outvoted by Sec-Fetch-Site.
     expect(provesSameOrigin(request({ host: "a.example", origin: "https://evil.example", "sec-fetch-site": "same-origin" }))).toBe(false);
   });
 
@@ -412,13 +411,12 @@ describe("resolveRequestAuth", () => {
     ["DELETE", "/api/fleet/workspaces/acme"],
     ["POST", "/api/fleet/upgrade"],
     ["POST", "/api/instances/antigravity/auth/complete"],
+    ["GET", "/api/computers/usage"],
   ])("requires admin for server Settings: %s %s", (method, path) => {
     expect(requiredScope(method, path.split("?")[0]!)).toBe("admin");
     const client = pairedToken(["client"]);
     const admin = pairedToken(["admin"]);
     const headers = { host: "bots.example.com", "x-forwarded-proto": "https", origin: "https://bots.example.com" };
-    // Both app bearer sessions and same-origin browser cookies must enforce
-    // the boundary: a client cannot read login codes or change pairing URLs.
     const clientCredentials: Record<string, string>[] = [{ authorization: `Bearer ${client}` }, { cookie: `${cookieName}=${client}` }];
     for (const credential of clientCredentials) {
       const denied = resolve({ ...headers, ...credential }, path, method);
@@ -438,7 +436,6 @@ describe("resolveRequestAuth", () => {
     const remote = resolve({ host: "bots.example.com", authorization: `Bearer ${token}` });
     expect(remote.status).toBe(401);
     expect(remote.error).toMatch(/expired or was revoked; pair this device again/);
-    // A rejected credential must never become a more powerful identity.
     expect(resolve({ host: "127.0.0.1:8799", cookie: `${cookieName}=${token}` })).toMatchObject({ auth: null, status: 401 });
   });
 });
@@ -497,9 +494,7 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  // Every call the deployed cloud Slack worker makes to the runtime
-  // (openmaus-cloud server/slack-worker.ts, every released version), plus
-  // the bot capability routes and liveness. None of these may break.
+  // Every call the deployed cloud Slack worker makes (openmaus-cloud server/slack-worker.ts, every released version): none may break.
   const SERVICE_CALLS: Array<[string, string]> = [
     ["GET", "/api/health"],
     ["GET", "/api/bots?messages=0"],
@@ -513,12 +508,11 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
     ["DELETE", "/api/bots/bot-1/queue/queue-1"],
     ["POST", "/api/threads/thread-1/respond"],
     ["GET", "/api/auth/session"],
-    ["POST", "/api/internal/ask-bot"],
+    ["POST", "/api/internal/coordinate-bots"],
     ["GET", "/api/internal/agents"],
     ["POST", "/api/internal/hook"],
     ["POST", "/api/testing/internal-capability"],
   ];
-  // Admin changes a bot's shell must not make as the owner.
   const ADMIN_CALLS: Array<[string, string]> = [
     ["PUT", "/api/config"], ["PATCH", "/api/config"], ["GET", "/api/config"],
     ["POST", "/api/webhooks"], ["GET", "/api/webhooks"],
@@ -527,9 +521,8 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
     ["POST", "/api/instances"], ["GET", "/api/instances"], ["POST", "/api/mcp-servers"],
     ["POST", "/api/keys/test"], ["GET", "/api/usage"], ["GET", "/api/decisions"], ["GET", "/api/decisions.csv"],
     ["POST", "/api/fleet/workspaces"], ["POST", "/api/settings/custom-domain"], ["POST", "/api/workspace-backup/export"],
-    // ordinary sends and answers go through a person's session, not loopback
     ["POST", "/api/bots/bot-1/messages"], ["POST", "/api/bots/bot-1/respond"], ["POST", "/api/bots/bot-1/always-allow"],
-    ["POST", "/api/groups/room-1/messages"], ["POST", "/api/routines"], ["GET", "/api/events"],
+    ["POST", "/api/threads/thread-1/undo"], ["POST", "/api/groups/room-1/messages"], ["POST", "/api/routines"], ["GET", "/api/events"],
   ];
 
   it("keeps the owner exactly as before when no trust is given or trust is owner", () => {
@@ -568,9 +561,9 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
   it("defaults to service on a hosted workspace, owner elsewhere, and lets the operator choose", () => {
     const pick = (env: NodeJS.ProcessEnv, flags: { desktopManaged?: boolean; hostedWorkspace?: boolean } = {}) =>
       resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: false, ...flags });
-    expect(pick({})).toEqual({ trust: "owner", reason: "self-hosted default" });
-    expect(pick({}, { hostedWorkspace: true })).toEqual({ trust: "service", reason: "hosted workspace" });
-    expect(pick({ OMB_LOOPBACK_TRUST: "service" })).toEqual({ trust: "service", reason: "OMB_LOOPBACK_TRUST" });
+    expect(pick({})).toEqual({ trust: "owner", reason: "self-hosted default", localBrowsers: false });
+    expect(pick({}, { hostedWorkspace: true })).toEqual({ trust: "service", reason: "hosted workspace", localBrowsers: false });
+    expect(pick({ OMB_LOOPBACK_TRUST: "service" })).toEqual({ trust: "service", reason: "OMB_LOOPBACK_TRUST", localBrowsers: false });
     expect(pick({ OMB_LOOPBACK_TRUST: " Service " }).trust).toBe("service");
     const forced = pick({ OMB_LOOPBACK_TRUST: "owner" }, { hostedWorkspace: true });
     expect(forced.trust).toBe("owner");
@@ -587,8 +580,8 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
 
   it("is always service on an OMB Cloud home, where a local request is only ever a process on the machine", () => {
     const pick = (env: NodeJS.ProcessEnv) => resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: false, cloudHome: true });
-    expect(pick({})).toEqual({ trust: "service", reason: "OMB Cloud home" });
-    expect(pick({ OMB_LOOPBACK_TRUST: "service" })).toEqual({ trust: "service", reason: "OMB Cloud home" });
+    expect(pick({})).toEqual({ trust: "service", reason: "OMB Cloud home", localBrowsers: false });
+    expect(pick({ OMB_LOOPBACK_TRUST: "service" })).toEqual({ trust: "service", reason: "OMB Cloud home", localBrowsers: false });
     const forced = pick({ OMB_LOOPBACK_TRUST: "owner" });
     expect(forced.trust).toBe("service");
     expect(forced.warning).toMatch(/ignored on an OMB Cloud home/);
@@ -602,7 +595,6 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
       });
     expect(as("POST", "/api/auth/pairing", secret).auth).toEqual({ kind: "loopback", scopes: ["admin", "client"] });
     expect(as("GET", "/api/auth/pairing", secret).auth?.kind).toBe("loopback");
-    // nothing else opens with it, and nothing opens without it
     for (const [method, path] of [["PUT", "/api/config"], ["GET", "/api/auth/sessions"], ["DELETE", "/api/auth/pairing"], ["POST", "/api/bots"]] as const) {
       expect(as(method, path, secret).auth, `${method} ${path}`).toBeNull();
     }
@@ -610,5 +602,100 @@ describe("loopback trust: owner on one person's machine, service on a shared wor
     expect(as("POST", "/api/auth/pairing", "d".repeat(43)).auth).toBeNull();
     expect(as("POST", "/api/auth/pairing", "", null).auth).toBeNull();
     expect(as("POST", "/api/auth/pairing", secret, null).auth).toBeNull();
+  });
+});
+
+describe("a browser on this machine is not the owner", () => {
+  let dir: string;
+  let sessions: SessionRegistry;
+  const cookieName = "omb_session_8799_env";
+  // What Chrome sends: Sec-Fetch-* on every request to a loopback address, Origin on every WebSocket handshake.
+  const page = { host: "127.0.0.1:8799", "sec-fetch-site": "cross-site", "sec-fetch-mode": "no-cors", "sec-fetch-dest": "empty" };
+  const navigation = { host: "127.0.0.1:8799", "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", "sec-fetch-user": "?1" };
+  const socket = { host: "127.0.0.1:8799", origin: "http://localhost:3000", upgrade: "websocket", connection: "Upgrade" };
+  const ownUi = { host: "127.0.0.1:8799", origin: "http://127.0.0.1:8799", "sec-fetch-site": "same-origin", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty" };
+  const check = (headers: Record<string, string>, path = "/api/bots", method = "GET", options: { desktopToken?: string; trust?: "owner" | "service"; localBrowsers?: boolean } = {}) =>
+    resolveRequestAuth(request(headers, method), {
+      sessions, cookieName, streamPath: "/api/events", url: new URL(path, "http://x"),
+      ...(options.desktopToken !== undefined ? { loopbackMutationToken: options.desktopToken, companionMutationToken: "relay-secret" } : {}),
+      ...(options.trust ? { loopbackTrust: options.trust } : {}),
+      ...(options.localBrowsers ? { trustLocalBrowser: true } : {}),
+    });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "omb-auth-browser-"));
+    sessions = new SessionRegistry({ file: join(dir, "sessions.json") });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("tells a browser request from a command-line one", () => {
+    for (const headers of [page, navigation, socket, ownUi, { host: "localhost", "sec-fetch-dest": "image" }]) expect(fromBrowser(request(headers)), JSON.stringify(headers)).toBe(true);
+    const programs: Record<string, string>[] = [
+      { host: "127.0.0.1:8799" }, { host: "127.0.0.1:8799", origin: "http://127.0.0.1:8799" }, { host: "127.0.0.1:8799", upgrade: "websocket" },
+      { host: "127.0.0.1:8799", "x-openmausbot-cli": "1" },
+      // Node's fetch.
+      { host: "127.0.0.1:8799", "sec-fetch-mode": "cors", "accept-language": "*", "user-agent": "node" },
+    ];
+    for (const headers of programs) {
+      expect(fromBrowser(request(headers)), JSON.stringify(headers)).toBe(false);
+    }
+  });
+
+  it("refuses a self-hosted server's browser on loopback, reads included, and says how to sign in", () => {
+    for (const headers of [page, navigation, socket, ownUi]) {
+      for (const [method, path] of [["GET", "/api/bots"], ["GET", "/api/config"], ["GET", "/api/auth/session"], ["POST", "/api/auth/pairing"], ["GET", "/api/desktop-viewer/local/shared/websockify"]]) {
+        const refused = check(headers, path, method);
+        expect(refused.auth, `${method} ${path}`).toBeNull();
+        expect(refused.status).toBe(401);
+        expect(refused.error).toBe(BROWSER_SIGN_IN);
+      }
+    }
+    expect(check({ host: "127.0.0.1:8799" }).auth).toEqual({ kind: "loopback", scopes: ["admin", "client"] });
+  });
+
+  it("refuses it under service trust too, where it would otherwise get the service routes", () => {
+    expect(check(page, "/api/health", "GET", { trust: "service" }).auth).toBeNull();
+    expect(check({ host: "127.0.0.1:8799" }, "/api/health", "GET", { trust: "service" }).auth?.kind).toBe("loopback");
+  });
+
+  it("lets the desktop app's own window in with its owner header, on http and WebSocket alike", () => {
+    const desktop = { desktopToken: "owner-token-123" };
+    const owner = { "x-openmausbot-desktop-owner": "owner-token-123" };
+    expect(check({ ...ownUi, ...owner }, "/api/bots", "GET", desktop).auth?.kind).toBe("loopback");
+    expect(check({ ...ownUi, ...owner }, "/api/bots/bot-1", "PATCH", desktop).auth?.kind).toBe("loopback");
+    expect(check({ ...socket, origin: "http://127.0.0.1:8799", ...owner }, "/api/desktop-viewer/local/shared/websockify", "GET", desktop).auth?.kind).toBe("loopback");
+    for (const headers of [ownUi, page, socket, { ...ownUi, "x-openmausbot-desktop-owner": "owner-token-999" }]) {
+      expect(check(headers, "/api/bots", "GET", desktop).status, JSON.stringify(headers)).toBe(401);
+    }
+    // Before the desktop app has sent its capability, nothing a browser sends matches.
+    expect(check({ ...ownUi, "x-openmausbot-desktop-owner": "" }, "/api/bots", "GET", { desktopToken: "" }).auth).toBeNull();
+    // The app's main process and the companion send no Sec-Fetch-*.
+    expect(check({ host: "127.0.0.1:8799" }, "/api/bots", "GET", desktop).auth?.kind).toBe("loopback");
+    const relay = { host: "127.0.0.1:8799", "x-openmausbot-companion": "1", "x-openmausbot-companion-device": "phone-1", "x-openmausbot-companion-auth": "relay-secret" };
+    expect(check(relay, "/api/bots/b/messages", "POST", desktop).auth?.kind).toBe("loopback");
+  });
+
+  it("still admits a browser that signed in", () => {
+    const { code } = sessions.openPairing({ scopes: ["admin", "client"] });
+    const paired = sessions.exchange({ code, label: "This browser", source: "127.0.0.1" });
+    if (!paired.ok) throw new Error(paired.error);
+    const signedIn = check({ ...ownUi, cookie: `${cookieName}=${paired.token}` });
+    expect(signedIn.auth?.kind).toBe("session");
+  });
+
+  it("trusts local browsers only on a development server that asked for it", () => {
+    expect(check(page, "/api/bots", "GET", { localBrowsers: true }).auth).toEqual({ kind: "loopback", scopes: ["admin", "client"] });
+    // The desktop owner header is still required for desktop mutations.
+    expect(check(page, "/api/bots/bot-1", "PATCH", { localBrowsers: true, desktopToken: "owner-token-123" }).status).toBe(403);
+    const pick = (env: NodeJS.ProcessEnv, flags: { fromSource?: boolean; desktopManaged?: boolean; hostedWorkspace?: boolean } = {}) =>
+      resolveLoopbackTrust({ env, desktopManaged: false, hostedWorkspace: false, ...flags });
+    const dev = { OMB_DEV_TRUST_LOCAL_BROWSER: "1" };
+    expect(pick(dev, { fromSource: true })).toMatchObject({ trust: "owner", localBrowsers: true, warning: expect.stringMatching(/development only/) });
+    expect(pick(dev, { fromSource: false })).toMatchObject({ localBrowsers: false, warning: expect.stringMatching(/ignored/) });
+    expect(pick(dev, { fromSource: true, desktopManaged: true })).toMatchObject({ localBrowsers: false, warning: expect.stringMatching(/ignored/) });
+    expect(pick(dev, { fromSource: true, hostedWorkspace: true })).toMatchObject({ trust: "service", localBrowsers: false });
+    expect(pick({ ...dev, OMB_LOOPBACK_TRUST: "service" }, { fromSource: true }).localBrowsers).toBe(false);
+    expect(pick({ OMB_DEV_TRUST_LOCAL_BROWSER: "true" }, { fromSource: true })).toEqual({ trust: "owner", reason: "self-hosted default", localBrowsers: false });
+    expect(resolveLoopbackTrust({ env: dev, desktopManaged: false, hostedWorkspace: false, cloudHome: true, fromSource: true }).localBrowsers).toBe(false);
   });
 });

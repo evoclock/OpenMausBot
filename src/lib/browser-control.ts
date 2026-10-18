@@ -1,102 +1,85 @@
-import type { createBrowserInputQueue } from "./browser-input-queue";
+import type { PreviewStreamClient, PreviewStreamControl, PreviewStreamInput } from "./browser-stream-client";
 
-type Body = Record<string, unknown>;
-/** Page input goes through the input queue; toolbar actions run as commands.
- * Both wait, in order, behind an automatic take. */
-export type BrowserInteraction = { input: Body } | { command: Body };
-/** "pending" once a take is sent, "slow" when it outlasts the notice delay,
- * "stale" when the grant came after the bot's own action and what the person
- * did while waiting was dropped (until their next interaction). */
 export type BrowserTakeStatus = "" | "pending" | "slow" | "stale";
 
-/** Idle time, with nothing held down, before control goes back to the bot. */
+/** How a viewer's input reaches the browser: v2 sends at once, v1 one request at a time. */
+export interface ControlTransport {
+  send(input: PreviewStreamInput): void;
+  /** Drops queued movement and waits for the rest. */
+  drain(): Promise<void>;
+  settle(): Promise<void>;
+  size(): number;
+  /** v1 stops taking input once the browser falls behind it. */
+  stopped(): boolean;
+  /** Resolves once this viewer holds the browser; `waited` when bot work was running then. */
+  take(): Promise<{ waited: boolean } | void>;
+  release(): Promise<void>;
+}
+
 export const BROWSER_HAND_BACK_MS = 8_000;
-/** A take shorter than this shows no waiting status, so a click does not flicker. */
 export const BROWSER_TAKE_NOTICE_MS = 300;
-// The input queue halts beyond 32 unsent inputs, and a slow take can buffer more.
+/** The server drains bot work for up to 15 s before a person's takeover. */
+const TAKE_TIMEOUT_MS = 20_000;
+// The v1 queue halts beyond 32 unsent inputs, and a slow take can buffer more.
 const FLUSH_BATCH = 16;
 const MODIFIER_KEYS = new Set(["Alt", "Control", "Meta", "Shift"]);
-// input() in server/browser-live.ts sends these, like shortcuts, as one whole press.
 const DISCRETE_KEYS = new Set(["Backspace", "Enter", "Tab", "Escape", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
-// Toolbar actions that mean the same whatever the page shows by then.
-const ABSOLUTE_COMMANDS = new Set(["navigate", "tab-new"]);
+const COMMANDS = new Set<PreviewStreamInput["type"]>(["navigate", "history", "reload", "tabSelect", "tabNew", "tabClose"]);
+const ABSOLUTE_COMMANDS = new Set<PreviewStreamInput["type"]>(["navigate", "tabNew"]);
 
-/** Hover, a lone modifier, or the release of a press the page never received
- * is not an interaction with the page, so it never takes control. */
-function startsInteraction(item: BrowserInteraction): boolean {
-  if ("command" in item) return true;
-  const { eventType, key } = item.input;
-  return eventType === "mousePressed" || eventType === "mouseWheel" || eventType === "char"
-    || (eventType === "keyDown" && !MODIFIER_KEYS.has(String(key)));
+function startsInteraction(input: PreviewStreamInput): boolean {
+  if (COMMANDS.has(input.type)) return true;
+  if (input.type === "mouse") return input.action === "down";
+  if (input.type === "key") return input.action === "down" && !MODIFIER_KEYS.has(input.key);
+  return input.type === "wheel" || input.type === "text";
 }
 
-const inputId = ({ type, code, key, button }: Body) => type === "input_keyboard" ? `key:${code || key}` : `mouse:${button}`;
-const isPress = ({ eventType }: Body) => eventType === "keyDown" || eventType === "mousePressed";
-const isRelease = ({ eventType }: Body) => eventType === "keyUp" || eventType === "mouseReleased";
+const inputId = (input: PreviewStreamInput) => input.type === "key" ? `key:${input.code || input.key}` : input.type === "mouse" ? `mouse:${input.button}` : input.type;
+const isPress = (input: PreviewStreamInput) => (input.type === "key" || input.type === "mouse") && input.action === "down";
+const isRelease = (input: PreviewStreamInput) => (input.type === "key" || input.type === "mouse") && input.action === "up";
 
-/** Whether the page holds this press down until its release. The server sends
- * shortcuts and discrete keys as one whole press instead, and macOS sends no
- * key-up for a key let go while Cmd is down: counting those as held would
- * block the hand-back until the window loses focus. */
-function heldUntilReleased(input: Body): boolean {
-  if (input.type !== "input_keyboard") return true;
-  const key = String(input.key);
-  if (MODIFIER_KEYS.has(key)) return true;
-  if (DISCRETE_KEYS.has(key)) return false;
-  return !input.modifiers || (input.modifiers === 8 && [...key].length === 1);
+/** macOS sends no key-up for a key let go while Cmd is down, so those never count as held. */
+function heldUntilReleased(input: PreviewStreamInput): boolean {
+  if (input.type !== "key") return true;
+  if (MODIFIER_KEYS.has(input.key)) return true;
+  if (DISCRETE_KEYS.has(input.key)) return false;
+  return !input.modifiers || (input.modifiers === 8 && [...input.key].length === 1);
 }
 
-/** The server's take reply says whether the grant waited for the bot's action. */
-const waitedForBot = (reply: unknown) => (reply as { waited?: unknown } | null | undefined)?.waited === true;
-
-/** Control without a button, for one live-view connection. The first real
- * interaction takes the browser from the bot and waits, with everything after
- * it, until the server grants the lease; then it all goes through in order,
- * unless the bot's own action finished first: the page may have moved, so
- * clicks and keys aimed at it are dropped instead. Idle hands it back. The
- * server lease still never lets person and bot input interleave, and nothing
- * is handed back while a key or button is held down: the server would then
- * require a browser restart. */
+/**
+ * A person's input takes the browser on its first press and hands it back after a few idle seconds, unless they keep
+ * it. Never hands back while a key or button is held down: the server would then need a browser restart.
+ */
 export function createBrowserControl(options: {
-  queue: Pick<ReturnType<typeof createBrowserInputQueue>, "enqueue" | "drain" | "settle" | "size" | "stopped">;
-  /** Resolves with the server's reply; `waited: true` means the bot's own
-   * browser action finished before the grant. */
-  take: () => Promise<unknown>;
-  release: () => Promise<unknown>;
-  /** Runs a toolbar action and reports its own errors; never rejects. */
-  command: (body: Body) => Promise<unknown>;
-  /** A toolbar action or restart is running. */
-  busy: () => boolean;
-  /** The server lists this viewer as the holder; a refused take can leave it so. */
+  transport: ControlTransport;
   owned: () => boolean;
   onTakeStatus: (status: BrowserTakeStatus) => void;
   onError: (message: string) => void;
-  /** Page input arrived after the input queue halted; show why it is ignored. */
   onHalted: () => void;
 }) {
+  const transport = options.transport;
   let state: "bot" | "taking" | "held" | "releasing" = "bot";
   let status: BrowserTakeStatus = "";
-  let buffer: BrowserInteraction[] = [];
+  let buffer: PreviewStreamInput[] = [];
   let flushing = false;
   let closed = false;
-  // The typing dialog is open: its text is for the field the person picked.
   let pinned = false;
-  // Hand back as soon as nothing blocks it, not after the idle wait.
+  let kept = false;
   let soon = false;
+  let ownedBefore = false;
   let activity = 0;
   let chain: Promise<unknown> = Promise.resolve();
   let idle: ReturnType<typeof setTimeout> | undefined;
   let notice: ReturnType<typeof setTimeout> | undefined;
   const held = new Set<string>();
-  // Presses dropped as stale: the page never got them, so it gets no release.
   const dropped = new Set<string>();
 
   const report = (next: BrowserTakeStatus) => { status = next; options.onTakeStatus(next); };
-  const track = (input: Body) => {
+  const track = (input: PreviewStreamInput) => {
     if (isPress(input) && heldUntilReleased(input)) held.add(inputId(input));
     else if (isRelease(input)) held.delete(inputId(input));
   };
-  const quiet = () => !closed && !pinned && !flushing && !held.size && !options.busy()
+  const quiet = () => !closed && !pinned && (soon || !kept) && !flushing && !held.size
     && (state === "held" || (state === "bot" && options.owned()));
   const arm = () => {
     clearTimeout(idle);
@@ -105,23 +88,20 @@ export function createBrowserControl(options: {
   const release = () => {
     state = "releasing";
     if (status === "stale") report("");
-    chain = chain.then(() => closed ? undefined : options.release()).catch(() => {})
+    chain = chain.then(() => closed ? undefined : transport.release()).catch(() => {})
       .then(() => { if (state === "releasing") state = "bot"; });
   };
   const idleHandBack = async () => {
-    if (!quiet()) return; // whatever blocks it re-arms the timer when it ends
+    if (!quiet()) return;
     const seen = activity;
-    await options.queue.drain(); // every key-up and button-up lands first
+    await transport.drain();
     if (seen === activity && quiet()) release();
   };
-  /** The grant waited for the bot's own action, so the page may have changed
-   * since the person aimed: drop their page input and the toolbar actions that
-   * depend on the page, rather than land them somewhere else. Returns whether
-   * anything the person meant was lost. */
+  /** The bot was busy when the person asked: what they did meanwhile aimed at a page that may have changed. */
   const dropStale = () => {
-    const kept = buffer.filter((item) => "command" in item && ABSOLUTE_COMMANDS.has(String(item.command.type)));
-    const lost = buffer.some((item) => !kept.includes(item) && startsInteraction(item));
-    buffer = kept;
+    const keep = buffer.filter((input) => ABSOLUTE_COMMANDS.has(input.type));
+    const lost = buffer.some((input) => !keep.includes(input) && startsInteraction(input));
+    buffer = keep;
     for (const id of held) dropped.add(id);
     held.clear();
     return lost;
@@ -129,12 +109,9 @@ export function createBrowserControl(options: {
   const flush = async () => {
     flushing = true;
     try {
-      for (let item = buffer.shift(); item && !closed; item = buffer.shift()) {
-        if ("command" in item) await options.command(item.command);
-        else {
-          options.queue.enqueue(item.input);
-          if (options.queue.size() >= FLUSH_BATCH) await options.queue.settle();
-        }
+      for (let input = buffer.shift(); input && !closed; input = buffer.shift()) {
+        transport.send(input);
+        if (transport.size() >= FLUSH_BATCH) await transport.settle();
       }
     } finally { flushing = false; buffer = []; }
   };
@@ -146,7 +123,7 @@ export function createBrowserControl(options: {
     notice = setTimeout(() => { if (!closed && state === "taking") report("slow"); }, BROWSER_TAKE_NOTICE_MS);
     chain = chain.then(async () => {
       if (closed) return;
-      const grant = await options.take().then((reply) => ({ reply }), (cause: unknown) => {
+      const grant = await transport.take().then((reply) => ({ reply }), (cause: unknown) => {
         if (!closed) options.onError(cause instanceof Error ? cause.message : String(cause));
         return null;
       });
@@ -154,64 +131,103 @@ export function createBrowserControl(options: {
       if (closed) return;
       if (grant) {
         state = "held";
-        report(waitedForBot(grant.reply) && dropStale() ? "stale" : "");
+        report(grant.reply?.waited === true && dropStale() ? "stale" : "");
         await flush();
       } else { report(""); state = "bot"; buffer = []; held.clear(); }
-      arm(); // a refused take can still leave this viewer holding the browser
+      arm();
     }).catch(() => {});
   };
 
   return {
-    interact(item: BrowserInteraction) {
+    interact(input: PreviewStreamInput) {
       if (closed) return;
-      if ("input" in item) {
-        const id = inputId(item.input);
-        if (isRelease(item.input) && dropped.delete(id)) return;
-        if (isPress(item.input)) dropped.delete(id); // a new press is the page's again
-      }
+      const id = inputId(input);
+      if (isRelease(input) && dropped.delete(id)) return;
+      if (isPress(input)) dropped.delete(id);
       const waiting = state === "taking" || flushing;
       if (state !== "held" && !waiting) {
-        if (!startsInteraction(item)) return;
-        // Halted input is dropped; taking control for it would only pause the bot.
-        if ("input" in item && options.queue.stopped()) { options.onHalted(); return; }
+        if (!startsInteraction(input)) return;
+        if (transport.stopped() && !COMMANDS.has(input.type)) { options.onHalted(); return; }
       }
-      // One toolbar action at a time, as while an action runs: clicking Back
-      // again during a slow take must not go back two pages.
-      if ("command" in item && waiting && buffer.some((queued) => "command" in queued)) return;
-      if (startsInteraction(item)) {
+      if (COMMANDS.has(input.type) && waiting && buffer.some((queued) => COMMANDS.has(queued.type))) return;
+      if (startsInteraction(input)) {
         soon = false;
         if (status === "stale") report("");
       }
-      if ("input" in item) track(item.input);
+      track(input);
       activity++;
       arm();
       if (state === "held" && !waiting) {
-        if ("input" in item) options.queue.enqueue(item.input);
-        else void options.command(item.command).then(arm);
+        transport.send(input);
         return;
       }
-      buffer.push(item);
+      buffer.push(input);
       if (!waiting) take();
     },
-    /** The server's control state changed: a hold nobody uses still goes back. */
-    observe() { if (!closed && idle === undefined && options.owned()) arm(); },
-    /** Hand back without the idle wait (the person is switching profiles), as
-     * soon as nothing is held down, unsent or running. */
+    observe() {
+      if (closed) return;
+      const owned = options.owned();
+      if (ownedBefore && !owned && state === "held" && !flushing) {
+        state = "bot"; held.clear(); dropped.clear(); clearTimeout(idle); idle = undefined;
+      }
+      ownedBefore = owned;
+      if (idle === undefined && owned) arm();
+    },
+    takeControl() {
+      if (closed || state === "held" || state === "taking" || flushing) return;
+      soon = false;
+      take();
+    },
+    keep(on: boolean) {
+      if (closed || kept === on) return;
+      kept = on;
+      if (!on) arm();
+    },
     handBack() { if (!closed) { soon = true; arm(); } },
-    /** While the typing dialog is open, keep control: its text is meant for
-     * the field the person picked. Closing it starts the idle wait again. */
     hold(on: boolean) {
       if (closed || pinned === on) return;
       pinned = on;
       if (!on) arm();
     },
-    /** The panel is closing: hand back now, unless input is held or unsent.
-     * The server's own disconnect cleanup handles those. */
     leave() {
-      if (!quiet() || options.queue.size()) return;
+      if (!quiet() || transport.size()) return;
       state = "releasing";
-      void options.release().catch(() => {});
+      void transport.release().catch(() => {});
     },
     close() { closed = true; clearTimeout(idle); clearTimeout(notice); buffer = []; held.clear(); dropped.clear(); },
+  };
+}
+
+export type BrowserControl = ReturnType<typeof createBrowserControl>;
+
+/**
+ * The v2 stream as a control transport: input goes out at once, and a take resolves when the server says this viewer
+ * controls the browser, which happens only once any running bot work has drained.
+ */
+export function streamTransport(client: PreviewStreamClient, control: {
+  current(): PreviewStreamControl | null;
+  /** Calls `listener` with every control message until the returned function is called. */
+  watch(listener: (control: PreviewStreamControl | null) => void): () => void;
+}, heldElsewhere: string): ControlTransport {
+  return {
+    send: (input) => { client.send(input); },
+    drain: async () => {},
+    settle: async () => {},
+    size: () => 0,
+    stopped: () => false,
+    take: () => new Promise((resolve, reject) => {
+      const before = control.current();
+      if (before?.controller === "you") { resolve({ waited: false }); return; }
+      if (!client.send({ type: "takeControl" })) { reject(new Error("The browser view is not connected. Reconnect it, then try again.")); return; }
+      const waited = before?.controller === "agent";
+      const done = (outcome: () => void) => { clearTimeout(timer); unwatch(); outcome(); };
+      const timer = setTimeout(() => done(() => reject(new Error("Could not take control of the browser. Try again shortly."))), TAKE_TIMEOUT_MS);
+      const unwatch = control.watch((next) => {
+        if (next?.controller === "you") done(() => resolve({ waited }));
+        else if (next?.controller === "another-viewer") done(() => reject(new Error(heldElsewhere)));
+        else if (next === null) done(() => reject(new Error("The browser view disconnected.")));
+      });
+    }),
+    release: async () => { client.send({ type: "releaseControl" }); },
   };
 }

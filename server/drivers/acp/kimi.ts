@@ -1,11 +1,5 @@
-// Kimi Code harness support — Moonshot's `kimi` CLI over ACP stdio
-// (`kimi acp`), on the Kimi Code subscription login
-// (~/.kimi-code/credentials/kimi-code.json), not a Moonshot API key.
-// The generic protocol runtime lives in acp/core.ts; this file is only the
-// per-harness quirks. Verified against kimi-code 0.29.1: initialize reports
-// loadSession:true (session/load resume works), mcpCapabilities http+sse,
-// and a full session/new → session/prompt roundtrip streams
-// agent_thought_chunk + agent_message_chunk and settles with end_turn.
+// Kimi Code: Moonshot's `kimi acp` on the Kimi Code subscription login
+// (~/.kimi-code/credentials/kimi-code.json), not a Moonshot API key. Verified on kimi-code 0.29.1.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -39,18 +33,15 @@ function credentialsPath(env: Record<string, string | undefined>) {
   return join(kimiDataRoot(env), "credentials", "kimi-code.json");
 }
 
-/** Quote a TOML string value. */
 function quoteToml(value: string): string {
   return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
-/** Quote a TOML key when it is not a bare identifier. */
 function quoteTomlKey(key: string): string {
   if (/^[A-Za-z0-9_-]+$/.test(key)) return key;
   return quoteToml(key);
 }
 
-/** Strip a `#` comment that is not inside a quoted string. */
 function stripTomlLineComment(line: string): string {
   let quote: '"' | "'" | null = null;
   for (let i = 0; i < line.length; i++) {
@@ -69,9 +60,8 @@ function stripTomlLineComment(line: string): string {
   return line;
 }
 
-/** Decode a TOML basic-string escape at `text[i]` (`i` points at the `\\`).
- *  Invalid / unknown / surrogate / out-of-range sequences return ok:false so
- *  the heading is not canonicalized to a colliding alias. */
+/** Invalid, unknown, surrogate or out-of-range escapes return ok:false, so a heading is never
+ *  canonicalized to a colliding alias. */
 function takeTomlBasicEscape(
   text: string,
   i: number,
@@ -105,7 +95,6 @@ function takeTomlBasicEscape(
   return { ok: true, value: named[code]!, next: i + 2 };
 }
 
-/** Canonical `a.b.c` form of a `[table]` heading, quotes and comments removed. */
 function canonicalizeTomlHeading(heading: string): string | null {
   const trimmed = stripTomlLineComment(heading).trim();
   const match = trimmed.match(/^\[([^[\]]+)\]$/);
@@ -150,7 +139,6 @@ function canonicalizeTomlHeading(heading: string): string | null {
   return parts.length ? parts.join(".") : null;
 }
 
-/** Unwrap `"key"` / `'key'` so a quoted assignment matches the bare name. */
 function unquoteTomlKey(raw: string): string {
   const key = raw.trim();
   if (key.length >= 2 && ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'")))) {
@@ -159,15 +147,13 @@ function unquoteTomlKey(raw: string): string {
   return key;
 }
 
-/** Bare key on the left of `key = value`. */
 function tomlRowKey(row: string): string {
   const eq = row.indexOf("=");
   return unquoteTomlKey(eq < 0 ? row : row.slice(0, eq));
 }
 
-/** Walk `text` and yield `[table]` spans. `[[array]]` headings bound a table
- *  but are not themselves patchable. `#` comments in `out` mode are skipped
- *  so an apostrophe in a comment cannot open a phantom string. */
+/** `[[array]]` headings bound a table but are not patchable; skipping `#` comments keeps an
+ *  apostrophe from opening a phantom string. */
 function tomlTables(text: string): Array<{ name: string; headingStart: number; bodyStart: number; end: number }> {
   type Mode = "out" | "basic" | "literal" | "mlbasic" | "mllit";
   const headings: Array<{ name: string | null; patchable: boolean; lineStart: number; lineEnd: number }> = [];
@@ -275,7 +261,6 @@ function tomlTables(text: string): Array<{ name: string; headingStart: number; b
     }));
 }
 
-/** Keys assigned at line start in a table body, including `"quoted"` keys. */
 function tomlKeys(block: string): Set<string> {
   const keys = new Set<string>();
   type Mode = "out" | "basic" | "literal" | "mlbasic" | "mllit";
@@ -330,13 +315,12 @@ function tomlKeys(block: string): Set<string> {
   return keys;
 }
 
-/** Whether `text` already has this table, ignoring quotes and trailing comments. */
 function hasTomlTable(text: string, heading: string): boolean {
   const name = canonicalizeTomlHeading(heading);
   return name !== null && tomlTables(text).some((table) => table.name === name);
 }
 
-/** Insert missing keys into an existing table. Does not overwrite set values. */
+/** Insert missing keys into an existing table, never overwriting set values. */
 function patchTomlTable(text: string, heading: string, rows: string[]): string {
   const name = canonicalizeTomlHeading(heading);
   if (!name) return text;
@@ -389,10 +373,7 @@ export function ensureKimiInjectAlias(
       ].join("\n"),
     );
   }
-  // Kimi 0.36+ refuses openai_legacy as a wire protocol; ACP then
-  // skips default-model binding and falls through to OAuth. Patch
-  // aliases written before those keys existed; do not overwrite a
-  // user's protocol or context size.
+  // Kimi 0.36+ refuses openai_legacy as a wire protocol (ACP then falls through to OAuth).
   if (hasTomlTable(text, modelHeading)) {
     text = patchTomlTable(text, modelHeading, [`protocol = "openai"`, `max_context_size = 262144`]);
   } else {
@@ -416,10 +397,8 @@ export function ensureKimiInjectAlias(
   return alias;
 }
 
-/** Env keys Kimi 0.36+ reads to synthesize an in-memory default model.
- *  ACP `session/new` runs auth readiness against `default_model`, not `-m`.
- *  Without a default, a missing/expired `kimi login` becomes
- *  "Authentication required" even when the picker is a local host. */
+/** Env keys Kimi 0.36+ reads to synthesize an in-memory default model. ACP `session/new` checks auth
+ *  against `default_model`, not `-m`, so without one an expired login fails even a local host. */
 const KIMI_MODEL_ENV = [
   "KIMI_MODEL_NAME",
   "KIMI_MODEL_API_KEY",
@@ -428,8 +407,7 @@ const KIMI_MODEL_ENV = [
   "KIMI_MODEL_DISPLAY_NAME",
 ] as const;
 
-/** Overlay a local inject as Kimi's in-memory default. Does not write
- *  config.toml — Kimi strips these reserved entries on persist. */
+/** Kimi strips these reserved entries when it persists config.toml, so they ride the env only. */
 export function applyKimiLocalModelEnv(
   env: Record<string, string | undefined>,
   modelId: string | undefined,
@@ -441,8 +419,7 @@ export function applyKimiLocalModelEnv(
   env.KIMI_MODEL_NAME = inject.model;
   env.KIMI_MODEL_API_KEY = hostApiKey(host, env);
   env.KIMI_MODEL_BASE_URL = host.baseUrl;
-  // Env overlay accepts openai | anthropic | kimi — not the toml
-  // openai_legacy type we write for the on-disk provider row.
+  // The env overlay accepts openai | anthropic | kimi, not the toml openai_legacy type.
   env.KIMI_MODEL_PROVIDER_TYPE = "openai";
   env.KIMI_MODEL_DISPLAY_NAME = `${inject.model} (${host.label})`;
 }
@@ -499,17 +476,13 @@ function readKimiModelCatalog(env: Record<string, string | undefined>): ModelCat
 const support: AcpSupport = {
   driverKind: "kimiAgent",
   displayName: "Kimi",
-  // Aliases from the CLI's own catalog (~/.kimi-code/config.toml
-  // [models."kimi-code/…"] — `kimi provider list` reports the same four).
+  // The CLI's own catalog aliases (~/.kimi-code/config.toml; `kimi provider list` reports the same four).
   models: STATIC_KIMI_MODELS,
   resolveModels: (env) => mergeLocalInject(readKimiModelCatalog(env), env),
   defaultCli: "kimi",
   nativeSource: "kimi.acp",
   loginNote: "Kimi Code CLI is not signed in — run `kimi login` in a terminal",
 
-  // Official installers put the binary on PATH without requiring an existing
-  // Node install. Keep the commands platform-specific so Windows never gets a
-  // POSIX-only curl|bash instruction.
   install: {
     command: {
       darwin: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
@@ -520,34 +493,27 @@ const support: AcpSupport = {
     signInCommand: "kimi login",
   },
 
-  // -m is a global commander option and must precede the `acp` subcommand
-  // (verified against 0.29.1).
+  // -m is a global commander option and must precede `acp` (0.29.1).
   resolveTurnModel: (model, env) => (model ? ensureKimiInjectAlias(model, env) : model),
   spawnArgs: (_config, turn) => {
     const model = turn.model;
     return [...(model ? ["-m", model] : []), "acp"];
   },
 
-  // Subscription CLI: a leaked Moonshot/Kimi API key must not flip billing
-  // to pay-as-you-go inside the spawned agent (mirrors claude/grok).
+  // A leaked Moonshot/Kimi API key must not flip billing to pay-as-you-go.
   transformEnv: (env) => {
     delete env.MOONSHOT_API_KEY;
     delete env.KIMI_API_KEY;
-    // A leftover shell overlay would steal every Kimi turn, including
-    // subscription models. applyTurnEnv puts the inject back per turn.
     stripKimiModelEnv(env);
   },
   applyTurnEnv: (env, { requestedModel }) => {
     applyKimiLocalModelEnv(env, requestedModel);
   },
 
-  // The only advertised authMethod is {id:"login", type:"terminal"} — a
-  // device-code flow that cannot be driven over ACP. Never pick it; ride
-  // the ambient login from a prior `kimi login` instead.
+  // The only authMethod is {id:"login", type:"terminal"}, a device-code flow ACP cannot drive.
   pickAuthMethod: () => null,
   authFailure: "continue",
-  // Match the child CLI's own data-root precedence. A custom instance HOME or
-  // KIMI_CODE_HOME must not be checked against the server user's home instead.
+  // The child's own data root: a custom HOME or KIMI_CODE_HOME, never the server user's.
   isAuthenticated: (env) => existsSync(credentialsPath(env)),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),

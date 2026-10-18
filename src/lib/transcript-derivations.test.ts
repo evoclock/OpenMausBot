@@ -1,6 +1,3 @@
-// What every transcript row needs from the rest of the thread is worked out
-// once per message list, and the time and date labels come from cached
-// formatters. Each must say exactly what the per-row code it replaced said.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Message } from "@/state/store";
 import { formatTime } from "@/state/store";
@@ -30,8 +27,7 @@ function dayLabelBefore(at: number, locale: string): string {
 
 const msg = (id: string, fields: Partial<Message>): Message => ({ id, role: "bot", kind: "text", at: 0, ...fields });
 
-// A thread whose first question was edited twice (three forks of it, out of
-// time order in the list), with replies quoting messages on other branches.
+// The first question edited twice (three forks, out of time order), with replies quoting other branches.
 const root = msg("root", { text: "Ready", at: 1 });
 const q1 = msg("q1", { role: "user", text: "first", at: 10, parentId: "root" });
 const a1 = msg("a1", { text: "old answer", at: 11, parentId: "q1" });
@@ -72,6 +68,20 @@ describe("transcriptLookups", () => {
     expect(transcriptLookups([], []).retryableId).toBeUndefined();
     expect(transcriptLookups([digest], [digest]).retryableId).toBeUndefined();
   });
+
+  it("keeps Retry on the last conversational row when a live call's record follows it", () => {
+    const record = msg("call", {
+      kind: "call",
+      text: "Call with Ada · 1:42",
+      at: 37,
+      parentId: "k",
+      call: { callId: "c1", botId: "ada", client: "ios", startedAt: 0, endedAt: 37, seconds: 102, endReason: "hung-up" },
+    });
+    expect(transcriptLookups([...all, record], [...branch, record]).retryableId).toBe("o");
+    expect(transcriptLookups([root, record, digest], [root, record, digest]).retryableId).toBe("root");
+    expect(transcriptLookups([root, digest, record], [root, digest, record]).retryableId).toBe("root");
+    expect(transcriptLookups([record], [record]).retryableId).toBeUndefined();
+  });
 });
 
 describe("formatTime", () => {
@@ -105,11 +115,8 @@ describe("dayLabel", () => {
   });
 });
 
-// Day numbers have to agree with toDateString across midnight and across
-// the clock changes, where a day is 23 or 25 hours long — in a zone a few
-// hours from UTC and in one half a day away, where rounding goes wrong.
+// Zones a few hours and half a day from UTC, across 23- and 25-hour days, where rounding goes wrong.
 describe.each([
-  // spring forward, fall back
   { zone: "America/New_York", changes: [[2026, 2, 8], [2026, 10, 1]] },
   { zone: "Pacific/Auckland", changes: [[2026, 3, 5], [2026, 8, 27]] },
 ])("localDay in $zone", ({ zone, changes }) => {
@@ -135,7 +142,6 @@ describe.each([
     for (const [year, month, day] of changes) {
       const before = new Date(year!, month!, day! - 1, 12);
       const after = new Date(year!, month!, day! + 1, 12);
-      // the zone took effect: the clock changed between these two
       expect(before.getTimezoneOffset()).not.toBe(after.getTimezoneOffset());
       expect(localDay(after.getTime()) - localDay(before.getTime())).toBe(2);
       expect(localDay(new Date(year!, month!, day!, 0, 30).getTime()) - localDay(new Date(year!, month!, day! - 1, 23, 30).getTime())).toBe(1);

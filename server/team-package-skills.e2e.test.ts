@@ -34,8 +34,7 @@ it("transfers only selected skills disabled, preserves originals, and rolls back
     const before = await request("/api/bots", {}, url);
     const workspaces = join(fixture.info.dataDir, "workspaces");
     const beforeWorkspaces = existsSync(workspaces) ? readdirSync(workspaces).sort() : [];
-    // Fail the protected skill write after bot creation, using only this
-    // fixture's disposable filesystem. The import must remove its new bot.
+    // Fail the protected skill write after bot creation, using only this fixture's disposable filesystem.
     const obstacle = join(fixture.info.dataDir, "skill-state");
     expect(existsSync(obstacle)).toBe(false);
     writeFileSync(obstacle, "fixture-only write failure", { mode: 0o600 });

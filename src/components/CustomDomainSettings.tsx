@@ -14,8 +14,7 @@ export interface CustomDomainStatus {
   serverIpv4?: string | null;
 }
 
-/** Preview only; the server remains authoritative for domain validation.
- * Keep the full DNS name instead of guessing a provider's zone (e.g. co.uk). */
+/** Preview only; the server validates. Keep the full DNS name rather than guessing a provider's zone (co.uk). */
 export function customDomainDnsName(raw: string): string | null {
   const value = raw.trim();
   if (!value || /[\s\\?#@%]/.test(value)) return null;
@@ -57,8 +56,7 @@ export function CustomDomainDnsRecord({ domain, serverIpv4 }: { domain: string; 
   );
 }
 
-/** Fixed placeholder avoids turning a partially typed domain into shell or
- * Caddy configuration. Ports come from the running server, not the browser. */
+/** Security: a fixed placeholder, so a partially typed domain never becomes shell or Caddy configuration. */
 export function customDomainProxyExample(status: Pick<CustomDomainStatus, "appPort" | "webhookPort">): string {
   return `bots.example.com {
     handle /hooks/* {
@@ -147,7 +145,7 @@ export function CustomDomainSettings() {
               <CustomDomainDnsRecord domain={domain} serverIpv4={status.serverIpv4} />
               <p className="text-[11.5px] leading-relaxed text-ink-secondary">{t("settings.domain.httpsNeeded")}</p>
               <div className="flex flex-wrap gap-2 pt-1">
-                <button type="submit" disabled={!domain.trim() || busy !== null} className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white hover:brightness-110 disabled:opacity-50">
+                <button type="submit" disabled={!domain.trim() || busy !== null} className="ui-button ui-button-primary">
                   {busy === "saving" ? <Loader2 size={14} className="animate-spin" /> : <Globe size={14} />}
                   {busy === "saving" ? t("settings.domain.verifying") : t("settings.domain.verify")}
                 </button>

@@ -35,15 +35,13 @@ vi.mock("./VerifyCard", async (importOriginal) => {
     return createElement(original.VerifyCard, props);
   } };
 });
-// The real useCaptionChrome rides along: it only asks this module for the
-// window chrome, and these tests render the desktop-neutral layout.
+// The real useCaptionChrome rides along: it only asks this module for the window chrome.
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false } }, ready: true }),
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
-// The run card's visibility switch is a renderer preference, not what these
-// tests are about; the fixture stands in for the stored value.
+// A renderer preference, not what these tests are about; the fixture stands in for the stored value.
 vi.mock("@/lib/run-card-preferences", () => ({ useShowRunCard: () => fixture.showRunCard }));
 // The thread controls read live model lists; they are not what this file tests.
 vi.mock("./ModelPicker", () => ({ ModelPicker: () => createElement("span", { "data-test-model-control": true }) }));
@@ -73,14 +71,12 @@ const run: Message[] = [
   chip("c3", "git status", true),
   chip("c4", "cat scripts/control-omb.ts", true),
 ];
-// A run with no control CLI in it: plain commands, one of them a read.
 const release: Message[] = [
   asked("u1", "publish the release"),
   chip("c1", "git push origin main", true),
   chip("c2", "cat CHANGELOG.md", true),
   chip("c3", "npm publish", false),
 ];
-// An engine with the agents tools, which Save needs alongside the flag.
 const agentsEngine = { instanceId: "test", driverKind: "claude", displayName: "Test", capabilities: { agentsMcp: true } } as unknown as InstanceInfo;
 const saveable = (): void => {
   fixture.state = { instances: [agentsEngine], config: { features: { skillAuthoring: true } } as AppState["config"] };
@@ -106,17 +102,15 @@ describe("The run card in the chat pane", () => {
   it("appears once the bot runs a control CLI, with the run as a checklist and its verified steps tagged", () => {
     const markup = render(run);
     expect(markup).toContain(CARD);
-    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2]"');
+    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2] chat-column-dock"');
     expect(markup).toContain(`>${t("chat.verify.title")}<`);
     expect(markup).toContain("2 steps · 2 verified · 1 failed");
     expect(markup).not.toContain("Execution timeline");
     expect(markup).toContain(">doctor<");
     expect(markup).toContain(">send<");
     expect(markup.match(new RegExp(TAG, "g"))).toHaveLength(2);
-    // reads are not steps
     expect(markup).not.toContain(">git status<");
     expect(markup).not.toContain(">cat<");
-    // no engine in the fixture has the agents tools: no Save, no footer
     expect(markup).not.toContain(t("chat.verify.save"));
   });
 
@@ -166,7 +160,6 @@ describe("The run card in the chat pane", () => {
 
   it("records only the current ask: the person's next message starts a fresh run", () => {
     const markup = render([...run, asked("u2", "now push"), chip("c5", "git push origin main", true)]);
-    // the verified steps belong to the previous ask; what is left is one unverified command
     expect(markup).not.toContain(CARD);
     expect(render([...run, asked("u2", "now publish"), chip("c5", "git push origin main", true), chip("c6", "npm publish", true)]))
       .toContain("2 steps<");
@@ -176,8 +169,7 @@ describe("The run card in the chat pane", () => {
     fixture.showRunCard = false;
     const markup = render(run);
     expect(markup).not.toContain(CARD);
-    // the dock itself survives: the composer still renders
-    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2]"');
+    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2] chat-column-dock"');
   });
 
   it("shows the card by default", () => {

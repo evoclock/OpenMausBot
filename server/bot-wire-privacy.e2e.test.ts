@@ -1,10 +1,5 @@
-// The bot wire projection is the security boundary between server-private
-// BotRecord fields and every client payload. BotWirePrivateKeys enforces the
-// boundary at compile time, but a `...rest` spread does not fail typecheck
-// when it carries a private key out — assignedSkills reached /api/bots
-// exactly that way. This suite pins the projection at runtime, against the
-// real server, with the private field live on the stored record both while
-// the skills library flag is off and after it is switched on.
+// BotWirePrivateKeys enforces the projection at compile time, but a `...rest` spread carrying a private key out does not
+// fail typecheck, so this pins it at runtime against the real server with the private field live on the stored record.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,9 +117,7 @@ describe("bot wire privacy against the real server", () => {
   });
 
   it("serves an assigned library-only skill on the single-skill GET route only while the library is on", async () => {
-    // Install into the spawned server's library root from this process:
-    // the store is plain files under DATA_DIR/skills-library, so the
-    // server sees the entry on its next boot.
+    // The library store is plain files under DATA_DIR/skills-library, so the spawned server sees the entry on its next boot.
     const instructions = "---\nname: route-library-skill\ndescription: Serves through the assigned-skill route.\n---\n\n# route-library-skill\n\nReads through the library.\n";
     const installed = installLibrarySkill({
       name: "route-library-skill",
@@ -144,14 +137,10 @@ describe("bot wire privacy against the real server", () => {
     bots.find((bot) => bot.id === botId)!.assignedSkills = ["route-library-skill"];
     writeFileSync(join(data, "bots.json"), JSON.stringify(bots, null, 2));
 
-    // Flag off: the route keeps the per-bot behavior — a library-only
-    // skill has no bot-local copy, so the read stays a 404.
     await start(false);
     expect(await api("GET", `/api/bots/${botId}/skills/route-library-skill`)).toMatchObject({ status: 404 });
     await stop();
 
-    // Flag on: the assignment the listing already resolves now reads
-    // through the library instead of 404-ing for want of a local copy.
     await start(true);
     expect(await api("GET", `/api/bots/${botId}/skills/route-library-skill`))
       .toMatchObject({ status: 200, body: { text: instructions } });

@@ -1,6 +1,3 @@
-// The rule this module exists to enforce: "I could not read the store" and
-// "the store is empty" are DIFFERENT ANSWERS. Collapsing them is what made a
-// keychain hiccup look like the user had never connected anything.
 import { describe, expect, it, vi } from "vitest";
 
 import { readSecureCredentials } from "./secure-credentials.mjs";
@@ -8,7 +5,6 @@ import { readSecureCredentials } from "./secure-credentials.mjs";
 const transient = () =>
   new Error("safeStorage.decryptStringAsync is temporarily unavailable. Please try again.");
 
-/** deps with sane defaults; each test overrides the one thing it is about */
 const deps = (over = {}) => ({
   exists: () => true,
   isAvailable: async () => true,
@@ -64,8 +60,6 @@ describe("readSecureCredentials", () => {
   });
 
   it("says UNAVAILABLE for a file it cannot parse, rather than pretending it is empty", async () => {
-    // retrying cannot fix corruption, but calling it "empty" would invite the
-    // caller to register a fresh identity over the top of it
     const decrypt = vi.fn().mockResolvedValue("not json");
     const result = await readSecureCredentials(deps({ decrypt }));
     expect(result.status).toBe("unavailable");

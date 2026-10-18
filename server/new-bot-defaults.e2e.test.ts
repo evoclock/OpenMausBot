@@ -68,12 +68,12 @@ it("applies independent creation templates through the real isolated HTTP routes
     await api("PATCH", "/api/config", { browserProfiles: [] });
     expect((await api("GET", "/api/bot-defaults")).defaults.profile.browserProfile).toBeUndefined();
     expect((await api("POST", "/api/bots", { name: "After profile removal" }, 201)).bot.browserProfile).toBeUndefined();
-    for (const mode of ["full", "custom"]) {
-      await api("PATCH", "/api/config", { newBotDefaults: { profile: { approvalMode: mode } } });
-      const count = (await api("GET", "/api/bots")).bots.length;
-      await api("POST", "/api/bots", {}, 403);
-      expect((await api("GET", "/api/bots")).bots).toHaveLength(count);
-      expect((await api("POST", "/api/bots", { settings: { approvalMode: "ask" } }, 201)).bot.approvalMode).toBe("ask");
-    }
+    await api("PATCH", "/api/config", { newBotDefaults: { profile: { approvalMode: "full" } } });
+    expect((await api("POST", "/api/bots", {}, 201)).bot.approvalMode).toBe("full");
+    await api("PATCH", "/api/config", { newBotDefaults: { profile: { approvalMode: "custom" } } });
+    const count = (await api("GET", "/api/bots")).bots.length;
+    await api("POST", "/api/bots", {}, 403);
+    expect((await api("GET", "/api/bots")).bots).toHaveLength(count);
+    expect((await api("POST", "/api/bots", { settings: { approvalMode: "ask" } }, 201)).bot.approvalMode).toBe("ask");
   } finally { await fixture.close(); }
 }, 90_000);

@@ -1,8 +1,3 @@
-// The "put bots in a room" scene. One authored moment: an @mention picks who
-// answers. Setup is the room header with its member stack, exactly as
-// GroupView draws it; the action is typing "@Res", the mention menu opening
-// and Researcher being chosen; the resolution is Researcher lighting up in
-// the header and answering while the other two stay quiet.
 import { useEffect, useState } from "react";
 import { Hash, Send } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -24,7 +19,6 @@ const TYPED = "@Res";
 const REST = " pull last week's numbers";
 const REPLY = "Found them. Revenue up 12% week over week, churn flat. Full table in the folder.";
 
-/** Beats, in ms from play. */
 const TYPE_AT = 600;
 const MENU_AT = 1150;
 const PICK_AT = 1900;
@@ -106,7 +100,6 @@ export function Channels({ playing, onCue, onEnded, label }: SceneProps) {
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-inset" role="img" aria-label={label}>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_0%,transparent_55%,rgba(0,0,0,0.28)_100%)]" aria-hidden="true" />
 
-      {/* the room, as GroupView draws it */}
       <div className="animate-rise relative m-4 mb-0 flex flex-1 flex-col overflow-hidden rounded-xl border border-hairline/40 bg-app shadow-[0_18px_44px_-20px_rgba(0,0,0,0.6)]">
         <header className="flex items-center justify-between border-b border-hairline/40 px-3.5 py-2.5">
           <div className="flex items-center gap-2">
@@ -133,7 +126,6 @@ export function Channels({ playing, onCue, onEnded, label }: SceneProps) {
           </div>
         </header>
 
-        {/* transcript */}
         <div className="relative flex flex-1 flex-col justify-end gap-2.5 px-3.5 pb-2.5">
           {sent && (
             <div className="animate-rise flex justify-end">
@@ -166,7 +158,6 @@ export function Channels({ playing, onCue, onEnded, label }: SceneProps) {
             </div>
           )}
 
-          {/* the mention menu, above the composer */}
           {menuOpen && (
             <div className="animate-spot-in absolute bottom-[48px] left-3.5 z-20 w-[210px] origin-bottom-left rounded-xl border border-hairline/50 bg-panel p-1 shadow-[0_18px_44px_-16px_rgba(0,0,0,0.7)]">
               {[MEMBERS[RESEARCHER]!, MEMBERS[2]!].map((m, i) => (
@@ -185,7 +176,6 @@ export function Channels({ playing, onCue, onEnded, label }: SceneProps) {
           )}
         </div>
 
-        {/* composer */}
         <div className="m-2.5 mt-0 flex items-center gap-2 rounded-xl border border-hairline/50 bg-inset px-3 py-2">
           <div className="flex min-h-[16px] flex-1 items-center text-[12px] text-ink">
             {sent ? (
@@ -202,7 +192,6 @@ export function Channels({ playing, onCue, onEnded, label }: SceneProps) {
         </div>
       </div>
 
-      {/* the guide keeps its distance: this room belongs to the members */}
       <div className="flex h-11 shrink-0 items-center justify-center">
         <div className="drop-shadow-[0_8px_18px_rgba(0,0,0,0.45)]">
           <MausAvatar color="green" state={replied ? "proud" : busy ? "listening" : "idle"} size={28} animated={!still} trackPointer={false} />

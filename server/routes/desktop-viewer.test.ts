@@ -32,7 +32,6 @@ let inspection: Promise<void> | undefined;
 let now: number;
 let targetLookups: number;
 let handled: () => void;
-/** Which (viewer target, bot, lease) triples hold the computer right now. */
 let leases: Set<string>;
 const leaseKey = (id: string, botId: string, lease: string) => `${id} ${botId} ${lease}`;
 let targets = [SHARED_LOCAL_VM_TARGET, perBotLocalVmTarget("test-bot"), poolLocalVmTarget(1)];
@@ -332,8 +331,6 @@ it("uses the same authenticated proxy for VPS and releases only its own connecti
   expect(holds).toBe(0);
 });
 
-// A phone paired with the server directly drives the Local VM through this
-// proxy under its control lease, with no sidecar in between.
 const lease = "phone-lease-0123456789";
 const phoneTarget = viewerTargetId(perBotLocalVmTarget("test-bot"));
 const phoneBase = `/api/desktop-viewer/${phoneTarget}`;
@@ -357,7 +354,6 @@ it("opens a lease-bound viewer only while that lease holds the bot's computer", 
   const refused = await open(bound());
   expect(refused.status).toBe(409);
   expect(refused.body).toContain("Take control");
-  // Nothing was inspected for a caller that does not hold the computer.
   expect(inspected).toEqual([]);
 
   leases.add(leaseKey(phoneTarget, "test-bot", lease));
@@ -368,11 +364,9 @@ it("opens a lease-bound viewer only while that lease holds the bot's computer", 
   const bytes = Buffer.from("RFB 003.008\n");
   socket.write(bytes);
   expect(await echo).toEqual(bytes);
-  // The lease names travel no further than this proxy.
   expect(seenPath).toBe("/websockify");
   expect(seenHeaders.authorization).toBeUndefined();
 
-  // Hand back: the lease stops holding, and the desktop closes at the next check.
   const closed = new Promise<void>(resolve => socket.once("close", () => resolve()));
   leases.clear();
   await closed;
@@ -381,17 +375,14 @@ it("opens a lease-bound viewer only while that lease holds the bot's computer", 
 
 it("binds a lease to one bot's desktop and refuses malformed or half-given lease names", async () => {
   leases.add(leaseKey(phoneTarget, "test-bot", lease));
-  // The same lease, asked against another bot or another desktop, holds nothing.
   expect((await open(bound(`botId=other-bot&controlLeaseId=${lease}`))).status).toBe(409);
   expect((await open(`/api/desktop-viewer/${viewerTargetId(perBotLocalVmTarget("other-bot"))}/websockify?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
   for (const query of ["botId=test-bot", `controlLeaseId=${lease}`, "botId=test-bot&controlLeaseId=short", `botId=bad%20bot&controlLeaseId=${lease}`,
     "threadId=th-1", `botId=test-bot&threadId=bad%20thread&controlLeaseId=${lease}`]) {
     expect((await open(bound(query))).status).toBe(400);
   }
-  // The conversation named at the join picks the seat; another conversation holds nothing here.
   expect((await open(bound(`botId=test-bot&threadId=th-1&controlLeaseId=${lease}`))).status).toBe(101);
   expect((await open(bound(`botId=test-bot&threadId=th-2&controlLeaseId=${lease}`))).status).toBe(409);
-  // The password read goes through the same binding.
   expect((await get(`${phoneBase}?botId=test-bot&controlLeaseId=${lease}`)).body).toEqual({ password: "fixture-secret" });
   leases.clear();
   expect((await get(`${phoneBase}?botId=test-bot&controlLeaseId=${lease}`)).status).toBe(409);
@@ -405,16 +396,13 @@ it("keeps the session and scope checks ahead of the lease, and closes a session'
   const mine = (await open(bound())).socket!;
   const other = (await open(bound(`botId=other-bot&controlLeaseId=${lease}`))).socket!;
   const browser = (await open()).socket!;
-  // Hand-back on one bot: only that bot's lease-bound viewer closes.
   const closedMine = once(mine, "close");
   expect(viewer.closeForOwner("nobody", "test-bot")).toBe(0);
   expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(1);
-  // Asked again before the socket's close event: nothing left to close.
   expect(viewer.closeForOwner(admin.session.id, "test-bot")).toBe(0);
   await closedMine;
   expect(other.destroyed).toBe(false);
   expect(browser.destroyed).toBe(false);
-  // Sign-out: everything the session had open.
   const rest = Promise.all([other, browser].map(socket => once(socket, "close")));
   expect(viewer.closeForOwner(admin.session.id)).toBe(2);
   await rest;

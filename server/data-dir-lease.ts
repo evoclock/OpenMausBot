@@ -1,5 +1,4 @@
-// The canonical implementation is plain ESM so Electron's main process and
-// the TypeScript harness server enforce exactly the same lease protocol.
+// Plain ESM so Electron's main process and the server enforce exactly the same lease protocol.
 export {
   acquireDataDirLease,
   acquireDataDirLeaseForProcess,

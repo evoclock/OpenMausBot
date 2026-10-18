@@ -1,8 +1,3 @@
-// One builder for "what does this bot do" plain-language sentences, so the
-// phones (step 5) and the web settings dialog agree on the same wording. The
-// route in index.ts (botOverview()) is the only place that reads server-only
-// state (engine capabilities, connected-apps inventory, history); everything
-// here is pure and takes that state already gathered as OverviewFacts.
 import type { BotRecord } from "./store.ts";
 import type { Routine } from "./routines.ts";
 import type { RoutineRequestSchedule } from "../shared/routine-request.ts";
@@ -15,18 +10,10 @@ export interface BotOverview {
   reaches: string[];
   wont: string[];
   recent: Array<{ at: number; summary: string }>;
-  /** Per-service connector tool grants, for read-only display. Absent when
-   * the bot carries no grants record — then composio alone decides. */
   grants?: BotOverviewGrant[];
-  /** Optional setup ideas, each pointing at the relevant settings section.
-   * These are customization suggestions, not requirements for chatting. */
   setup: SetupStep[];
 }
 
-/** One service's tool grants as a client should summarize them. Mirrors the
- * levels the web grant editor already renders (connector-grants.ts): "all"
- * is a whole-service wildcard, "partial" is an exact list whose size is
- * toolCount, "none" is a service granted nothing. */
 export interface BotOverviewGrant {
   slug: string;
   level: "all" | "partial" | "none";
@@ -41,7 +28,6 @@ export interface SetupStep {
   id: SetupStepId;
   label: string;
   done: boolean;
-  /** Bot-settings section for this customization. */
   section?: SetupStepSection;
 }
 
@@ -77,8 +63,6 @@ export interface OverviewFacts {
   skills: Array<{ name: string; description: string; enabled: boolean }>;
   engine: { agentsMcp?: boolean; composioMcp?: boolean; browserMcp?: boolean; computerMcp?: boolean } | null;
   browserEnabled?: boolean;
-  /** This server is a Cloud home (cloud-home.ts): it has no "this computer"
-   * of the person's and no Local VM. */
   cloudHome?: boolean;
   connectedApps: { configured: boolean; authoritative: boolean; services: string[] };
   sectionPeers: number;
@@ -86,9 +70,6 @@ export interface OverviewFacts {
   recent: Array<{ at: number; summary: string }>;
 }
 
-/** The first paragraph of a SOUL.md-style persona, capped at 240 characters
- * so a settings-dialog card never renders a full standing-instructions
- * document inline. */
 export function soulLead(soul: string | undefined): string {
   const trimmed = (soul ?? "").trim();
   if (!trimmed) return "";
@@ -106,9 +87,6 @@ function time(at: number, timeZone: string): string {
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-/** "09:05" → "9:05 AM" — the daily schedule's wall-clock time as a person
- * would say it, with no timezone suffix (the Overview is read in the
- * timezone it was built for). */
 function clockTime(hhmm: string): string {
   const [h = 0, m = 0] = hhmm.split(":").map((part) => Number.parseInt(part, 10) || 0);
   return new Date(Date.UTC(2000, 0, 1, h, m)).toLocaleTimeString("en-US", {
@@ -118,10 +96,6 @@ function clockTime(hhmm: string): string {
   });
 }
 
-/** The schedule as the opening phrase of a Does line — "Every 5 minutes",
- * "Every weekday at 9:00 AM", "Once on September 5 at 12:00 PM". The
- * approval card's scheduleText() carries the anchor instant and timezone
- * name because a card must be exact; a plain-language overview must not. */
 function schedulePhrase(schedule: OverviewFacts["routines"][number]["schedule"], timeZone: string): string {
   if (schedule.type === "cron") return cronScheduleLabel(schedule);
   if (schedule.type === "once") {
@@ -143,9 +117,6 @@ function schedulePhrase(schedule: OverviewFacts["routines"][number]["schedule"],
   return `${days.map((day) => DAY_NAMES[day]).join(", ")}${at}`;
 }
 
-/** The most recent run for a routine, by (finishedAt ?? startedAt ??
- * scheduledFor) — not merely the first match in `runs`, since callers may
- * hand this an unsorted or multi-routine list. */
 function latestRunFor(runs: OverviewFacts["runs"], routineId: string): OverviewFacts["runs"][number] | undefined {
   let best: OverviewFacts["runs"][number] | undefined;
   let bestAt = -Infinity;
@@ -184,11 +155,6 @@ function doesLines(facts: OverviewFacts): string[] {
   return lines;
 }
 
-/** The connected-apps facts for the route: reads the inventory only when a
- * connector is configured and the credential store was readable, and treats
- * a failing read (connector down, token rejected) as "unverified" rather
- * than letting it fail the whole Overview. `read` is injected so the
- * fallback is unit-testable without a live connector. */
 export async function connectedAppsFacts(
   configured: boolean,
   availability: "configured" | "unconfigured" | "unreadable",
@@ -208,17 +174,10 @@ export async function connectedAppsFacts(
   return { configured, authoritative, services };
 }
 
-/** Whether this bot could use connected apps at all: apps on for the bot,
- * a connector configured, and an engine that mounts the Composio MCP. */
 function couldUseApps(facts: OverviewFacts): boolean {
   return facts.bot.composio !== false && facts.connectedApps.configured && Boolean(facts.engine?.composioMcp);
 }
 
-/** Summarize a bot's connectorTools record for the Overview. Undefined in,
- * undefined out: a bot with no record keeps legacy all-tools behavior and
- * the field stays off the wire. An explicit record — even an empty one —
- * becomes a (possibly empty) list, sorted by slug so both phones and the
- * web dialog render it in one deterministic order. */
 export function grantsSummary(connectorTools: BotRecord["connectorTools"]): BotOverviewGrant[] | undefined {
   if (connectorTools === undefined) return undefined;
   return Object.entries(connectorTools)
@@ -231,8 +190,6 @@ export function grantsSummary(connectorTools: BotRecord["connectorTools"]): BotO
 }
 
 function computerReach(computer: BotRecord["computer"], cloudHome = false): string | null {
-  // A Cloud home never offers either; say so rather than list a preference
-  // that every task there refuses.
   const unavailable = cloudHome ? ", which isn't available on My Cloud" : "";
   switch (computer) {
     case "cloud":
@@ -256,9 +213,6 @@ function reachesLines(facts: OverviewFacts): string[] {
   if (computer) lines.push(computer);
   lines.push(facts.bot.cwd ? `Works in ${facts.bot.cwd}.` : "Works in its private workspace.");
   const apps = facts.connectedApps;
-  // Only a bot that could actually use apps gets an apps line here. When it
-  // could, the inventory decides: verified and non-empty → list them;
-  // unverified → say so rather than guess either way.
   if (couldUseApps(facts) && apps.authoritative && apps.services.length > 0) {
     const count = apps.services.length;
     lines.push(`Can use ${count} connected app${count === 1 ? "" : "s"}: ${apps.services.join(", ")}.`);
@@ -284,10 +238,6 @@ function wontLines(facts: OverviewFacts): string[] {
   if (mode === "custom") lines.push("Command approvals follow the provider's custom configuration.");
   if (facts.bot.peers?.length === 0) lines.push("Cannot initiate contact with other bots.");
   else if (mode !== "full" && facts.bot.approvePeerComms) lines.push("Asks before contacting other bots.");
-  // "Has no connected apps." is definite when apps are off for this bot,
-  // not configured, or unsupported by its engine — no inventory needed. Only
-  // the "configured but nothing connected" case rests on the inventory, so
-  // only that case requires it to be authoritative.
   if (!couldUseApps(facts) || (facts.connectedApps.authoritative && facts.connectedApps.services.length === 0)) {
     lines.push("Has no connected apps.");
   }
@@ -316,8 +266,6 @@ export function buildBotOverview(facts: OverviewFacts): BotOverview {
 
 const DEFAULT_BOT_NAMES = /^(new bot|bot|untitled)(\s*\d+)?$/i;
 
-/** Optional customization ideas. Every step is derived from the same facts
- * the sentences use, so "done" here can never disagree with "Can reach". */
 export function setupSteps(facts: OverviewFacts): SetupStep[] {
   const named = facts.bot.name.trim() !== "" && !DEFAULT_BOT_NAMES.test(facts.bot.name.trim());
   const described = facts.bot.title.trim() !== "" || facts.bot.description.trim() !== "";
@@ -329,8 +277,6 @@ export function setupSteps(facts: OverviewFacts): SetupStep[] {
     { id: "soul", label: "Write its standing instructions", done: (facts.bot.soul ?? "").trim() !== "", section: "soul" },
     { id: "folder", label: "Choose a working folder", done: Boolean(facts.bot.cwd), section: "access" },
   ];
-  // Apps only count as a step when this bot could use them at all; a
-  // bot on an engine without connected apps is not "missing" them.
   if (couldUseApps(facts)) {
     steps.push({
       id: "apps",

@@ -1,6 +1,3 @@
-// How many things left the building today, per bot. The cap is only as
-// good as this count, so it has to survive a restart and roll over with the
-// day rather than with the process.
 import { existsSync, mkdirSync, mkdtempSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -1,11 +1,3 @@
-// How many outbound calls each bot has made today. The daily cap in a
-// bot's outbound policy is only as good as this number, so it lives on
-// disk (0600, like every other record that names what a bot did) and is
-// keyed by the local day, so it rolls over at midnight and not at the
-// next restart.
-//
-// One day is kept per bot: the count exists to enforce today's cap, and
-// the activity log already keeps the history.
 import { readFileSync } from "node:fs";
 
 import { writeFileAtomic } from "./atomic.ts";
@@ -48,20 +40,17 @@ export class OutboundCounts {
     writeFileAtomic(this.file, JSON.stringify(this.stored, null, 2), { mode: 0o600 });
   }
 
-  /** How many outbound calls this bot has made on the day `now` falls in. */
   today(botId: string, now: Date = new Date()): number {
     if (!this.readable) throw new Error("the daily allowance could not be read");
     const entry = this.stored[botId];
     return entry && entry.day === dayKey(now) ? entry.count : 0;
   }
 
-  /** Count one more, and return the new total for the day. */
   record(botId: string, now: Date = new Date()): number {
     return this.reserve(botId, 1, Number.MAX_SAFE_INTEGER, now)!;
   }
 
-  /** Reserve before any provider await. An uncertain send keeps its slot:
-   * refunding transport failures could repeat a send already delivered. */
+  /** Reserve before any provider await; an uncertain send keeps its slot, since a refund could repeat a delivered send. */
   reserve(botId: string, amount: number, cap: number, now: Date = new Date()): number | null {
     const day = dayKey(now);
     const entry = this.stored[botId];

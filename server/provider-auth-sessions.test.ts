@@ -139,7 +139,6 @@ describe("provider sign-out", () => {
     await sessions.start(instance, "owner");
     await expect(sessions.signOut(instance, "other")).rejects.toMatchObject({ status: 409 });
     expect(instance.signOut).not.toHaveBeenCalled();
-    // The admin who started the flow may abandon it and sign out.
     await sessions.signOut(instance, "owner");
     expect(instance.cancelAuthentication).toHaveBeenCalledOnce();
     expect(instance.signOut).toHaveBeenCalledOnce();

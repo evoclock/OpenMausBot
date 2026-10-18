@@ -1,8 +1,4 @@
-// The native tee is the file people paste into bug reports, so the wiring
-// that keeps credentials out of it is tested at the writer — redact.test.ts
-// covers the masking function, this covers that appendNative actually calls it.
-// (server/testing/setup.ts points HOME at a throwaway dir, so NATIVE_DIR is
-// already isolated from the real fleet.)
+// The native tee goes into bug reports, so this checks that the writer actually redacts.
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -35,7 +31,6 @@ describe("appendNative", () => {
 
     const log = readFileSync(join(NATIVE_DIR, "t-native.ndjson"), "utf8");
     expect(log).not.toContain("box_live_dontlogme");
-    // the shape a debugger needs is still there: which server, which var
     expect(log).toContain("session/new");
     expect(log).toContain("OGB_BOX_TOKEN");
     expect(log).toContain("boat-7");

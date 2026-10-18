@@ -1,5 +1,3 @@
-// Decision model is its own top-level Settings item, findable by what people
-// would type for it.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeAll, describe, expect, it, vi } from "vitest";

@@ -1,16 +1,8 @@
-// Harness-owned Composio MCP bridge.
-//
-// Provider CLIs only see this stdio server. Ordinary MCP traffic is relayed
-// to the configured Composio Session, but connection requests are converted
-// into first-class OpenMausBot chat cards. The agent never authors an auth
-// URL and credentials never pass through its transcript.
-// tools/list responses are trimmed to this bot's granted tools as a
-// prompt-time hint; every call is still judged harness-side by the grants
-// relay.
-//
-// stdout is the MCP transport. Never log there.
+// Connection requests become OpenMausBot chat cards: the agent never authors an auth URL and credentials never pass
+// through its transcript. stdout is the MCP transport: never log there.
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   CONNECTOR_ALLOWED_TOOLS_ENV,
   CONNECTOR_SERVICE_SLUGS_ENV,
@@ -18,6 +10,7 @@ import {
   parseConnectorAllowedToolsEnv,
   parseConnectorServiceSlugsEnv,
 } from "./connector-advertisement.ts";
+import { withSignedOutHint } from "./connector-signed-out-hint.ts";
 
 type Json = Record<string, unknown>;
 
@@ -26,14 +19,12 @@ const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const THREAD_ID = process.env.OMB_THREAD_ID ?? "";
 const TOKEN = process.env.OMB_CONNECTOR_TOKEN ?? process.env.OMB_COMMS_TOKEN ?? "";
-// The bot's effective tool grants, or null when the harness sent none —
-// legacy bots, oversized allowlists, anything unreadable. null means the
-// upstream list is relayed verbatim; the harness still judges every call.
 const ALLOWED_TOOLS = parseConnectorAllowedToolsEnv(process.env[CONNECTOR_ALLOWED_TOOLS_ENV]);
 const SERVICE_SLUGS = parseConnectorServiceSlugsEnv(process.env[CONNECTOR_SERVICE_SLUGS_ENV]);
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const INITIALIZE_RELAY_TIMEOUT_MS = 1_000;
 const RELAY_TIMEOUT_MS = 10 * 60_000;
+const TOOLS_LIST_RETRY_MS = 500;
 
 function parsedHeaders(): Record<string, string> {
   try {
@@ -183,11 +174,7 @@ async function showConnectorCards(items: ConnectorRequest[]): Promise<void> {
 async function handle(message: Json): Promise<void> {
   const id = message.id;
   const method = String(message.method ?? "");
-  // OpenCode (and other MCP clients) mark a stdio server failed unless
-  // initialize returns capabilities/serverInfo. Relaying that handshake to
-  // Composio can time out, return a newer protocolVersion, or throw when the
-  // upstream URL never reached the child env — all of which previously
-  // surfaced as a tools/call-shaped {content,isError} payload.
+  // OpenCode and other MCP clients mark a stdio server failed unless initialize returns capabilities and serverInfo.
   if (method === "notifications/initialized" || method === "initialized") {
     if (UPSTREAM) void relay(message).catch(() => {});
     return;
@@ -195,13 +182,9 @@ async function handle(message: Json): Promise<void> {
   if (method === "initialize") {
     if (UPSTREAM) {
       try {
-        // Capture the upstream session id when the service is healthy, but
-        // never let a stalled provider prevent the local MCP client from
-        // mounting the connector tools. The client sends initialized only
-        // after this bounded attempt and the local initialize response.
+        // A stalled provider must never keep the local MCP client from mounting the connector tools.
         await relay(message, INITIALIZE_RELAY_TIMEOUT_MS);
       } catch {
-        // Best-effort session setup. The client still needs a valid result.
       }
     }
     if (id !== undefined) {
@@ -229,11 +212,14 @@ async function handle(message: Json): Promise<void> {
     }
   }
   try {
-    const response = await relay(message);
+    // The engine lists tools once per session, so one failed listing would leave the whole session without them.
+    const response = method === "tools/list"
+      ? await relay(message).catch(() => delay(TOOLS_LIST_RETRY_MS).then(() => relay(message)))
+      : await relay(message);
     if (response && id !== undefined) {
       send(method === "tools/list" && ALLOWED_TOOLS
         ? filterToolsListFrame(response, ALLOWED_TOOLS, SERVICE_SLUGS)
-        : response);
+        : method === "tools/call" ? withSignedOutHint(message, response, SERVICE_SLUGS) : response);
     }
   } catch (error) {
     if (id === undefined) return;

@@ -292,9 +292,7 @@ describe("local computer descriptor", () => {
     ).toBeNull();
   });
 
-  // Runtime ownership includes a real Linux Unix-domain socket and POSIX
-  // permission checks. Keep the schema/decoder cases above cross-platform,
-  // but run this host-filesystem proof only on the authoritative Linux lane.
+  // Needs a real Linux Unix-domain socket and POSIX permission checks: the Linux lane is authoritative.
   it.skipIf(process.platform !== "linux")(
     "validates private descriptor, executable, socket, and live owned processes",
     async () => {

@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { credentialStoreFlags } from "../server/browser/egress/gate.ts";
 import { launchVerificationServer, runControlOmb } from "./control-omb.ts";
 import { agentBrowser, ensureUiBrowser, sessionEnv } from "./testing/control-omb-ui.ts";
 import { mountPreview, type MountedPreview } from "./testing/preview-fixture.ts";
@@ -20,6 +21,7 @@ let hold: Promise<void> = Promise.resolve();
 let failure = false;
 let attempts = 0;
 const requestBodies: Array<{ alias?: string }> = [];
+const deletedAccounts: string[] = [];
 const services: Record<string, { connected: boolean; pending: boolean; status: string; accounts: Array<{ id: string; alias: string; status: string }> }> = {};
 const evidence = resolve(process.env.OMB_UI_EVIDENCE_DIR ?? ".omb-scratch/connected-apps-evidence");
 mkdirSync(evidence, { recursive: true });
@@ -69,6 +71,12 @@ try {
         res.writeHead(failed ? 503 : 200, { "content-type": "application/json" });
         res.end(JSON.stringify(failed ? { error: "Synthetic authorization outage" } : { url: `${authorizationBase}/authorize?attempt=${attempt}` }));
       } },
+      { path: /^\/api\/connectors\/gmail\/accounts\/[\w-]+$/, method: "DELETE", handler: (req, res) => {
+        const id = req.url!.split("/").pop()!;
+        deletedAccounts.push(id);
+        services.gmail = { ...services.gmail!, accounts: services.gmail!.accounts.filter((account) => account.id !== id) };
+        res.setHeader("content-type", "application/json"); res.end('{"removed":1}');
+      } },
       { path: /^\/api\/bots\/fixture-bot\/connector-cards\/connector-\d+\/status$/, handler: (_req, res) => {
         res.setHeader("content-type", "application/json"); res.end('{"connected":false}');
       } },
@@ -76,7 +84,7 @@ try {
   });
   const browser = await ensureUiBrowser();
   mkdirSync(join(fixture.info.dataDir, "tmp"), { recursive: true });
-  const env = { ...sessionEnv({ home: fixture.info.dataDir, session: `ca${process.pid}`, chrome: browser.chrome }), AGENT_BROWSER_SOCKET_DIR: join(fixture.info.dataDir, "ab"), AGENT_BROWSER_ARGS: "--host-resolver-rules=MAP auth.example.test 127.0.0.1", AGENT_BROWSER_IGNORE_HTTPS_ERRORS: "1" };
+  const env = { ...sessionEnv({ home: fixture.info.dataDir, session: `ca${process.pid}`, chrome: browser.chrome }), AGENT_BROWSER_SOCKET_DIR: join(fixture.info.dataDir, "ab"), AGENT_BROWSER_ARGS: [...credentialStoreFlags(), "--host-resolver-rules=MAP auth.example.test 127.0.0.1"].join("\n"), AGENT_BROWSER_IGNORE_HTTPS_ERRORS: "1" };
   const command = (...args: string[]) => agentBrowser(browser.binary, env, args);
   closeBrowser = () => command("close");
   const evaluate = async (js: string) => (await command("eval", js)).result;
@@ -203,9 +211,36 @@ try {
   await click("Remove card"); release();
   await wait("window.__oauthResponses===9&&window.__oauthPages.at(-1).closed");
   assert.equal(await evaluate("document.querySelector('[data-tour=connector]')===null"), true);
+
+  // An app whose only account expired reads as signed out; Reconnect replaces that account under its own label.
+  services.gmail = { connected: true, pending: false, status: "EXPIRED", accounts: [{ id: "ca-expired", alias: "fixture-old", status: "EXPIRED" }] };
+  await click("Settings Apps");
+  await command("find", "role", "button", "click", "--name", "Refresh connection status", "--exact");
+  await wait("document.querySelector('[data-app-tile=gmail]').textContent.includes('Signed out')");
+  assert.equal(await evaluate("document.querySelector('[data-app-tile=gmail] [aria-label=Connected]')===null"), true);
+  assert.equal(await evaluate("document.querySelector('[data-app-tile=gmail] button[type=button]:not([aria-label])').textContent.trim()"), "Reconnect");
+  await command("screenshot", join(evidence, "settings-reconnect.png"), "--full");
+  const traced = await evaluate("window.__oauthTrace.length") as number;
+  pauseAuthorize(); await command("click", "[data-app-tile=gmail] button[type=button]:not([aria-label])");
+  // The old account is removed before the link is asked for, so the request trails the reserved tab.
+  await command("tab", "t1"); await wait(`window.__oauthTrace.length>=${traced + 2}`);
+  await assertReserved(); release();
+  assert.deepEqual(deletedAccounts, ["ca-expired"]);
+  assert.equal(requestBodies.at(-1)!.alias, "fixture-old");
+  await checkLink("[data-app-tile=gmail] a[target=_blank]", 10); await checkAuthorizationTab(10);
+  await command("find", "role", "button", "click", "--name", "Close plugins", "--exact");
+
+  // A card refused for want of a label asks for one instead of sending the same request again.
+  await click("Replace card target"); await click("Card needs label");
+  await wait("document.querySelector('[data-tour=connector] input')!==null");
+  await command("screenshot", join(evidence, "card-label-needed.png"), "--full");
+  await command("fill", "[data-tour=connector] input", "fixture-label");
+  pauseAuthorize(); await click("Try again"); await assertReserved(); release();
+  assert.equal(requestBodies.at(-1)!.alias, "fixture-label");
+  await wait("window.__oauthResponses===11");
   const errors = await command("errors");
   assert.deepEqual(errors.errors, []);
-  const result = { ok: true, fixtureUrl: fixture.info.url, logPath: fixture.info.logPath, attempts, evidence, tested: ["Settings synchronous reservation", "Settings blocked-popup fallback and Continue", "Settings close cancels late opening", "Settings pending inventory after reopen", "expired anchor renewal without stale alias", "card blocked-popup fallback", "native safe link navigation", "Open again reuses flow", "failure closes blank and Try again", "replacement and unmount cancel late opening"], limitation: "Synthetic authorize responses in Chromium; no live provider, Safari or Brave acceptance." };
+  const result = { ok: true, fixtureUrl: fixture.info.url, logPath: fixture.info.logPath, attempts, evidence, tested: ["Settings synchronous reservation", "Settings blocked-popup fallback and Continue", "Settings close cancels late opening", "Settings pending inventory after reopen", "expired anchor renewal without stale alias", "card blocked-popup fallback", "native safe link navigation", "Open again reuses flow", "failure closes blank and Try again", "replacement and unmount cancel late opening", "expired-only app reconnects under its label", "card asks for a label instead of looping"], limitation: "Synthetic authorize responses in Chromium; no live provider, Safari or Brave acceptance." };
   writeFileSync(join(evidence, "result.json"), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result));
 } finally {

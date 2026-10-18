@@ -19,8 +19,6 @@ function render(phase: string): string {
 }
 
 describe("Hands scene", () => {
-  // Someone clicking through the reel lands on the panel's first second.
-  // A spinner and "Starting…" there read as a broken demo, not a bot at work.
   it("shows the booking page, not a loading screen, from the moment the panel is in", () => {
     for (const phase of ["panel", "awake", "moving", "clicked", "done", "reply"]) {
       const html = render(phase);

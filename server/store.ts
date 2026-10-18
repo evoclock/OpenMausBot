@@ -1,12 +1,8 @@
-// Bot + thread persistence. bots.json holds bot records (including the
-// thread→instance binding and per-instance resume cursors — upstream's
-// ProviderSessionDirectory, recipe step 6: persist the binding from day
-// one). messages-<threadId>.json holds the folded transcript.
-import { createHash } from "node:crypto";
 import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-import { writeFileAtomic } from "./atomic.ts";
+import { writeFileAtomic, writeFileAtomicIfChanged } from "./atomic.ts";
+import { commitBotChange, keptRevocation, saveBotsFor } from "./bots-save.ts";
 import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
 import { ensureSections, readSections, changeEmptySection } from "./section-context.ts";
 import type { TeamComputers } from "./team-computers.ts";
@@ -15,14 +11,17 @@ import type { BotProfilePatch } from "./bot-profile.ts";
 import { peerAllowKey, type PeerAction } from "./peer-approval-key.ts";
 import { DATA_DIR, EVENTS_DIR, NATIVE_DIR, loadBrowserProfileIdAliases } from "./config.ts";
 import * as mdb from "./message-db.ts";
+import { forgetBotMemoryJournal, journalFile } from "./memory-journal.ts";
 import { runCommand, type Command } from "./commands.ts";
 import { workspaceDir } from "./workspace.ts";
 import type { Destination } from "./surface.ts";
 import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
+import { scrubbedSkillRequest } from "./skill-request-card.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk } from "../shared/approval-mode.ts";
+import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
+import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
 import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
@@ -32,11 +31,13 @@ import type { HandedState } from "./delta-context.ts";
 import type { AgentPart, PartPair, RoomPart } from "./package-parts.ts";
 import type {
   BotActivity, GroupDefaultResponder, GroupTask as GroupTaskRecord, MausColor,
-  ConnectorToolGrant, OptionCardData, TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
+  OptionCardData, TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
   WireMessage, WireTask, BotProject as BotProjectRecord,
 } from "../shared/wire.ts";
-import { CONNECTOR_SLUG_PATTERN, CONNECTOR_TOOL_NAME_PATTERN } from "../shared/wire.ts";
-// Re-exported under their historical names so server-side importers keep working.
+import { movesThreadToTop } from "../shared/wire.ts";
+import { parseConnectorTools } from "./connector-tools.ts";
+import { sameModelSelection } from "../shared/thread-model.ts";
+import { initialGreeting } from "./initial-greeting.ts";
 export type {
   BotActivity, ConnectorCardData, GroupDefaultResponder, OptionCardData,
   SecretRequestCardData, Surface, TaskClosedBy, TaskOpenedBy, TaskUsage,
@@ -44,12 +45,8 @@ export type {
 export type { GroupTask as GroupTaskRecord, BotProject as BotProjectRecord } from "../shared/wire.ts";
 export type { InstalledPlaybook, InstalledPackageMetadata, MausColor, MausExpression } from "../shared/wire.ts";
 
-
-/** One transcript line, serialized as stored — the shared wire shape. */
 export type Message = WireMessage;
 
-/** Server-private: a group chat added from the organization's library, with
- * its package key, member keys and per-part hashes (server/package-parts.ts). */
 export interface GroupPackageStamp {
   installId: string;
   key: string;
@@ -57,81 +54,57 @@ export interface GroupPackageStamp {
   parts: Record<RoomPart, PartPair>;
 }
 
-/** A room record excludes working state and ledger usage, both computed by
- * publicGroupState at projection time. */
 export type GroupRecord = Omit<WireGroup, "working" | "usage"> & { installedPackage?: GroupPackageStamp };
-/** The one private field is stripped; projection adds computed display fields. */
 export type GroupWirePrivateKeys = "installedPackage";
 export type GroupWireProjection = Omit<GroupRecord, GroupWirePrivateKeys> & Pick<WireGroup, "usage"> & { working: boolean };
 export type GroupWireProjectionIsExact = AssertExact<WireGroup, GroupWireProjection> & AssertSameKeys<WireGroup, GroupWireProjection>;
 export const groupWireProjectionIsExact: GroupWireProjectionIsExact = true;
 
-// Unicode's complete emoji sequences include flags, skin tones and ZWJ
-// combinations. Also allow unqualified single symbols (e.g. ♥), but not
-// standalone components such as a digit, skin tone or regional indicator.
+// Unicode counts a lone digit, skin tone or regional indicator as an emoji component, not an emoji.
 const projectEmojiPattern = new RegExp("^(?!\\p{Emoji_Component}$)(?:\\p{RGI_Emoji}|[\\p{Emoji}--\\p{Emoji_Component}])$", "v");
 export function isProjectEmoji(value: unknown): value is string {
   return typeof value === "string" && value.length <= 64 && projectEmojiPattern.exec(value)?.[0] === value;
 }
 
-/** One task = one conversation with its own context. Extends the shared
- * wire shape, less the fields the wire projection (toWireTask) derives; the
- * extras below are server-private bookkeeping that projection strips. */
 export interface TaskRecord extends Omit<WireTask, TaskWireDerivedKeys> {
-  /** provider-native continuation per instance, for THIS task only */
   resumeCursors: Record<string, unknown>;
-  /** which instance dispatched the most recent turn. A cursor alone can't
-   * say whether an engine's session is current, so this is what decides an
-   * inline replay. Absent on tasks from before the field existed. */
   lastInstanceId?: string;
-  /** per instance: the stored messages that instance's current native
-   * session has been handed on this task (server/delta-context.ts) */
   handedMessages?: Record<string, HandedState>;
-  /** Last compaction represented by a dispatched session on this task. */
   appliedCompactionId?: string;
   contextFloor?: number;
   lastContextModel?: string;
-  /** Who pinned this conversation's surface: "user" when a person chose it
-   * (composer chip or thread setting), "auto" when a turn recorded where
-   * it landed. Absent means legacy/unknown: it may be a person's choice,
-   * so only positively identified auto pins yield to Works on changes.
-   * Clients see only whether a pin is an auto pin (WireTask.surfaceAuto). */
+  /** Absent (legacy) may be a person's choice: only an "auto" pin yields to a Works on change. */
   surfaceSource?: "user" | "auto";
+  /** Epoch ms a person last wrote here: never a teammate, routine, webhook, the bot itself or a Slack relay. */
+  askedAt?: number;
 }
 
-/** TaskRecord fields no client may see. Everything else must be on WireTask:
- * the exactness assertion below fails to compile when either side drifts,
- * so a new server field forces a decision — wire-visible or private here. */
-export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource";
-/** WireTask fields computed by toWireTask and never stored on a TaskRecord. */
-export type TaskWireDerivedKeys = "surfaceAuto";
+export type TaskWirePrivateKeys = "resumeCursors" | "lastInstanceId" | "handedMessages" | "appliedCompactionId" | "contextFloor" | "lastContextModel" | "surfaceSource" | "askedAt";
+export type TaskWireDerivedKeys = "surfaceAuto" | "followsBotModel";
 export type TaskWireProjection = Pick<TaskRecord, Exclude<keyof TaskRecord, TaskWirePrivateKeys>> & Pick<WireTask, TaskWireDerivedKeys>;
 type AssertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 type AssertSameKeys<A, B> = [keyof A] extends [keyof B] ? ([keyof B] extends [keyof A] ? true : never) : never;
-/** Structural exactness alone lets an optional extra field through (a type
- * without the field still extends {field?: T}), so keys are checked too. */
+/** TS lets an optional extra field through (a type without it still extends {field?: T}), so keys are checked too. */
 export type TaskWireProjectionIsExact = AssertExact<WireTask, TaskWireProjection> & AssertSameKeys<WireTask, TaskWireProjection>;
 export const taskWireProjectionIsExact: TaskWireProjectionIsExact = true;
 
-/** The typed wire projection for one task. Pairs with the assertion above:
- * returning WireTask means an undeclared server field cannot ride silently. */
-export function toWireTask(task: TaskRecord): WireTask {
+export function toWireTask(task: TaskRecord, botModel: ModelSelection): WireTask {
   const { resumeCursors: _resumeCursors, lastInstanceId: _lastInstanceId, handedMessages: _handedMessages,
     appliedCompactionId: _appliedCompactionId, contextFloor: _contextFloor, lastContextModel: _lastContextModel,
-    surfaceSource, ...wire } = task;
-  // Who pinned stays private. A client learns only whether the pin is the
-  // machine's own record, so it never presents one as the person's choice.
+    surfaceSource, askedAt: _askedAt, ...stored } = task;
+  const wire: WireTask = { ...stored, modelSelection: structuredClone(task.modelSelection ?? botModel), followsBotModel: task.modelSelection === undefined };
   return surfaceSource === "auto" && wire.surface !== undefined ? { ...wire, surfaceAuto: true } : wire;
 }
 
+const ASK_NOW = { approvalMode: "ask" as const, autoApprove: false, alwaysAllow: [] as string[] };
+
 const TASK_PATCH_FIELDS = [
   "title", "projectId", "modelSelection", "approvalMode", "autoApprove", "alwaysAllow",
-  "unread", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
-  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "appliedCompactionId", "contextFloor", "lastContextModel",
+  "unread", "lastReadMessageId", "rewound", "archivedAt", "pinned", "pinnedMessageId", "resumeCursors", "lastInstanceId", "cwd",
+  "routineRunId", "surface", "surfaceSource", "snoozedUntil", "link", "linkAuto", "appliedCompactionId", "contextFloor", "lastContextModel",
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
-/** Only `true` is a pin. false/undefined must not land in bots.json or groups.json. */
 function persistedPin<T extends { pinned?: boolean }>(task: T): T {
   if (task.pinned === true) return task;
   if (!("pinned" in task)) return task;
@@ -139,16 +112,15 @@ function persistedPin<T extends { pinned?: boolean }>(task: T): T {
   return rest as T;
 }
 
-/** Everything the BOT authored is scrubbed of content-shaped secrets before
- * it is stored: its reply text, a tool title (an ACP engine's title can be
- * the whole command line) and the command beside it, a permission card's
- * summary. What the user typed
- * is theirs and stays as typed. Stored, not just displayed: the transcript
- * is replayed into every rebuild, and a leaked key would otherwise be
- * permanent. */
+/** Bot-authored text is scrubbed of secrets before it is stored (the transcript replays into every rebuild); what the user typed stays as typed. */
 function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number }>(message: T): T {
   if (message.role !== "bot") return message;
   const out = { ...message };
+  if (out.dataResult) out.dataResult = {
+    ...out.dataResult,
+    title: redactSecretsInText(out.dataResult.title),
+    ...(out.dataResult.sql === undefined ? {} : { sql: redactSecretsInText(out.dataResult.sql) }),
+  };
   if (typeof out.text === "string") out.text = redactSecretsInText(out.text);
   if (out.compaction) out.compaction = { ...out.compaction, summary: redactSecretsInText(out.compaction.summary) };
   if (out.tool?.name) {
@@ -170,6 +142,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       detail: out.goalRun.detail ? redactSecretsInText(out.goalRun.detail) : undefined,
     };
   }
+  if (out.call?.title) out.call = { ...out.call, title: redactSecretsInText(out.call.title) };
   if (out.card) {
     const card = { ...out.card } as OptionCardData & { summary?: string };
     card.title = redactSecretsInText(card.title);
@@ -181,8 +154,6 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       redactSecretsInText(card.commandAllowlist.command) !== card.commandAllowlist.command ||
       redactSecretsInText(card.commandAllowlist.cwd) !== card.commandAllowlist.cwd
     )) delete card.commandAllowlist;
-    // Bot-authored question text sits behind the subtitle the same way a
-    // routine's instructions do, so it is scrubbed on the same boundary.
     if (card.questionRequest) {
       card.questionRequest = {
         ...card.questionRequest,
@@ -198,9 +169,6 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
         })),
       };
     }
-    // Routine definitions are executable bot-authored text stored behind the
-    // visible summary. Scrub the durable payload too so nesting it on a card
-    // cannot bypass the transcript's secret-redaction boundary.
     if (card.routineRequest) {
       const operation = card.routineRequest.operation;
       card.routineRequest = {
@@ -230,45 +198,11 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
             : { ...operation },
       };
     }
-    if (card.skillRequest) {
-      const originalPreview = card.skillRequest.preview;
-      const preview = originalPreview === undefined
-        ? undefined
-        : redactSecretsInText(originalPreview);
-      // Current skill proposals are scrubbed before staging and their digest
-      // binds the card to the exact SKILL.md bytes that apply will install.
-      // Keep that binding only when this store-wide safety pass is a no-op and
-      // the supplied digest already matches the persisted preview. A caller
-      // that bypassed staging (or an older malformed card) is therefore
-      // safely deny-only instead of showing one document and approving
-      // another.
-      const previewSha256 = preview !== undefined && preview === originalPreview
-        ? createHash("sha256").update(preview).digest("hex")
-        : undefined;
-      const sha256 = card.skillRequest.sha256 !== undefined
-        && card.skillRequest.sha256 === previewSha256
-        ? card.skillRequest.sha256
-        : undefined;
-      card.skillRequest = {
-        ...card.skillRequest,
-        gist: redactSecretsInText(card.skillRequest.gist),
-        source: card.skillRequest.source === undefined
-          ? undefined
-          : redactSecretsInText(card.skillRequest.source),
-        preview,
-        sha256,
-        warnings: card.skillRequest.warnings.map((warning) => redactSecretsInText(warning)),
-      };
-    }
-    // A profile proposal's before/after text (and its reason) is hidden
-    // under the card's visible summary the same way a routine's or skill's
-    // is — scrub it too so nesting it on a card cannot bypass the
-    // transcript's secret-redaction boundary.
+    if (card.skillRequest) card.skillRequest = scrubbedSkillRequest(card.skillRequest);
     if (card.profileRequest) {
       const scrubChanges = (changes: ProfileRequestChanges): ProfileRequestChanges => {
         const out = { ...changes };
         for (const [key, value] of Object.entries(changes)) {
-          // Booleans carry no text to scrub; only string fields pass through redaction.
           if (typeof value === "string") (out as Record<string, string | boolean>)[key] = redactSecretsInText(value);
         }
         return out;
@@ -299,17 +233,16 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
       error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
     };
   }
+  if (out.signIn) {
+    out.signIn = {
+      ...out.signIn,
+      reason: out.signIn.reason ? redactSecretsInText(out.signIn.reason) : undefined,
+      error: out.signIn.error ? redactSecretsInText(out.signIn.error) : undefined,
+    };
+  }
   return out;
 }
 
-/** What changed, emitted by the store itself right after each write. The
- * server maps these onto its SSE frames in ONE place, so no mutation path
- * can persist without the app hearing about it — the two-write-paths bug
- * (persist without emit → UI drifts; emit without persist → a restart
- * loses what the user just watched) is closed by construction. Bot and
- * group changes carry only the id: the wire shape (cursor stripping) is
- * the caller's business. */
-/** The states in which the bot cannot take a new message. */
 export const ACTIVITY_BUSY: ReadonlySet<BotActivity> = new Set(["working", "waiting-on-you", "no-signal"]);
 
 export type StoreChange =
@@ -323,30 +256,20 @@ export type StoreChange =
   | { type: "group"; groupId: string }
   | { type: "group.deleted"; groupId: string };
 
-/** What a task is called before its first message names it. */
 export const UNTITLED_TASK = "New task";
 export const UNTITLED_THREAD = "New thread";
 
-/** How a thread title is stored: one trim, one cut. Every title arrives
- * through this — the name a bot passes to createTask and the name a person
- * types in the sidebar alike — which is what makes "is this title still
- * the one the machine made?" a question you can answer by comparing. */
+/** Every title (a bot's or a person's) passes through here, so equality tells a machine-made title from a rename. */
 const TASK_TITLE_MAX = 80;
 export function threadTitleFrom(title?: string): string {
   return title?.trim().slice(0, TASK_TITLE_MAX) || UNTITLED_THREAD;
 }
 
-/** A task's name, taken from the first thing you asked it to do. */
 export function titleFromMessage(text: string): string {
   const line = text.trim().split("\n")[0]!.trim();
   return line.length > 48 ? `${line.slice(0, 47)}…` : line || UNTITLED_TASK;
 }
 
-/** One usable line out of a model's title reply: the first line, no
- * surrounding quotes, code fences, or markdown decoration, no trailing
- * period, single spaces — or null when what came back is empty, too long
- * to be a title, or otherwise not a plain name. The caller keeps its
- * fallback then. */
 export function titleFromLlm(raw: string): string | null {
   const line = raw
     .trim()
@@ -354,8 +277,6 @@ export function titleFromLlm(raw: string): string | null {
     .replace(/^[#*\-\u2022]+/, "")
     .replace(/^["'\u201C\u201D\u2018\u2019\u0060]+/, "")
     .replace(/["'\u201C\u201D\u2018\u2019\u0060]+$/, "")
-    // decoration the quotes were hiding: "## Deploy app" keeps its
-    // markers through the strips above, which never reach past a quote
     .replace(/^[#*\-\u2022]+/, "")
     .replace(/[#*]+$/, "")
     .replace(/[.\u3002]+$/, "")
@@ -364,122 +285,42 @@ export function titleFromLlm(raw: string): string | null {
   return line.length >= 1 && line.length <= 48 ? line : null;
 }
 
-/** A bot record. Extends the shared wire shape; the extras below are
- * server-private (stripped by wireBot). avatarUrl is optional in the record
- * but always present (string | null) on the wire, so the record widens it. */
 export interface BotRecord extends Omit<WireBot, "avatarUrl" | "tasks"> {
-  /** every task this bot has, newest first */
   tasks?: TaskRecord[];
-  /** App-owned attachment served as this bot's custom profile image. */
   avatarUrl?: string;
-  /** provider-native continuation per instance (e.g. claude session id) */
   resumeCursors: Record<string, unknown>;
-  /** Server-private elevation journal. Full/Custom executes as Ask until
-   * Electron confirms the exact prepared reply and then activates it over
-   * the utility-process channel. Any marker surviving a restart is revoked
-   * during Store load. */
+  /** Elevation journal: Full/Custom runs as Ask until Electron confirms the prepared reply; a marker surviving a restart is revoked on load. */
   approvalGrant?: {
     requestId: string;
     mode: "full" | "custom";
     phase: "prepared" | "confirmed" | "activated" | "committed";
-    /** Optional existing thread receiving this already-approved bot default. */
     threadId?: string;
-    /** Composer grant: leave the bot default and other threads unchanged. */
     threadOnly?: true;
-    /** Copy the saved bot default onto threadId, including standing approvals. */
     refreshPermissions?: true;
-    /** Explicit bot-wide grant, including existing threads. */
     allThreads?: true;
   };
-  /** Receipt committed with a confirmed profile, for retrying card settlement. */
   lastProfileRequestId?: string;
-  /** Receipt committed with a reviewed team batch; prevents replay after a lost response. */
   lastTeamSetupReceipt?: { requestId: string; result: TeamSetupResult };
-  /** Organization library only: each part's release and written hashes
-   * (server/package-parts.ts), for the later automatic update. */
   packageBase?: Partial<Record<AgentPart, PartPair>>;
-  /** Skills library (features.skillsLibrary): names of library skills
-   * assigned to this bot. Server-private until the Skills UI ships. */
   assignedSkills?: string[];
 }
 
-/** BotRecord fields no client may see, plus the two the projection
- * re-derives rather than passes through (tasks are re-projected as
- * WireTask[], avatarUrl is coerced to always-present). The exactness
- * assertion fails to compile when either side drifts, so a new server
- * field forces a decision — wire-visible or private here. */
 export type BotWirePrivateKeys = "resumeCursors" | "tasks" | "avatarUrl" | "approvalGrant" | "lastProfileRequestId" | "lastTeamSetupReceipt" | "packageBase" | "assignedSkills";
 export type BotWireProjection = Pick<BotRecord, Exclude<keyof BotRecord, BotWirePrivateKeys>>;
 export type BotWireProjectionIsExact = AssertExact<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection> & AssertSameKeys<Omit<WireBot, "avatarUrl" | "tasks">, BotWireProjection>;
 export const botWireProjectionIsExact: BotWireProjectionIsExact = true;
 
-/** Upper bounds keep a grants patch from becoming a persistence blob; they
- * sit far above any real service's tool count. */
-export const CONNECTOR_SLUGS_MAX = 64;
-export const CONNECTOR_TOOLS_PER_SERVICE_MAX = 500;
-
-/** Validate and normalize a connectorTools value at the one boundary every
- * writer shares (patchBot). Returns a canonical copy: slugs checked against
- * the service pattern, tool lists deduplicated in order, `"*"` kept as-is.
- * The legacy clear stays a JSON null at the API edge; here callers pass
- * undefined to return a bot to boolean-only behavior. */
-export function parseConnectorTools(value: unknown): { ok: true; grants: Record<string, ConnectorToolGrant> } | { ok: false; error: string } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { ok: false, error: "connectorTools must be an object of service slugs to tool grants" };
-  }
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length > CONNECTOR_SLUGS_MAX) {
-    return { ok: false, error: `connectorTools may name at most ${CONNECTOR_SLUGS_MAX} services` };
-  }
-  const grants: Record<string, ConnectorToolGrant> = {};
-  for (const [slug, grant] of entries) {
-    if (!CONNECTOR_SLUG_PATTERN.test(slug)) {
-      return { ok: false, error: `connectorTools service slugs must be lowercase slugs (got "${slug}")` };
-    }
-    if (!grant || typeof grant !== "object" || Array.isArray(grant)) {
-      return { ok: false, error: `connectorTools.${slug} must be a grant like { tools: "*" } or { tools: ["TOOL_NAME"] }` };
-    }
-    const keys = Object.keys(grant);
-    if (keys.length !== 1 || keys[0] !== "tools") {
-      return { ok: false, error: `connectorTools.${slug} accepts only a tools field` };
-    }
-    const tools = (grant as { tools: unknown }).tools;
-    if (tools === "*") {
-      grants[slug] = { tools: "*" };
-      continue;
-    }
-    if (!Array.isArray(tools) || tools.length === 0) {
-      return { ok: false, error: `connectorTools.${slug}.tools must be "*" or a non-empty list of tool names (use {} to grant no tools)` };
-    }
-    if (tools.length > CONNECTOR_TOOLS_PER_SERVICE_MAX) {
-      return { ok: false, error: `connectorTools.${slug}.tools may list at most ${CONNECTOR_TOOLS_PER_SERVICE_MAX} tools` };
-    }
-    const names: string[] = [];
-    for (const tool of tools) {
-      if (typeof tool !== "string" || !CONNECTOR_TOOL_NAME_PATTERN.test(tool)) {
-        return { ok: false, error: `connectorTools.${slug}.tools names must be Composio tool names like GMAIL_SEND_EMAIL` };
-      }
-      if (!names.includes(tool)) names.push(tool);
-    }
-    grants[slug] = { tools: names };
-  }
-  return { ok: true, grants };
-}
-
 const BOTS_FILE = join(DATA_DIR, "bots.json");
 const GROUPS_FILE = join(DATA_DIR, "groups.json");
+const THREAD_MODEL_COPIES_CLEARED = join(DATA_DIR, "thread-model-copies-cleared");
+const ASKED_AT_FILLED = join(DATA_DIR, "asked-at-filled");
 
-/** The registries carry souls, project paths and per-bot settings, so they are
- * owner-only like the other data-dir stores. A file written by an older
- * release (or loosened by hand) is tightened on load. Best effort: failing to
- * tighten must never stop the fleet from loading, and the next save replaces
- * the file with a 0600 one anyway. Windows has no POSIX mode bits. */
+/** Owner-only (0600): the registries hold souls, project paths and per-bot settings. Best effort; Windows has no POSIX mode bits. */
 function tightenRegistryFile(file: string): void {
   if (process.platform === "win32") return;
   try {
     if ((statSync(file).mode & 0o077) !== 0) chmodSync(file, 0o600);
   } catch {
-    /* absent, or not ours to change */
   }
 }
 const messagesFile = (threadId: string) => join(DATA_DIR, `messages-${threadId}.json`);
@@ -497,15 +338,8 @@ const COLORS: MausColor[] = [
   "coral",
 ];
 
-/** Sections are persisted as display labels, so exact trimmed labels are
- * their identity. Missing/blank means the unsectioned (General) team. */
 export const sectionKey = (section?: string | null): string => section?.trim() || "";
 
-/** Resolve @mentions in a message against a bot roster: `@` must start a
- * word, the name must end on a word boundary (so "@New Bottle" never matches
- * "New Bot"), names match case-insensitively, longest name wins (so
- * "@New Bot 2" never half-matches "New Bot"), hidden bots skipped, results
- * deduped. Callers pre-filter the sender out of `peers`. */
 export function mentionedBots<T extends { name: string; hidden?: boolean }>(text: string, peers: T[]): T[] {
   const candidates = peers
     .filter((p) => !p.hidden && p.name.trim())
@@ -514,12 +348,12 @@ export function mentionedBots<T extends { name: string; hidden?: boolean }>(text
   const found: T[] = [];
   let at = -1;
   while ((at = lower.indexOf("@", at + 1)) !== -1) {
-    if (!isMentionBoundary(text, at)) continue; // user@host, not a tag
+    if (!isMentionBoundary(text, at)) continue;
     const rest = lower.slice(at + 1);
     const hit = candidates.find((p) => {
       const name = p.name.toLowerCase();
       if (!rest.startsWith(name)) return false;
-      const after = rest.slice(name.length); // must not run into a longer word
+      const after = rest.slice(name.length);
       return !isMentionNameContinuation(after);
     });
     if (hit && !found.includes(hit)) found.push(hit);
@@ -527,10 +361,6 @@ export function mentionedBots<T extends { name: string; hidden?: boolean }>(text
   return found;
 }
 
-/** Normalize persisted or API-provided routing. Old rooms did not have this
- * field; giving them their first member as lead fixes the old silent-send
- * behavior without making every prompt fan out to every model. A kind this
- * build does not know degrades the same way. */
 export function normalizeGroupDefaultResponder(
   value: unknown,
   memberIds: string[],
@@ -542,7 +372,6 @@ export function normalizeGroupDefaultResponder(
     if (candidate.kind === "everyone") return { kind: "everyone" };
     if (candidate.kind === "mentions") return { kind: "mentions" };
     if (candidate.kind === "auto") {
-      // A fallback who left the room reverts to "the first member".
       return typeof candidate.fallbackBotId === "string" && memberIds.includes(candidate.fallbackBotId)
         ? { kind: "auto", fallbackBotId: candidate.fallbackBotId }
         : { kind: "auto" };
@@ -559,8 +388,6 @@ export function normalizeGroupDefaultResponder(
   return { kind: "member", botId: memberIds[0] };
 }
 
-/** Resolve the bots invoked by a human room message. Explicit targets win;
- * otherwise the room policy chooses one member, everyone, or nobody. */
 export function roomResponders<T extends { id: string; name: string; hidden?: boolean }>(
   text: string,
   members: T[],
@@ -585,9 +412,6 @@ export function roomResponders<T extends { id: string; name: string; hidden?: bo
     const lead = available.find((member) => member.id === defaultResponder.botId);
     return lead ? [lead] : [];
   }
-  // Auto without a decision (the decision model off, unsure or failing) is
-  // lead mode: its fallback member, else the first active member. The
-  // decision itself is asked asynchronously by the room turn.
   if (defaultResponder.kind === "auto") {
     const fallback = available.find((member) => member.id === defaultResponder.fallbackBotId) ?? available[0];
     return fallback ? [fallback] : [];
@@ -595,13 +419,19 @@ export function roomResponders<T extends { id: string; name: string; hidden?: bo
   return [];
 }
 
-/** A hidden routine execution is not a conversation the person can open. */
+export function pruneRoomHolds(group: Pick<GroupRecord, "memberIds" | "holds" | "heldMessages">): void {
+  for (const key of ["holds", "heldMessages"] as const) {
+    const map = group[key];
+    if (!map) continue;
+    const kept = Object.fromEntries(Object.entries(map).filter(([botId]) => group.memberIds.includes(botId)));
+    if (Object.keys(kept).length !== Object.keys(map).length) (group as Record<typeof key, unknown>)[key] = kept;
+  }
+}
+
 function taskCountsAsBotUnread(task: { unread?: boolean; routineRunId?: string }): boolean {
   return Boolean(task.unread) && !task.routineRunId;
 }
 
-/** Messages form a tree (forks appear when a message is edited); the
- * visible conversation is the path from the root to activeLeafId. */
 interface ThreadState {
   messages: Message[];
   activeLeafId: string | null;
@@ -613,26 +443,27 @@ export class Store {
   private threads = new Map<string, ThreadState>();
   private defaultSelection: () => ModelSelection;
   private completeNewBotSelection: (selection: ModelSelection) => ModelSelection;
+  private driverKindOf: (instanceId: string) => string | undefined;
+  private initialLanguage: string | (() => string);
   private listeners = new Set<(change: StoreChange) => void>();
-  /** A broken team registry must not prevent loading independent chat data. */
   private registeringInitialSections = true;
-  /** Room turns and old callers have their own activity slot. Clearing
-   * that slot must not clear a concurrently running independent task. */
+  /** Clearing this slot must not clear a concurrently running task's activity. */
   private legacyActivities = new Map<string, BotActivity>();
 
   constructor(
     defaultSelection: () => ModelSelection,
-    /** Workspace-wide new-bot defaults (config newBots), applied to every
-     * new bot's selection whichever path created it. */
     completeNewBotSelection: (selection: ModelSelection) => ModelSelection = (selection) => selection,
+    /** Unknown counts as another driver, so Full and Custom fall back to Ask. */
+    driverKindOf: (instanceId: string) => string | undefined = () => undefined,
+    initialLanguage: string | (() => string) = Intl.DateTimeFormat().resolvedOptions().locale,
   ) {
     this.defaultSelection = defaultSelection;
     this.completeNewBotSelection = completeNewBotSelection;
+    this.driverKindOf = driverKindOf;
+    this.initialLanguage = initialLanguage;
     mkdirSync(DATA_DIR, { recursive: true });
     for (const file of [BOTS_FILE, GROUPS_FILE]) tightenRegistryFile(file);
-    // Whether the bot list is the real one. Room repair below trusts it to
-    // say which members no longer exist; an unreadable file must never read
-    // as "every member was deleted".
+    // An unreadable bots.json must never read as "every member was deleted".
     let botsLoaded = false;
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
@@ -646,16 +477,11 @@ export class Store {
       this.groups = [];
     }
     this.rememberSections([...this.bots, ...this.groups].map((record) => record.section));
-    // busy never survives a restart — no turn does either. Rooms saved
-    // before default responders existed adopt their first member as lead.
     let botsMigrated = false;
     const browserProfileAliases = loadBrowserProfileIdAliases();
     const chiefSectionsSeen = new Set<string>();
     let groupsMigrated = false;
     for (const b of this.bots) {
-      // transient state never survives a restart — and if a previous
-      // process died mid-turn, bots.json still says busy/working; persist
-      // the reset so the next load does not read it again
       if (b.busy || (b.activity !== undefined && b.activity !== "idle")) botsMigrated = true;
       b.busy = false;
       b.activity = "idle";
@@ -667,8 +493,6 @@ export class Store {
         b.soulHash = soulHash(b.soul);
         botsMigrated = true;
       }
-      // Existing bots predate their folders. Create missing mirrors before
-      // their first history write, but preserve any edits already on disk.
       if (!existsSync(soulFile(b.id))) {
         try { writeSoulMirror(b.id, b.soul); } catch (e) {
           console.warn(`[bot-folder] could not create SOUL.md for ${b.id}: ${(e as Error).message}`);
@@ -698,16 +522,10 @@ export class Store {
         delete b.approvalMode;
         botsMigrated = true;
       }
-      // A trusted elevation is a prepare/confirm/activate commit. If the
-      // desktop process or its private reply path died before activation,
-      // the durable marker survives beside the mode in the same atomic
-      // bots.json write. Revoke it before schedulers, listeners, or HTTP can
-      // start any new work.
+      // Revoke an unactivated elevation before schedulers, listeners or HTTP can start any new work.
       if (b.approvalGrant !== undefined) {
         const threadOnly = b.approvalGrant.threadOnly === true;
         if (threadOnly) {
-          // A crash may land between saving the target and clearing its
-          // journal. Revoke that target only, never unrelated threads.
           const target = b.tasks?.find(task => task.threadId === b.approvalGrant?.threadId);
           if (target) { target.approvalMode = "ask"; target.autoApprove = false; }
         }
@@ -770,9 +588,7 @@ export class Store {
       delete b.managedSections;
       botsMigrated = true;
     }
-    // Peer grants originally used mutable display names (ask_bot:@Helper).
-    // Convert only when exactly one bot has that name; ambiguous legacy
-    // entries remain inert rather than granting access to the wrong bot.
+    // A legacy ask_bot:@Name grant converts only when the name is unique; an ambiguous one stays inert.
     for (const b of this.bots) {
       if (!b.alwaysAllow?.length) continue;
       let changed = false;
@@ -789,13 +605,21 @@ export class Store {
         botsMigrated = true;
       }
     }
+    // Recover only app-issued provider-tool grants into bot defaults, never task/session grants such as shell commands.
+    for (const b of this.bots) {
+      const taskProviderGrants = (b.tasks ?? []).flatMap((task) =>
+        (task.alwaysAllow ?? []).filter((key) => key.startsWith("provider-tool:")),
+      );
+      if (!taskProviderGrants.length) continue;
+      const migrated = [...new Set([...(b.alwaysAllow ?? []), ...taskProviderGrants])].slice(0, 200);
+      if (JSON.stringify(migrated) === JSON.stringify(b.alwaysAllow ?? [])) continue;
+      b.alwaysAllow = migrated;
+      botsMigrated = true;
+    }
     const botIds = new Set(this.bots.map((b) => b.id));
     for (const g of this.groups) {
       g.busyBotId = null;
       delete g.turnStartedAt;
-      // A deleted bot used to stay a member for good: counted on the room's
-      // Save button and refused by the roster check on every save (MOCA-264).
-      // Bot-to-bot channels keep their pair; they are not edited as rooms.
       if (botsLoaded && !g.dm && g.memberIds.some((id) => !botIds.has(id))) {
         g.memberIds = g.memberIds.filter((id) => botIds.has(id));
         groupsMigrated = true;
@@ -803,7 +627,11 @@ export class Store {
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
       if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;
       g.defaultResponder = normalized;
-      // Bot-to-bot channels intentionally remain one canonical thread.
+      if (g.holds !== undefined || g.heldMessages !== undefined) {
+        const before = JSON.stringify([g.holds, g.heldMessages]);
+        pruneRoomHolds(g);
+        if (JSON.stringify([g.holds, g.heldMessages]) !== before) groupsMigrated = true;
+      }
       if (g.dm) {
         if (g.tasks !== undefined) {
           delete g.tasks;
@@ -823,8 +651,6 @@ export class Store {
         g.tasks = [initialTask];
         groupsMigrated = true;
       }
-      // Repair a malformed/stale active pointer conservatively. Every task
-      // transcript is retained; the newest known task becomes active.
       let active = g.tasks.find((task) => task.threadId === g.threadId);
       if (!active) {
         active = g.tasks[0]!;
@@ -835,11 +661,9 @@ export class Store {
       g.pinnedMessageId = active.pinnedMessageId;
     }
     if (groupsMigrated) this.saveGroups();
-    // bots saved before tasks existed have one endless thread; adopt it as
-    // their first task so nothing is lost and nothing special-cases it
+    const clearModelCopies = !existsSync(THREAD_MODEL_COPIES_CLEARED) && (botsLoaded || !existsSync(BOTS_FILE));
+    const fillAskedAts = !existsSync(ASKED_AT_FILLED) && (botsLoaded || !existsSync(BOTS_FILE));
     for (const b of this.bots) {
-      // Folders are organizational only. Preserve existing thread model
-      // snapshots while discarding the unshipped folder-default setting.
       if (b.projects?.some((project) => "modelSelection" in project)) {
         b.projects = b.projects.map(({ id, name, emoji }) => ({ id, name, ...(isProjectEmoji(emoji) ? { emoji } : {}) }));
         botsMigrated = true;
@@ -854,8 +678,6 @@ export class Store {
         }];
         botsMigrated = true;
       }
-      // Retain an old active transcript even if a stale tasks array omitted
-      // it. Repairing the pointer by selecting another task would hide it.
       let active = b.tasks.find((task) => task.threadId === b.threadId);
       if (!active) {
         active = {
@@ -869,8 +691,8 @@ export class Store {
         botsMigrated = true;
       }
       for (const task of b.tasks) {
-        if (task.modelSelection === undefined) {
-          task.modelSelection = structuredClone(b.modelSelection);
+        if (clearModelCopies && task.modelSelection !== undefined && sameModelSelection(task.modelSelection, b.modelSelection)) {
+          delete task.modelSelection;
           botsMigrated = true;
         }
         if (!task.resumeCursors) {
@@ -881,9 +703,6 @@ export class Store {
           task.unread = task === active && b.unread;
           botsMigrated = true;
         }
-        // Older builds left a failed hidden run unread, which kept the bot
-        // dot on after every visible chat was read. Clear it before the
-        // recompute below so the saved roster heals.
         if (task.routineRunId && task.unread) {
           task.unread = false;
           botsMigrated = true;
@@ -911,9 +730,7 @@ export class Store {
       b.unread = b.tasks.some(taskCountsAsBotUnread);
     }
     if (botsMigrated) this.saveBots();
-    // Search reads SQLite directly, so migrate every known legacy transcript
-    // at startup rather than waiting until the user happens to open it. Only
-    // pending JSON files are touched; already-migrated threads stay lazy.
+    if (clearModelCopies) writeFileAtomic(THREAD_MODEL_COPIES_CLEARED, "Threads follow their bot's model; the copies older builds made are cleared.\n", { mode: 0o600 });
     const knownThreads = new Set([
       ...this.bots.flatMap((b) => [b.threadId, ...(b.tasks ?? []).map((task) => task.threadId)]),
       ...this.groups.flatMap((group) => [group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]),
@@ -922,51 +739,43 @@ export class Store {
       const legacyFile = messagesFile(threadId);
       if (existsSync(legacyFile)) mdb.readThread(threadId, legacyFile);
     }
-    // After legacy transcripts are in SQLite, so the first boot sees their
-    // newest message instead of stamping createdAt and jumping next launch.
+    // After the transcript migration, so each stamp sees its thread's newest message.
     this.repairThreadUpdatedAts();
-    // After the roster is loaded, so identity resolution sees which opener
-    // ids are still live.
+    if (fillAskedAts) this.fillTaskAskedAts();
+    // After the roster loads, so identity resolution sees which opener ids are live.
     this.repairDuplicatePairConversations();
     this.registeringInitialSections = false;
   }
 
-  /** Advance a task's update stamp in memory only. Message writes must not
-   * rewrite bots.json; the next snapshot and the startup repair read this. */
-  private noteThreadActivity(threadId: string, at: number): void {
+  /** In memory only: message writes must not rewrite bots.json. */
+  private noteThreadActivity(threadId: string, at: number, forOrder = false, orderAt = at): void {
     if (!Number.isFinite(at)) return;
-    const advance = (current: number | undefined) => Math.max(current ?? 0, at);
-    for (const bot of this.bots) {
-      const task = bot.tasks?.find((candidate) => candidate.threadId === threadId);
+    for (const task of [...this.bots, ...this.groups].map((owner) => owner.tasks?.find((candidate) => candidate.threadId === threadId))) {
       if (!task) continue;
-      const next = advance(task.updatedAt);
-      if (task.updatedAt !== next) task.updatedAt = next;
-    }
-    for (const group of this.groups) {
-      const task = group.tasks?.find((candidate) => candidate.threadId === threadId);
-      if (!task) continue;
-      const next = advance(task.updatedAt);
-      if (task.updatedAt !== next) task.updatedAt = next;
+      task.updatedAt = Math.max(task.updatedAt ?? 0, at);
+      if (forOrder) task.lastThreadOrderAt = Math.max(task.lastThreadOrderAt ?? 0, orderAt);
     }
   }
 
-  /** Fill missing stamps, and raise a stamp that is older than the newest
-   * stored message. Never moves a stamp backwards: there is no per-message
-   * delete, and a clock skew must not reshuffle the list on every boot. */
+  /** Never moves a stamp backwards: a clock skew must not reshuffle the list on every boot. */
   private repairThreadUpdatedAts(): void {
     const botTasks = this.bots.flatMap((bot) => bot.tasks ?? []);
     const groupTasks = this.groups.flatMap((group) => group.tasks ?? []);
     const latest = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId));
+    const latestOrder = mdb.latestMessageAts([...botTasks, ...groupTasks].map((task) => task.threadId), true);
     let botsDirty = false;
     let groupsDirty = false;
-    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number }) => {
+    const repair = (task: { threadId: string; createdAt: number; updatedAt?: number; lastThreadOrderAt?: number }) => {
       const fromMessages = latest.get(task.threadId);
       const next = fromMessages !== undefined && (task.updatedAt === undefined || fromMessages > task.updatedAt)
         ? fromMessages
         : task.updatedAt ?? task.createdAt;
-      if (task.updatedAt === next) return false;
+      const fromOrder = latestOrder.get(task.threadId);
+      const orderAt = fromOrder === undefined ? task.lastThreadOrderAt : Math.max(task.lastThreadOrderAt ?? task.createdAt, fromOrder);
+      const changed = task.updatedAt !== next || task.lastThreadOrderAt !== orderAt;
       task.updatedAt = next;
-      return true;
+      task.lastThreadOrderAt = orderAt;
+      return changed;
     };
     for (const task of botTasks) if (repair(task)) botsDirty = true;
     for (const task of groupTasks) if (repair(task)) groupsDirty = true;
@@ -974,22 +783,24 @@ export class Store {
     if (groupsDirty) this.saveGroups();
   }
 
-  /** Resolve the identity of a historical pair row, including a sender
-   * recreated with the same unique name. */
+  private fillTaskAskedAts(): void {
+    const tasks = this.bots.flatMap((bot) => bot.tasks ?? []).filter((task) => task.askedAt === undefined && !task.routineRunId);
+    const asked = mdb.latestPersonLineAts(tasks.map((task) => task.threadId));
+    for (const task of tasks) {
+      const at = asked.get(task.threadId);
+      if (at !== undefined) task.askedAt = at;
+    }
+    if (asked.size) this.saveBots();
+    writeFileAtomic(ASKED_AT_FILLED, "Threads from before askedAt have it from the lines people wrote there.\n", { mode: 0o600 });
+  }
+
   private openerIdentity(openedBy: TaskOpenedBy): string {
     if (this.bot(openedBy.botId)) return openedBy.botId;
     const named = this.bots.filter((bot) => bot.name === openedBy.name);
     return named.length === 1 ? named[0].id : openedBy.botId;
   }
 
-  /** At most one live pair row per (recipient, sender identity). Servers
-   * before identity-stable matching minted a second live pair row for a
-   * deleted-and-recreated sender while the predecessor's row dangled live
-   * forever; collapse those on load by keeping the first row in the task
-   * list (the newest, actively used one) and demoting
-   * the rest to closed plain threads. History is kept, never deleted. Runs on
-   * every load and touches nothing in a store that already holds the
-   * invariant. */
+  /** At most one live pair row per (recipient, sender identity); extra rows become closed plain threads, never deleted. */
   private repairDuplicatePairConversations(): void {
     let botsDirty = false;
     type SweepTask = { openedBy?: TaskOpenedBy; closedBy?: TaskClosedBy };
@@ -1002,7 +813,6 @@ export class Store {
         pairs.set(identity, [...(pairs.get(identity) ?? []), task]);
       }
       for (const rows of pairs.values()) {
-        // Rows are in task-list order; keep the newest.
         for (const duplicate of rows.slice(1)) {
           const by = duplicate.openedBy!;
           const identity = this.openerIdentity(by);
@@ -1017,14 +827,17 @@ export class Store {
         }
       }
     };
-    // Historical pair rows lived only on bots; group tasks have no peer stamps.
     for (const bot of this.bots) sweep(bot.tasks, () => { botsDirty = true; });
     if (botsDirty) this.saveBots();
   }
 
+  private commitBotChange(bot: BotRecord, action: string, change: () => void, onRollback?: () => void) {
+    commitBotChange(bot, action, () => this.saveBots(), change, onRollback);
+  }
+
   private saveBots(bots: BotRecord[] = this.bots, registerSections = true) {
     if (registerSections) this.rememberSections([...this.bots, ...bots].map((bot) => bot.section));
-    writeFileAtomic(BOTS_FILE, JSON.stringify(bots.map(({ busy: _busy, activity: _activity, ...bot }) => ({
+    writeFileAtomicIfChanged(BOTS_FILE, JSON.stringify(bots.map(({ busy: _busy, activity: _activity, ...bot }) => ({
       ...bot,
       tasks: bot.tasks?.map(({ busy: _taskBusy, activity: _taskActivity, turnStartedAt: _taskTurnStarted, ...task }) => persistedPin(task)),
     })), null, 2), { mode: 0o600 });
@@ -1032,7 +845,7 @@ export class Store {
 
   private saveGroups(groups: GroupRecord[] = this.groups, registerSections = true) {
     if (registerSections) this.rememberSections(groups.map((group) => group.section));
-    writeFileAtomic(GROUPS_FILE, JSON.stringify(groups.map(({ busyBotId: _busyBotId, turnStartedAt: _turnStartedAt, ...g }) => ({
+    writeFileAtomicIfChanged(GROUPS_FILE, JSON.stringify(groups.map(({ busyBotId: _busyBotId, turnStartedAt: _turnStartedAt, ...g }) => ({
       ...g,
       ...(g.tasks ? { tasks: g.tasks.map((task) => persistedPin(task)) } : {}),
     })), null, 2), { mode: 0o600 });
@@ -1049,7 +862,6 @@ export class Store {
     }
   }
 
-  /** Rename the same team, preserving its members and existing access grants. */
   renameSection(name: string, nextName: string, computers?: TeamComputers): string | undefined {
     if (!name || !this.sections.includes(name)) return "No such team";
     nextName = nextName.trim();
@@ -1062,8 +874,7 @@ export class Store {
     if (affected.some(bot => bot.busy || bot.tasks?.some(task => task.busy)) || rooms.some(group => group.busyBotId)) {
       return "Stop this team's active work before renaming the team";
     }
-    // Keep the established empty-team lifecycle: old grants are revoked when
-    // an empty identity is removed, so recreating it cannot restore access.
+    // Removing an empty identity revokes its old grants, so recreating it cannot restore access.
     if (!members.length && !rooms.length && !computers?.forSection(name)) return this.changeEmptySection(name, nextName);
     const nextBots = this.bots.map(bot => ({ ...bot,
       ...(members.includes(bot) ? { section: nextName } : {}),
@@ -1072,8 +883,7 @@ export class Store {
     const nextGroups = this.groups.map(group => rooms.includes(group) ? { ...group, section: nextName } : group);
     let computerChanged = false;
     try {
-      // Register the new name only after saving the records; otherwise the
-      // registry's duplicate-name check would reject this same rename.
+      // Register the new name only after saving, or the registry's duplicate-name check rejects this rename.
       this.saveBots(nextBots, false);
       this.saveGroups(nextGroups, false);
       computerChanged = computers?.renameSection(name, nextName) ?? false;
@@ -1084,7 +894,7 @@ export class Store {
       if (computerChanged) computers!.renameSection(nextName, name);
       throw error;
     }
-    // Preserve identities held by the schedulers and other store consumers.
+    // Mutate in place: schedulers and other consumers hold these objects.
     for (let i = 0; i < nextBots.length; i++) Object.assign(this.bots[i], nextBots[i]);
     for (let i = 0; i < nextGroups.length; i++) Object.assign(this.groups[i], nextGroups[i]);
     for (const bot of affected) this.emit({ type: "bot", botId: bot.id });
@@ -1093,7 +903,6 @@ export class Store {
     return undefined;
   }
 
-  /** Empty-only changes cannot merge teams or silently change anybody's access. */
   changeEmptySection(name: string, nextName: string | null): string | undefined {
     if (!this.sections.includes(name)) return "No such team";
     if ([...this.bots, ...this.groups].some((record) => sectionKey(record.section) === name)) {
@@ -1106,9 +915,7 @@ export class Store {
     const revoked = this.bots.filter((bot) => bot.managedSections?.some((section) => sectionKey(section) === name));
     if (revoked.length) {
       const grants = new Map(revoked.map((bot) => [bot.id, bot.managedSections!.filter((section) => sectionKey(section) !== name)]));
-      // Revoke durably before freeing the name. If the registry write then
-      // fails, authority stays narrowed; recreating a name can never revive
-      // its old grants. Update existing objects so in-flight checks see it.
+      // Revoke durably before freeing the name, so recreating it can never revive its old grants.
       this.saveBots(this.bots.map((bot) => grants.has(bot.id) ? { ...bot, managedSections: grants.get(bot.id)! } : bot));
       for (const bot of revoked) bot.managedSections = grants.get(bot.id)!;
       for (const bot of revoked) this.emit({ type: "bot", botId: bot.id });
@@ -1118,7 +925,6 @@ export class Store {
     return undefined;
   }
 
-  /** Remove the team, keeping its bots, rooms and conversations in General. */
   deleteSection(name: string): string | undefined {
     if (!name || !this.sections.includes(name)) return "No such team";
     const members = this.bots.filter(bot => sectionKey(bot.section) === name);
@@ -1151,9 +957,6 @@ export class Store {
     return undefined;
   }
 
-  // ── groups ────────────────────────────────────────────────────────────
-  /** Subscribe to every write. Listeners run after the write and after
-   * save; a throwing listener never breaks the write. */
   onChange(listener: (change: StoreChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -1219,14 +1022,13 @@ export class Store {
     return group;
   }
 
-  /** The bot⇄bot channel for a pair, if it exists (order-insensitive). */
   dmGroup(a: string, b: string): GroupRecord | undefined {
     return this.groups.find(
       (g) => g.dm && g.memberIds.length === 2 && g.memberIds.includes(a) && g.memberIds.includes(b),
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     if (Object.prototype.hasOwnProperty.call(patch, "section")) {
@@ -1234,14 +1036,12 @@ export class Store {
     }
     const previousBusyBotId = group.busyBotId;
     Object.assign(group, patch);
-    // The group's elapsed readout counts the busy member's turn from the
-    // claim time — the group-side twin of a task's turnStartedAt. Derived,
-    // never patched directly: stamp it on every transition into a busy
-    // speaker and clear it when the group goes idle, so each member's turn
-    // counts from its own start.
     if (Object.prototype.hasOwnProperty.call(patch, "busyBotId")) {
       if (patch.busyBotId && patch.busyBotId !== previousBusyBotId) group.turnStartedAt = Date.now();
       else if (!patch.busyBotId) delete group.turnStartedAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "turnTimeoutMinutes") && patch.turnTimeoutMinutes == null) {
+      delete group.turnTimeoutMinutes;
     }
     if (!group.dm && Object.prototype.hasOwnProperty.call(patch, "pinnedMessageId")) {
       const active = this.activeGroupTask(group.id);
@@ -1252,17 +1052,15 @@ export class Store {
       group.memberIds,
       Boolean(group.dm),
     );
+    if (Object.prototype.hasOwnProperty.call(patch, "memberIds")) pruneRoomHolds(group);
     this.saveGroups();
     this.emit({ type: "group", groupId: group.id });
     return group;
   }
 
-  /** A thread's durable record: DB rows, legacy JSON leftovers, and the
-   * per-thread event logs. Every delete path funnels here — task, group,
-   * and bot deletion — so the logs cannot outlive the thread anywhere. */
-  private deleteThreadRecord(threadId: string) {
+  private deleteThreadRecord(threadId: string, dbAlreadyDeleted = false) {
     this.threads.delete(threadId);
-    mdb.deleteThread(threadId);
+    if (!dbAlreadyDeleted) mdb.deleteThread(threadId);
     for (const file of [
       messagesFile(threadId),
       `${messagesFile(threadId)}.imported`,
@@ -1288,9 +1086,6 @@ export class Store {
     return true;
   }
 
-  /** A process restart cannot preserve an in-flight room orchestrator. Close
-   * every durable working receipt before clients load it, including manual
-   * goals that do not have a RoutineRun record to reconcile separately. */
   reconcileInterruptedGroupGoals(
     resolve?: (
       runId: string,
@@ -1308,8 +1103,6 @@ export class Store {
       ownedThreadIds.add(group.threadId);
       for (const task of group.tasks ?? []) ownedThreadIds.add(task.threadId);
     }
-    // load() already migrated every legacy transcript file into SQLite, so
-    // this recovery query is proportional to unfinished goals, not history.
     let recovered = 0;
     for (const hit of mdb.workingGoalRunMessages()) {
       if (!ownedThreadIds.has(hit.threadId) || !hit.message.goalRun) continue;
@@ -1337,7 +1130,6 @@ export class Store {
     return recovered;
   }
 
-  // ── channel tasks ────────────────────────────────────────────────────
   groupTasks(groupId: string): GroupTaskRecord[] {
     const group = this.group(groupId);
     return group?.dm ? [] : (group?.tasks ?? []);
@@ -1397,6 +1189,16 @@ export class Store {
     return task;
   }
 
+  setGroupTaskTurnTimeout(groupId: string, threadId: string, minutes: number | null): GroupTaskRecord | null {
+    const task = this.groupTaskByThread(groupId, threadId);
+    if (!task) return null;
+    if (minutes == null) delete task.turnTimeoutMinutes;
+    else task.turnTimeoutMinutes = minutes;
+    this.saveGroups();
+    this.emit({ type: "group", groupId });
+    return task;
+  }
+
   renameGroupTask(groupId: string, threadId: string, title: string): GroupTaskRecord | null {
     const task = this.groupTaskByThread(groupId, threadId);
     if (!task) return null;
@@ -1406,9 +1208,6 @@ export class Store {
     return task;
   }
 
-  /** Name a channel task after its first message, once. Returns the task
-   * it named so a caller can later replace exactly that machine-made
-   * title. */
   titleGroupTaskFromFirstMessage(groupId: string, text: string, threadId?: string): GroupTaskRecord | null {
     const task = threadId ? this.groupTaskByThread(groupId, threadId) : this.activeGroupTask(groupId);
     if (!task || task.titleFromFirstMessage || task.title !== UNTITLED_TASK) return null;
@@ -1419,9 +1218,6 @@ export class Store {
     return task;
   }
 
-  /** Swap a machine-made first-message channel title for a generated one,
-   * once, on the same snippet-equality contract as bot tasks: any rename
-   * by the person breaks that equality first and always wins. */
   retitleGroupTask(groupId: string, threadId: string, machineTitle: string, title: string): GroupTaskRecord | null {
     const task = this.groupTaskByThread(groupId, threadId);
     if (!task || task.title !== machineTitle) return null;
@@ -1429,12 +1225,25 @@ export class Store {
   }
 
   deleteGroupTask(groupId: string, threadId: string): GroupRecord | null {
+    const result = this.deleteGroupTasks(groupId, [threadId]);
+    return result?.deleted.length ? result.group : null;
+  }
+
+  /** Null when nothing may go: no such channel, a bot-to-bot channel, or a request that would leave it with no task. */
+  deleteGroupTasks(groupId: string, threadIds: string[]): { group: GroupRecord; deleted: string[]; missing: string[] } | null {
     const group = this.group(groupId);
-    if (!group || group.dm || !group.tasks || group.tasks.length < 2) return null;
-    if (!group.tasks.some((task) => task.threadId === threadId)) return null;
-    group.tasks = group.tasks.filter((task) => task.threadId !== threadId);
-    this.deleteThreadRecord(threadId);
-    if (group.threadId === threadId) {
+    if (!group || group.dm || !group.tasks) return null;
+    const present = new Set(group.tasks.map((task) => task.threadId));
+    const unique = [...new Set(threadIds)];
+    const deleted = unique.filter((id) => present.has(id));
+    const missing = unique.filter((id) => !present.has(id));
+    if (deleted.length >= group.tasks.length) return null;
+    if (!deleted.length) return { group, deleted, missing };
+    mdb.deleteThreads(deleted);
+    const doomed = new Set(deleted);
+    group.tasks = group.tasks.filter((task) => !doomed.has(task.threadId));
+    for (const id of deleted) this.deleteThreadRecord(id, true);
+    if (doomed.has(group.threadId)) {
       const next = group.tasks[0]!;
       group.threadId = next.threadId;
       group.pinnedCwd = next.pinnedCwd;
@@ -1442,10 +1251,9 @@ export class Store {
     }
     this.saveGroups();
     this.emit({ type: "group", groupId });
-    return group;
+    return { group, deleted, missing };
   }
 
-  /** Toggle an emoji reaction on a message ("user" or a member botId). */
   toggleReaction(threadId: string, messageId: string, emoji: string, by: string): Message | null {
     const existing = this.messagesFor(threadId).find((m) => m.id === messageId);
     if (!existing) return null;
@@ -1458,20 +1266,12 @@ export class Store {
   private thread(threadId: string): ThreadState {
     const t = this.threads.get(threadId);
     if (t) return t;
-    // SQLite is the source of truth; a thread with no rows imports its
-    // legacy messages-<threadId>.json once, inside readThread
     return this.cacheThread(threadId, mdb.readThread(threadId, messagesFile(threadId)));
   }
 
-  /** Finish hydrating a full set of thread rows into the cache: chain any
-   * legacy (pre-branching) rows' parentId in array order, default the
-   * active leaf to the newest message, and store it. Shared by a full load
-   * and by messagesTail() when its bounded read turns out to be the whole
-   * thread anyway. */
   private cacheThread(threadId: string, rows: mdb.ThreadRows): ThreadState {
     const { messages, activeLeafId: storedLeaf } = rows;
     let activeLeafId = storedLeaf;
-    // legacy rows carry no parentId — chain them in array order
     let prev: string | null = null;
     for (const m of messages) {
       if (m.parentId === undefined) m.parentId = prev;
@@ -1487,17 +1287,7 @@ export class Store {
     return this.thread(threadId).messages;
   }
 
-  /** A bounded page of a thread's newest messages, for callers that only
-   * need a display page — the startup/reconnect hydrate and a fresh
-   * scrollback view. Reads just `limit` rows at the SQL boundary instead of
-   * the whole transcript, unless the thread is already cached from other
-   * work (then it's a plain in-memory slice, no extra SQL) or the bounded
-   * read comes back as the complete thread anyway (short thread, or a
-   * one-time legacy import) — that gets cached like any other full load so
-   * a later messagesFor() doesn't re-read it. Legacy rows that predate
-   * per-message parentId are only chained correctly on a full load, so a
-   * bounded page missing that context falls back to one rather than
-   * returning messages with a broken parent chain. */
+  /** Legacy rows without a parentId chain only on a full load, so a bounded page missing that context falls back to one. */
   messagesTail(threadId: string, limit: number): { messages: Message[]; hasMore: boolean; activeLeafId: string | null } {
     let state = this.threads.get(threadId);
     if (!state) {
@@ -1518,21 +1308,19 @@ export class Store {
     return { messages: messages.slice(start), hasMore: start > 0, activeLeafId };
   }
 
-  /** Used only with newly allocated import threads. No live actions are
-   * replayed: the importer supplies inert text and freshly remapped IDs. */
-  importTranscript(threadId: string, messages: Message[], activeLeafId: string | null): void {
-    if (this.messagesFor(threadId).length) throw new Error("Cannot import over an existing conversation");
-    mdb.importThread(threadId, messages, activeLeafId);
+  importTranscript(threadId: string, messages: Message[], activeLeafId: string | null, relinked?: ReadonlyArray<{ id: string; parentId: string | null }>): void {
+    if (!relinked && this.messagesFor(threadId).length) throw new Error("Cannot import over an existing conversation");
+    mdb.importThread(threadId, messages, activeLeafId, relinked);
     this.threads.delete(threadId);
     const newest = messages.reduce((max, message) => Math.max(max, message.at), Number.NEGATIVE_INFINITY);
-    if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest);
+    const newestOrder = messages.reduce((max, message) => movesThreadToTop(message) ? Math.max(max, message.turnCompletedAt ?? message.at) : max, Number.NEGATIVE_INFINITY);
+    if (Number.isFinite(newest)) this.noteThreadActivity(threadId, newest, Number.isFinite(newestOrder), newestOrder);
   }
 
   activeLeaf(threadId: string): string | null {
     return this.thread(threadId).activeLeafId;
   }
 
-  /** The visible conversation: root → activeLeafId. */
   activePath(threadId: string): Message[] {
     const t = this.thread(threadId);
     const byId = new Map(t.messages.map((m) => [m.id, m]));
@@ -1545,16 +1333,13 @@ export class Store {
     return path.reverse();
   }
 
-  /** Mark the last assistant text on the active branch as this turn's final
-   * visible answer. If a provider ends after commentary without emitting a
-   * separate answer, that commentary remains visible as the safe fallback. */
   markTerminalAssistantMessage(threadId: string, turnId: string): Message | null {
     const path = this.activePath(threadId);
     for (let i = path.length - 1; i >= 0; i -= 1) {
       const message = path[i];
       if (message.role === "bot" && message.kind === "text" && message.turnId === turnId) {
         if (message.turnTerminal) return message;
-        return this.patchMessage(threadId, message.id, { turnTerminal: true });
+        return this.patchMessage(threadId, message.id, { turnTerminal: true, turnCompletedAt: Date.now() });
       }
     }
     return null;
@@ -1566,8 +1351,6 @@ export class Store {
     const persist = () => { mdb.appendMessage(threadId, full); return full; };
     const committed = command ? runCommand(command, persist) : persist();
     if (committed.id !== full.id) return committed;
-    // Only publish the committed write. A failed receipt must leave both
-    // the in-memory branch and subscribers unchanged, just like SQLite.
     t.messages.push(full);
     t.activeLeafId = full.id;
     if (full.kind === "screen") {
@@ -1576,22 +1359,12 @@ export class Store {
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
-    // The first-run quiz is not a live ask. Talking past it hides it so the
-    // transcript is just the greeting plus what they said. Cards with a
-    // requestId are permission/question prompts and stay until answered.
     if (full.role === "user" && full.kind === "text") this.dismissOnboardingCard(threadId);
     return full;
   }
 
-  /** Insert a message into the active chain directly after `anchorId` — the
-   * home for turn artifacts that finish AFTER the world moved on (the
-   * settle-time screen capture races a fast follow-up send, which used to
-   * leave the user's message stranded above the screenshot). When the anchor
-   * is still the leaf this is a plain append; otherwise the anchor's
-   * children are re-parented onto the inserted message, so the transcript
-   * reads turn → artifact → follow-up and the leaf stays where it was. */
   insertMessageAfter(threadId: string, anchorId: string | undefined, message: Omit<Message, "id" | "at">): Message {
     const t = this.thread(threadId);
     const anchorExists = anchorId !== undefined && t.messages.some((m) => m.id === anchorId);
@@ -1599,22 +1372,20 @@ export class Store {
     const full: Message = { id: newId(), at: Date.now(), ...redactBotAuthored(message), parentId: anchorId };
     const children = t.messages.filter((m) => m.parentId === anchorId);
     t.messages.push(full);
-    mdb.insertMessage(threadId, full); // the leaf stays where it was, in SQLite too
+    mdb.insertMessage(threadId, full);
     if (full.kind === "screen") {
       for (const pruned of this.pruneScreenFrames(t)) {
         mdb.updateMessage(threadId, pruned);
         this.emit({ type: "message.patch", threadId, message: pruned });
       }
     }
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, movesThreadToTop(full), full.turnCompletedAt ?? full.at);
     this.emit({ type: "message", threadId, message: full });
-    // announced after the insert so no client ever sees two siblings
-    // claiming the same parent
+    // After the insert, so no client ever sees two siblings claiming the same parent.
     for (const child of children) this.patchMessage(threadId, child.id, { parentId: full.id });
     return full;
   }
 
-  /** Hide the first-run quiz on this thread, if it is still open. */
   dismissOnboardingCard(threadId: string): Message | null {
     const t = this.thread(threadId);
     const card = t.messages.find(
@@ -1624,12 +1395,6 @@ export class Store {
     return this.patchMessage(threadId, card.id, { card: { ...card.card, dismissed: true } });
   }
 
-  /** Screen frames are ~100-500KB of base64 each; keeping every frame of a
-   * long computer session bloats the transcript for nothing the client
-   * would ever show. The newest few keep their pixels; older ones stay in
-   * the transcript as placeholders.
-   * Returns the messages whose pixels were dropped so the caller can
-   * persist exactly those. */
   private pruneScreenFrames(t: { messages: Message[] }, keep = 4): Message[] {
     const pruned: Message[] = [];
     let seen = 0;
@@ -1645,11 +1410,7 @@ export class Store {
     return pruned;
   }
 
-  /** Fork the conversation: a new user message that replaces `sourceId`
-   * (same parent, new text) and becomes the active leaf. `sendId` is the
-   * client's identity for this edit, so its instant bubble reconciles onto
-   * the canonical message and a network retry cannot fork twice. */
-  branchMessage(threadId: string, sourceId: string, text: string, sendId?: string, sender?: Message["sender"]): Message | null {
+  branchMessage(threadId: string, sourceId: string, text: string, sendId?: string, sender?: Message["sender"], dataContext?: Message["dataContext"]): Message | null {
     const t = this.thread(threadId);
     const source = t.messages.find((m) => m.id === sourceId);
     if (!source) return null;
@@ -1663,24 +1424,18 @@ export class Store {
       replyToId: source.replyToId,
       ...(sendId ? { sendId } : {}),
       ...(sender ? { sender } : {}),
+      ...(dataContext ? { dataContext } : {}),
     };
     t.messages.push(full);
     t.activeLeafId = full.id;
     mdb.appendMessage(threadId, full);
-    this.noteThreadActivity(threadId, full.at);
+    this.noteThreadActivity(threadId, full.at, true);
     this.emit({ type: "message", threadId, message: full });
-    // The message frame alone leaves every client on the OLD branch: a
-    // client adopts a new message as its leaf only when it chains onto the
-    // current leaf, and this one is a sibling of the edited message, not a
-    // child of the reply. Say where the conversation now points, as
-    // setActiveLeaf does, or the edit shows only after the next full bot
-    // snapshot — in practice, once the reply has arrived.
+    // A client adopts a new message as its leaf only when it chains onto its leaf; a sibling needs this pointer.
     this.emit({ type: "thread", threadId, activeLeafId: full.id });
     return full;
   }
 
-  /** Point the visible conversation at the branch containing `messageId`,
-   * descending to that branch's most recently active leaf. */
   setActiveLeaf(threadId: string, messageId: string): string | null {
     const t = this.thread(threadId);
     if (!t.messages.some((m) => m.id === messageId)) return null;
@@ -1701,13 +1456,12 @@ export class Store {
     const idx = t.messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return null;
     const next = { ...t.messages[idx], ...patch, card: patch.card ?? t.messages[idx].card };
-    // SQLite is the durable source of truth. Persist before changing memory so
-    // a failed write cannot make this process believe a card was answered
-    // while a restart would still show it as pending.
+    // Persist before memory: a failed write must not mark a card answered that a restart shows pending.
     let applied = false;
     const persist = () => { mdb.updateMessage(threadId, next); applied = true; return next; };
     const committed = command ? runCommand(command, persist) : persist();
     if (!applied) return committed;
+    if (!movesThreadToTop(t.messages[idx]) && movesThreadToTop(next)) this.noteThreadActivity(threadId, next.at, true, next.turnCompletedAt ?? next.at);
     t.messages[idx] = next;
     this.emit({ type: "message.patch", threadId, message: next });
     return next;
@@ -1721,8 +1475,6 @@ export class Store {
     return this.bots.find((b) => b.threadId === threadId || b.tasks?.some((t) => t.threadId === threadId)) ?? null;
   }
 
-  /** The one place a new bot's selection is decided: the caller's choice, or
-   * the workspace default, completed with the workspace's new-bot defaults. */
   private newBotSelection(requested?: ModelSelection): ModelSelection {
     return this.completeNewBotSelection(requested ?? this.defaultSelection());
   }
@@ -1735,8 +1487,6 @@ export class Store {
       >
     > = {},
     opts: {
-      /** false = no greeting/onboarding seed. Imported bots must not open
-       * with a first-person greeting the user never asked for. */
       seedMessages?: boolean;
     } = {},
   ): BotRecord {
@@ -1773,39 +1523,30 @@ export class Store {
       createdAt: bot.createdAt,
       updatedAt: bot.createdAt,
       resumeCursors: {},
-      modelSelection: structuredClone(bot.modelSelection),
       unread: false,
       activity: "idle",
       busy: false,
     }];
-    // Persist the selection in the first record, before publishing the bot
-    // or starting its greeting. An interrupted creation cannot inherit tools.
+    // Persist before publishing or greeting, so an interrupted creation cannot inherit tools.
     this.saveBots([bot, ...this.bots]);
     this.bots.unshift(bot);
-    // The folder exists from the first moment, so the user can open
-    // SOUL.md before the bot has said a word. The record is canonical: a
-    // mirror-write failure must never fail bot creation.
     try {
       writeSoulMirror(bot.id, bot.soul ?? "");
     } catch (e) {
       console.warn(`[bot-folder] could not write SOUL.md mirror for ${bot.id}: ${(e as Error).message}`);
     }
-    // Announce the owner before its onboarding transcript. SSE clients need
-    // the bot/thread mapping before they can place either message.
+    // Before its transcript: clients need the bot/thread mapping to place either message.
     this.emit({ type: "bot", botId: bot.id });
-    // Keep the greeting valid for configured bots and every engine.
     if (opts.seedMessages !== false) {
       this.appendMessage(bot.threadId, {
         role: "bot",
         kind: "text",
-        text: `Hi, I'm ${name}. What would you like me to do?`,
+        text: initialGreeting(name, typeof this.initialLanguage === "function" ? this.initialLanguage() : this.initialLanguage),
       });
     }
     return bot;
   }
 
-  /** All setup fields and the Chief's receipt commit before publishing any
-   * mutation. Model defaults never rewrite saved thread selections. */
   applyTeamSetup(request: TeamSetupRequest): TeamSetupResult {
     const chief = this.bot(request.botId);
     if (!chief) throw new Error("The requesting Chief no longer exists");
@@ -1825,29 +1566,21 @@ export class Store {
         next = { id: operation.botId, threadId: operation.threadId, name: operation.fields.name,
           title: "", description: "", soul: "", notifications: true, color: COLORS[nextBots.length % COLORS.length], unread: false,
           resumeCursors: {}, createdAt, ...operation.fields, modelSelection,
-          approvalMode: "ask", autoApprove: false, composio: false, approvePeerComms: false,
-          // A Chief's new teammate is seen by exactly the Chief's audience:
-          // a restricted Chief never creates a bot everyone sees.
+          autoApprove: false, composio: false, approvePeerComms: false,
+          // Absent would mean every tool once connected apps are turned on.
+          connectorTools: {},
+          // A restricted Chief never creates a bot everyone sees.
           ...(chief.visibility && chief.visibility !== "everyone" ? { visibility: structuredClone(chief.visibility) } : {}),
           tasks: [{ threadId: operation.threadId, title: UNTITLED_THREAD, createdAt, updatedAt: createdAt, resumeCursors: {},
-            modelSelection: structuredClone(modelSelection), approvalMode: "ask", autoApprove: false,
             unread: false, activity: "idle", busy: false }],
         };
-        // "" is the private-workspace spelling on proposal; the record
-        // stays clean with the field absent, exactly like the PATCH path.
         if (!next.cwd) delete next.cwd;
         nextBots.unshift(next);
       } else {
         if (at < 0) throw new Error("A setup target no longer exists");
         const previous = nextBots[at];
         next = { ...previous, ...operation.fields };
-        if (operation.fields.modelSelection) next.tasks = previous.tasks?.map((task) => ({
-          ...task,
-          modelSelection: structuredClone(task.modelSelection ?? previous.modelSelection),
-          approvalMode: approvalModeFor(this.projectBotForTask(previous.id, task.threadId)!),
-          autoApprove: task.autoApprove ?? previous.autoApprove,
-          alwaysAllow: structuredClone(task.alwaysAllow ?? previous.alwaysAllow ?? []),
-        }));
+        if (operation.fields.modelSelection) next.tasks = this.withDefaultModel(previous, operation.fields.modelSelection);
         nextBots[at] = next;
       }
       if (operation.fields.chiefOfStaff === false) delete next.managedSections;
@@ -1861,8 +1594,7 @@ export class Store {
     })) };
     const chiefAt = nextBots.findIndex((bot) => bot.id === chief.id);
     const nextChief = { ...nextBots[chiefAt], lastTeamSetupReceipt: { requestId: request.requestId, result } };
-    // Only the newly-created teams explicitly named in the human review may
-    // extend this Chief's reach. Existing teams require owner settings.
+    // Only new teams the human review named may extend this Chief's reach.
     if (request.newTeams.length && nextChief.chiefOfStaff) {
       nextChief.managedSections = managedSections;
     }
@@ -1879,22 +1611,26 @@ export class Store {
     return result;
   }
 
-  /** One reviewed default-model change (propose_model): task stamping is
-   * identical to applyTeamSetup's update branch — saved per-thread
-   * selections are never rewritten, and a thread with no selection of its
-   * own is pinned to the previous default so it does not silently follow
-   * the new one. */
+  private switchNeedsAsk(botId: string, threadId: string, from: ModelSelection, to: ModelSelection): boolean {
+    if (from.instanceId === to.instanceId) return false;
+    const thread = this.projectBotForTask(botId, threadId);
+    return Boolean(thread) && modelSwitchNeedsAsk(approvalModeFor(thread!), this.driverKindOf(from.instanceId), this.driverKindOf(to.instanceId));
+  }
+
+  private withDefaultModel(bot: BotRecord, next: ModelSelection): TaskRecord[] | undefined {
+    return bot.tasks?.map((task) => ({
+      ...task,
+      approvalMode: approvalModeFor(this.projectBotForTask(bot.id, task.threadId)!),
+      autoApprove: task.autoApprove ?? bot.autoApprove,
+      alwaysAllow: structuredClone(task.alwaysAllow ?? bot.alwaysAllow ?? []),
+      ...(task.modelSelection === undefined && this.switchNeedsAsk(bot.id, task.threadId, bot.modelSelection, next) ? structuredClone(ASK_NOW) : {}),
+    }));
+  }
+
   applyModelDefault(id: string, modelSelection: ModelSelection): BotRecord | null {
     const previous = this.bot(id);
     if (!previous) return null;
-    const next: BotRecord = { ...previous, modelSelection: structuredClone(modelSelection) };
-    next.tasks = previous.tasks?.map((task) => ({
-      ...task,
-      modelSelection: structuredClone(task.modelSelection ?? previous.modelSelection),
-      approvalMode: approvalModeFor(this.projectBotForTask(previous.id, task.threadId)!),
-      autoApprove: task.autoApprove ?? previous.autoApprove,
-      alwaysAllow: structuredClone(task.alwaysAllow ?? previous.alwaysAllow ?? []),
-    }));
+    const next: BotRecord = { ...previous, modelSelection: structuredClone(modelSelection), tasks: this.withDefaultModel(previous, modelSelection) };
     this.saveBots(this.bots.map((candidate) => candidate.id === id ? next : candidate));
     this.bots = this.bots.map((candidate) => candidate.id === id ? next : candidate);
     this.emit({ type: "bot", botId: id });
@@ -1913,13 +1649,10 @@ export class Store {
       ] } };
       nextBots = nextBots.map((candidate) => candidate.id === chief.id ? { ...candidate, lastTeamSetupReceipt } : candidate);
     }
-    // Persist removal and the review receipt before deleting conversation or
-    // workspace data. A failed save must leave the bot recoverable in place.
+    // Persist removal before deleting data: a failed save must leave the bot recoverable.
     this.saveBots(nextBots);
     this.bots = nextBots;
     this.legacyActivities.delete(id);
-    // A deleted bot leaves every room it was in, and a room it led falls back
-    // to its next member. Bot-to-bot channels keep their pair.
     const rooms = this.groups.filter((g) => !g.dm && g.memberIds.includes(id));
     for (const g of rooms) {
       g.memberIds = g.memberIds.filter((member) => member !== id);
@@ -1927,28 +1660,22 @@ export class Store {
       g.defaultResponder = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, false);
     }
     if (rooms.length) {
-      // Bot removal is already durable. Finish erasing its data even if this
-      // write fails; startup repair removes these stale memberships later.
       try { this.saveGroups(); } catch (error) { console.warn("store: room cleanup will retry on restart", error); }
     }
-    // every task's transcript goes with the bot, not just the open one
     for (const threadId of new Set([bot.threadId, ...(bot.tasks ?? []).map((t) => t.threadId)])) {
       this.deleteThreadRecord(threadId);
     }
-    // the bot's workspace (files + memory) goes with it — same rule as its
-    // transcripts: deleting a bot deletes what it knew
     try {
       rmSync(workspaceDir(id), { recursive: true, force: true });
     } catch {}
-    // Generated task-workspaces are project files, not bot memory. Keep
-    // them (and user-selected cwd folders) when deleting conversations.
-    // Approval state deliberately lives outside the bot-writable workspace.
-    // It still belongs to the bot, so deleting the bot must remove staged
-    // proposals, manifests, and native-link ownership records with it.
+    try {
+      rmSync(journalFile(id), { force: true });
+    } catch {}
+    mdb.deleteBotMemoryFiles(id);
+    forgetBotMemoryJournal(id);
     try {
       rmSync(join(DATA_DIR, "skill-state", id), { recursive: true, force: true });
     } catch {}
-    // The bot folder (SOUL.md mirror) is the bot's too.
     removeBotFolder(id);
     this.emit({ type: "bot.deleted", botId: id });
     for (const g of rooms) this.emit({ type: "group", groupId: g.id });
@@ -1958,10 +1685,6 @@ export class Store {
   patchBot(id: string, patch: Partial<BotRecord>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
-    // Grants are the one field whose shape every writer must share, so the
-    // store normalizes them itself: API patches arrive pre-validated, import
-    // paths pass {}, and an internal caller that skips the parser still
-    // lands canonical data or stops here.
     if (patch.connectorTools !== undefined) {
       const parsed = parseConnectorTools(patch.connectorTools);
       if (!parsed.ok) throw new Error(parsed.error);
@@ -1978,9 +1701,11 @@ export class Store {
       patch = { ...patch };
       delete patch.toolScope;
     }
-    // Runtime revocations must become effective in memory even when disk is
-    // unavailable. Profile edits use the separate atomic path below.
+    const toAsk = patch.modelSelection ? (bot.tasks ?? []).filter((task) => task.modelSelection === undefined &&
+      this.switchNeedsAsk(id, task.threadId, bot.modelSelection, patch.modelSelection!)) : [];
+    // Revocations take effect in memory even when the disk write fails.
     Object.assign(bot, patch);
+    for (const task of toAsk) Object.assign(task, structuredClone(ASK_NOW));
     const task = this.activeTask(id);
     if (task) {
       for (const key of ["resumeCursors", "rewound", "pinnedMessageId", "unread"] as const) {
@@ -1991,8 +1716,7 @@ export class Store {
       bot.unread = bot.tasks!.some(taskCountsAsBotUnread);
     }
     if (wideningToolScope) {
-      // New authority becomes live only after its durable save succeeds.
-      // Other runtime revocations above still take effect on a failed write.
+      // New authority goes live only after its durable save succeeds.
       this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, toolScope: nextToolScope } : candidate));
       bot.toolScope = nextToolScope;
     } else this.saveBots();
@@ -2000,9 +1724,6 @@ export class Store {
     return bot;
   }
 
-  /** Voice ids belong to one provider's catalog. Changing the workspace
-   * provider invalidates every per-agent selection as one durable mutation,
-   * before clients are told to pick replacement voices. */
   clearVoiceSelections(): BotRecord[] {
     const changed = this.bots.filter((bot) => bot.voice !== undefined && bot.voice !== "");
     if (!changed.length) return [];
@@ -2016,8 +1737,6 @@ export class Store {
     return changed;
   }
 
-  /** Commit a validated profile change before publishing its fields. Unlike
-   * runtime revocation, a failed user edit must leave the old profile intact. */
   patchBotProfile(id: string, patch: BotProfilePatch & Partial<Pick<BotRecord, "cwd" | "lastProfileRequestId">>): BotRecord | null {
     const bot = this.bot(id);
     if (!bot) return null;
@@ -2026,8 +1745,6 @@ export class Store {
       next.soulHash = soulHash(patch.soul);
       next.soulDrift = false;
     }
-    // Persist all fields together before publishing anything to the live
-    // record. A failed write leaves both memory and disk at the old profile.
     this.saveBots(this.bots.map((candidate) => candidate.id === id ? next : candidate));
     Object.assign(bot, next);
     if (patch.soul !== undefined) {
@@ -2039,18 +1756,10 @@ export class Store {
     return bot;
   }
 
-  /** Convenience for a soul-only change. The record is canonical; a failed
-   * mirror write is reported in logs and can be retried by discarding drift. */
   setSoul(id: string, soul: string): BotRecord | null {
     return this.patchBotProfile(id, { soul });
   }
 
-  /** File visible bots into one sidebar section as a single durable write.
-   *
-   * This deliberately stages the complete next file before touching the
-   * live records. A missing/hidden target therefore changes nothing, and a
-   * failed atomic write cannot leave memory ahead of disk. A Chief collision
-   * is refused rather than silently removing somebody's coordinator role. */
   setBotsSection(
     botIds: string[],
     section: string,
@@ -2094,7 +1803,6 @@ export class Store {
     return { ok: true, bots: ids.map((id) => this.bot(id)!) };
   }
 
-  /** Apply only the membership edits the user made, in one bots-file write. */
   updateTeamMembers(section: string, addIds: string[], removeIds: string[]):
     { ok: true; bots: BotRecord[] } | { ok: false; reason: "unavailable" | "chief-conflict" | "membership-changed" } {
     const key = sectionKey(section);
@@ -2122,8 +1830,6 @@ export class Store {
     return { ok: true, bots: this.bots.filter(bot => ids.has(bot.id)) };
   }
 
-  /** Legacy bot/room activity occupies its own slot; direct conversations
-   * use setTaskActivity so settling one thread cannot clear another. */
   setActivity(botId: string, activity: BotActivity): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
@@ -2145,9 +1851,6 @@ export class Store {
     task.busy = busy;
     if (busy && !wasBusy) task.turnStartedAt = Date.now();
     else if (!busy) delete task.turnStartedAt;
-    // Reaching here means the thread just did something — exactly the
-    // "activity" an until-activity snooze waits for, including settling
-    // back to idle after a turn. Persist the wake like any task change.
     if (task.snoozedUntil === 0) {
       task.snoozedUntil = undefined;
       this.saveBots();
@@ -2164,9 +1867,6 @@ export class Store {
     bot.busy = ACTIVITY_BUSY.has(bot.activity);
   }
 
-  /** Elect one Chief of Staff in its section (or clear one section) as one persisted change.
-   * The changed records are returned so the server can update every open
-   * window, including the bot that just handed the role over. */
   setChiefOfStaff(id: string | null, section?: string | null): BotRecord[] | null {
     const selected = id ? this.bot(id) : null;
     if (id && !selected) return null;
@@ -2178,7 +1878,6 @@ export class Store {
       if (Boolean(bot.chiefOfStaff) === next && !(next && bot.hidden)) continue;
       if (next) {
         bot.chiefOfStaff = true;
-        // A section's main contact must stay reachable in the sidebar.
         bot.hidden = false;
       } else {
         bot.chiefOfStaff = false;
@@ -2191,10 +1890,6 @@ export class Store {
     return changed;
   }
 
-  /** Company instance ids became stable across re-enrolment. Moves every
-   * saved reference to an old id onto its replacement in one save: model
-   * choices, native resume cursors and handed-message records. An entry that
-   * already exists under the new id wins over the old one. */
   renameInstances(ids: ReadonlyMap<string, string>): number {
     const touches = (record?: Record<string, unknown>) => Boolean(record && Object.keys(record).some(key => ids.has(key)));
     const rename = <T>(record: Record<string, T>): Record<string, T> => {
@@ -2227,34 +1922,9 @@ export class Store {
     return changed.length;
   }
 
-  /** The removed Computer engine's saved choices move to `replacement` in one
-   * save: each bot's model, each conversation's own model, and its backups.
-   * Native resume cursors and handed-message records of the removed engine go
-   * too; the conversations stay, and the new engine reads them from the
-   * transcript. Each conversation keeps working where it did: on Auto the
-   * removed engine always ran on the bot's own cloud computer, so where
-   * `keepCloud` says that computer is still there and the new engine can use
-   * it, a moved bot's Works on becomes Cloud, and a moved conversation of an
-   * Auto bot is pinned there the way an Auto turn records where it landed.
-   * Where the new engine can't use a computer, an Auto-recorded cloud pin on
-   * a moved conversation gives way, as on a Works on change
-   * (clearAutoSurfacePins); a place the person chose stays chosen.
-   * A level the new engine would have to confirm goes back to Ask, as on
-   * every engine switch (modelSwitchNeedsAsk); a conversation that followed
-   * the bot's level keeps the level it had. Every other setting is kept.
-   * Nothing changes in memory until the save succeeds, so a failed save can
-   * be tried again. Returns one entry per moved conversation, plus one for
-   * the bot's open conversation when only the bot's own engine moved.
-   * Idempotent: nothing left names the engine. */
   retireInstances(ids: ReadonlySet<string>, replacement: ModelSelection, options: {
-    /** The replacement's driver kind, for the approval check. */
     driverKind?: string;
-    /** The replacement can use a computer (canWorkOnCloud). Without one, a
-     * bot on Auto stays on Auto: Works on Cloud would refuse every turn. */
     canWorkOnCloud: boolean;
-    /** This bot, on Auto, reached its own cloud computer through the removed
-     * engine and still can: a Boat account is set, its cloud backend is Boat,
-     * and no team computer serves its section. */
     keepCloud: (bot: BotRecord) => boolean;
   }): ComputerEngineMove[] {
     const retired = (selection?: { instanceId: string }) => Boolean(selection && ids.has(selection.instanceId));
@@ -2283,40 +1953,29 @@ export class Store {
       }
       if (touches(bot.resumeCursors)) patch.resumeCursors = without(bot.resumeCursors);
       const computer = patch.computer ?? bot.computer;
-      /** Where a conversation worked before the move (its own place, else
-       * the bot's Works on, and on Auto the bot's own cloud computer where
-       * keepCloud says so), and what the move did to that. */
       const cloudAfterMove = (pin: TaskRecord["surface"], pinSource: TaskRecord["surfaceSource"]): Pick<ComputerEngineMove, "cloud" | "noComputer"> => {
         const place = pin ?? bot.computer;
         const wasCloud = place === "cloud" || (place === undefined && options.keepCloud(bot));
         if (!wasCloud || options.canWorkOnCloud) return { cloud: wasCloud, noComputer: false };
-        // An Auto-recorded pin gives way (below): only the person's place
-        // or the bot's Works on can still send it to the cloud computer.
         const personPin = pin !== undefined && pinSource !== "auto";
         const still = personPin ? pin : bot.computer;
         return { cloud: false, noComputer: still !== "cloud" ? "auto" : personPin ? "pin" : "works-on" };
       };
       (bot.tasks ?? []).forEach((task, index) => {
         const taskPatch = tasks[index]!;
-        // Read before anything changes: a conversation that follows the bot's
-        // level has the bot's level here.
+        // Read before anything changes: a thread that follows the bot's level has it here.
         const before = this.projectBotForTask(bot.id, task.threadId)!;
-        // The bot's own level goes back to Ask, so a conversation that
-        // followed it keeps the level it had (as switchTaskModel does).
         if (botAsk) {
           Object.assign(taskPatch, {
             approvalMode: before.approvalMode, autoApprove: before.autoApprove, alwaysAllow: structuredClone(before.alwaysAllow ?? []),
           });
         }
-        // The engine this conversation ran on: its own, else the bot's.
         const moved = task.modelSelection ? retired(task.modelSelection) : botMoved;
         if (moved) {
           if (!botMoved && computer === undefined && task.surface === undefined && keepsCloud) {
             taskPatch.surface = "cloud";
             taskPatch.surfaceSource = "auto";
           }
-          // The machine's memory of where Auto landed: with no computer on
-          // the new engine, the next turn would be refused there once.
           if (!options.canWorkOnCloud && task.surface === "cloud" && task.surfaceSource === "auto") {
             taskPatch.surface = undefined;
             taskPatch.surfaceSource = undefined;
@@ -2328,8 +1987,6 @@ export class Store {
           moves.push({ botId: bot.id, threadId: task.threadId, scope, ...cloudAfterMove(task.surface, task.surfaceSource),
             askNow: ask || (scope === "bot" && botAsk) });
         } else if (botMoved && task.threadId === bot.threadId) {
-          // The bot's own engine and level moved, but its open conversation
-          // has an engine of its own: it is still told, about the bot.
           moves.push({ botId: bot.id, threadId: task.threadId, scope: "bot-only", ...cloudAfterMove(undefined, undefined), askNow: botAsk });
         }
         if (touches(task.resumeCursors)) taskPatch.resumeCursors = without(task.resumeCursors);
@@ -2353,39 +2010,29 @@ export class Store {
   setResumeCursor(botId: string, instanceId: string, cursor: unknown, threadId?: string) {
     const bot = this.bot(botId);
     if (!bot) return;
-    // the cursor belongs to the task that produced it, not to the bot
     const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
     if (task) task.resumeCursors[instanceId] = cursor;
-    // The legacy mirror follows the task visible in chat, never a detached
-    // routine task working in the background.
     if (!threadId || bot.threadId === threadId) bot.resumeCursors[instanceId] = cursor;
-    this.saveBots();
+    saveBotsFor("the conversation's engine session", () => this.saveBots());
     this.emit({ type: "bot", botId });
   }
 
-  /** Record which instance just took a turn on this task. Called at
-   * dispatch, not at cursor time — transcript-replay engines never
-   * produce a cursor, and they still count as having run last. */
   markTaskDispatched(botId: string, threadId: string, instanceId: string) {
     const task = this.taskByThread(botId, threadId);
     if (!task || task.lastInstanceId === instanceId) return;
     task.lastInstanceId = instanceId;
-    this.saveBots();
+    saveBotsFor("which engine has this conversation", () => this.saveBots());
   }
 
   setHandedMessages(botId: string, threadId: string, instanceId: string, state: HandedState) {
     const task = this.taskByThread(botId, threadId);
     if (!task || JSON.stringify(task.handedMessages?.[instanceId]) === JSON.stringify(state)) return;
-    // Other instances keep a record only while it still describes their session.
     const live = Object.entries(task.handedMessages ?? {})
       .filter(([id, record]) => id !== instanceId && record.session !== undefined && record.session === task.resumeCursors[id]);
     task.handedMessages = { ...Object.fromEntries(live), [instanceId]: state };
-    this.saveBots();
+    saveBotsFor("what this conversation handed its engine", () => this.saveBots());
   }
 
-  /** Bank one settled turn onto its task. Called once per turn.completed;
-   * the running per-driver token indicator is deliberately not used here
-   * because its meaning differs by driver. */
   addTaskUsage(
     botId: string,
     threadId: string,
@@ -2396,11 +2043,8 @@ export class Store {
     const prev: TaskUsage = { input: 0, output: 0, costUsd: null, turns: 0, ...task.usage };
     const cost = typeof turn.costUsd === "number" && Number.isFinite(turn.costUsd) ? turn.costUsd : null;
     const prevCost = typeof prev.costUsd === "number" ? prev.costUsd : null;
-    // providers occasionally report NaN or a negative on a partial turn —
-    // never let that poison a running tally
+    // Providers occasionally report NaN or a negative on a partial turn.
     const clean = (n: number | undefined) => (typeof n === "number" && Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0);
-    // the cached share exists on a record only once a driver has reported
-    // it — a driver that never does leaves the record shaped as before
     const cachedKnown = typeof prev.cachedInput === "number" || typeof turn.cachedInput === "number";
     const prevInput = clean(prev.input);
     const turnInput = clean(turn.input);
@@ -2419,30 +2063,20 @@ export class Store {
         ...(typeof turn.cachedInput === "number" ? { cachedInput: Math.min(clean(turn.cachedInput), turnInput) } : {}),
         costUsd: cost,
       },
-      // a turn that reported no context keeps the previous reading rather
-      // than pretending the window emptied
       ...(contextTokens > 0
         ? { context: { tokens: contextTokens, ...(contextWindow > 0 ? { window: contextWindow } : {}) } }
         : prev.context ? { context: prev.context } : {}),
     };
-    this.saveBots();
+    saveBotsFor("the thread's usage", () => this.saveBots());
     this.emit({ type: "bot", botId });
     return task.usage;
   }
 
-  /** The folder a task's turn runs in. Pins on first call from the bot's
-   * current folder — unless the task already has a session (a thread from
-   * before folders existed), which pins to the default so the folder can't
-   * move under it. Returns the pinned value: a path, or null for default. */
-  /** Forget where a conversation works: its next turn pins it again
-   * (pinTaskCwd). For a Cloud home's conversation a revoked session opened,
-   * whose next turn must work in its own folder (server/cloud-owner.ts). */
   unpinTaskCwd(threadId: string): boolean {
     const bot = this.botByThread(threadId);
     const task = bot ? this.taskByThread(bot.id, threadId) : undefined;
     if (!bot || !task || task.cwd === undefined) return false;
-    delete task.cwd;
-    this.saveBots();
+    this.commitBotChange(bot, "the thread's folder", () => { delete task.cwd; });
     this.emit({ type: "bot", botId: bot.id });
     return true;
   }
@@ -2451,45 +2085,31 @@ export class Store {
     const bot = this.bot(botId);
     const task = bot ? this.taskByThread(botId, threadId) : undefined;
     if (!bot || !task) return null;
-    // Its own folder, never the bot's project folder (a Cloud home's guest
-    // conversation), pinned when it first runs. A conversation that already
-    // ran elsewhere keeps its pin: it was not opened that way, and moving it
-    // would lose its work and its session.
     if (opts.privateOnly && task.cwd === undefined) {
-      task.cwd = fallbackCwd ?? null;
-      this.saveBots();
+      const cwd = fallbackCwd ?? null;
+      this.commitBotChange(bot, "the thread's folder", () => { task.cwd = cwd; });
       this.emit({ type: "bot", botId });
-      return task.cwd;
+      return cwd;
     }
     if (opts.none) {
       if (task.cwd !== null) {
-        task.cwd = null;
-        this.saveBots();
+        this.commitBotChange(bot, "the thread's folder", () => { task.cwd = null; });
         this.emit({ type: "bot", botId });
       }
       return null;
     }
-    if (task.cwd === undefined) {
-      task.cwd = Object.keys(task.resumeCursors).length === 0 ? (bot.cwd ?? fallbackCwd ?? null) : null;
-      this.saveBots();
-      this.emit({ type: "bot", botId });
-    }
-    return task.cwd;
+    if (task.cwd !== undefined) return task.cwd;
+    const cwd = Object.keys(task.resumeCursors).length === 0 ? (bot.cwd ?? fallbackCwd ?? null) : null;
+    this.commitBotChange(bot, "the thread's folder", () => { task.cwd = cwd; });
+    this.emit({ type: "bot", botId });
+    return cwd;
   }
 
-  /** The folder a room's member turns run in. Pins on the first turn that
-   * dispatches, from the room's `cwd` at that moment. Pinned, not read
-   * live, for the same reason tasks pin (see pinTaskCwd): engines key
-   * their sessions and files to the folder a thread starts in, and a room
-   * lives on ONE thread forever — so changing the room's folder applies to
-   * future rooms, never under a room that already started working
-   * somewhere. Returns the pinned value: a path, or null = each member's
-   * own default. */
+  /** Pinned, not read live: engines key their sessions and files to the folder a thread starts in. */
   pinGroupCwd(groupId: string, threadId?: string): string | null {
     const group = this.group(groupId);
     if (!group) return null;
     const task = threadId ? this.groupTaskByThread(groupId, threadId) : this.activeGroupTask(groupId);
-    // Direct-message channels retain the original single-thread contract.
     if (!task) {
       if (!group.dm) return null;
       if (group.pinnedCwd === undefined) {
@@ -2508,7 +2128,6 @@ export class Store {
     return task.pinnedCwd;
   }
 
-  // ── tasks ─────────────────────────────────────────────────────────────
   project(botId: string, projectId: string): BotProjectRecord | undefined {
     return this.bot(botId)?.projects?.find((project) => project.id === projectId);
   }
@@ -2537,7 +2156,6 @@ export class Store {
     return project;
   }
 
-  /** The stored array is the sidebar order; only a full owned permutation is valid. */
   reorderProjects(botId: string, projectIds: string[]): BotProjectRecord[] | null {
     const bot = this.bot(botId);
     const projects = bot?.projects ?? [];
@@ -2550,7 +2168,6 @@ export class Store {
     return bot.projects;
   }
 
-  /** Removing an organizational label never removes its conversations. */
   deleteProject(botId: string, projectId: string): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot || !this.project(botId, projectId)) return null;
@@ -2563,7 +2180,6 @@ export class Store {
     return bot;
   }
 
-  /** The first thing the human asked in a thread — a task's natural name. */
   private firstUserLine(threadId: string): string | null {
     const first = this.messagesFor(threadId).find((m) => m.role === "user" && m.kind === "text" && m.text?.trim());
     return first?.text ? titleFromMessage(first.text) : null;
@@ -2582,17 +2198,11 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
-  /** The thread `fromBotId` opened on this bot from its conversation
-   * `fromThreadId` with coordinate_bots: one per conversation and teammate,
-   * so whatever that conversation sends later continues it. A thread the
-   * person archived is left alone. */
-  workThread(botId: string, fromBotId: string, fromThreadId: string): TaskRecord | undefined {
+  workThread(botId: string, fromBotId: string, fromThreadId: string, roomLane = false): TaskRecord | undefined {
     return this.tasks(botId).find((t) => t.openedBy?.kind === "work" && t.openedBy.botId === fromBotId &&
-      t.openedBy.threadId === fromThreadId && t.archivedAt === undefined);
+      t.openedBy.threadId === fromThreadId && Boolean(t.openedBy.roomLane) === roomLane && t.archivedAt === undefined);
   }
 
-  /** A turn gets an independent snapshot without changing the selected task
-   * or mutating the bot's defaults while another turn is running. */
   projectBotForTask(botId: string, threadId: string): BotRecord | null {
     const bot = this.bot(botId);
     const task = this.taskByThread(botId, threadId);
@@ -2619,84 +2229,90 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     if (patch.projectId !== undefined && !this.project(botId, patch.projectId)) return null;
-    for (const key of TASK_PATCH_FIELDS) {
-      if (Object.prototype.hasOwnProperty.call(patch, key)) {
-        Object.assign(task, { [key]: structuredClone(patch[key]) });
+    const revocation = keptRevocation(task, patch);
+    this.commitBotChange(bot, "the thread change", () => {
+      for (const key of TASK_PATCH_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(patch, key)) {
+          Object.assign(task, { [key]: structuredClone(patch[key]) });
+        }
       }
-    }
-    // "Until new activity" ends the moment the thread has something new for
-    // the person, and every unread wake funnels through patchTask — so this
-    // one hook is the whole activity alarm. A time-based snooze is left to
-    // its clock: attention overrides it on screen without clearing it.
-    if (task.snoozedUntil === 0 && patch.unread === true) task.snoozedUntil = undefined;
-    if (typeof patch.title === "string") task.title = patch.title.trim().slice(0, 80) || UNTITLED_THREAD;
-    if (Object.prototype.hasOwnProperty.call(patch, "pinned") && task.pinned !== true) delete task.pinned;
-    // Still hidden: attention belongs on the source conversation. A same-call
-    // clear of routineRunId (no-source promotion) may keep unread.
-    if (task.routineRunId) task.unread = false;
-    if (bot.threadId === threadId) this.mirrorActiveTask(bot, task);
-    bot.unread = bot.tasks!.some(taskCountsAsBotUnread);
-    this.saveBots();
+      if (task.snoozedUntil === 0 && patch.unread === true) task.snoozedUntil = undefined;
+      if (typeof patch.title === "string") task.title = patch.title.trim().slice(0, 80) || UNTITLED_THREAD;
+      if (Object.prototype.hasOwnProperty.call(patch, "pinned") && task.pinned !== true) delete task.pinned;
+      if (task.routineRunId) task.unread = false;
+      if (bot.threadId === threadId) this.mirrorActiveTask(bot, task);
+      bot.unread = bot.tasks!.some(taskCountsAsBotUnread);
+    }, revocation && (() => Object.assign(task, revocation)));
     this.emit({ type: "bot", botId });
     return task;
   }
 
-  /** A Works on change is the newest explicit choice, so this bot's
-   * machine-recorded pins that now point somewhere else give way. A pin a
-   * person set, a legacy pin with unknown provenance, and a pin that already
-   * matches the new destination survive. Returns how many pins were cleared. */
-  clearAutoSurfacePins(botId: string, destination: Destination): number {
-    const bot = this.bot(botId);
-    if (!bot?.tasks) return 0;
-    let cleared = 0;
-    for (const task of bot.tasks) {
-      if (task.surface === undefined || task.surfaceSource !== "auto" || task.surface === destination) continue;
-      task.surface = undefined;
-      task.surfaceSource = undefined;
-      cleared++;
-    }
-    if (!cleared) return 0;
-    this.saveBots();
-    this.emit({ type: "bot", botId });
-    return cleared;
+  suggestTaskLink(botId: string, threadId: string, text: string): TaskRecord | null {
+    const url = lastChangeRequestUrl(text);
+    const task = this.taskByThread(botId, threadId);
+    if (!url || !task || task.linkAuto === false || (task.link && !task.linkAuto) || task.link === url) return null;
+    return this.patchTask(botId, threadId, { link: url, linkAuto: true });
   }
 
-  /** Model/provider changes are one configuration transaction: never publish
-   * a new provider before its confirmed approval downgrade, or change the
-   * default while leaving the selected thread behind after a write failure. */
+  clearAutoSurfacePins(botId: string, destination: Destination): number {
+    const bot = this.bot(botId);
+    const stale = bot?.tasks?.filter((task) => task.surface !== undefined && task.surfaceSource === "auto" && task.surface !== destination) ?? [];
+    if (!bot || !stale.length) return 0;
+    this.commitBotChange(bot, "the threads' destinations", () => {
+      for (const task of stale) {
+        task.surface = undefined;
+        task.surfaceSource = undefined;
+      }
+    });
+    this.emit({ type: "bot", botId });
+    return stale.length;
+  }
+
+  /** One write: never publish a new provider before its approval downgrade. */
   switchTaskModel(botId: string, threadId: string, selection: ModelSelection,
     updateBotDefault: boolean, resetApprovalToAsk: boolean, taskPatch: TaskPatch = {}): TaskRecord | null {
     const bot = this.bot(botId);
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
-    const patch = { modelSelection: structuredClone(selection),
-      ...(resetApprovalToAsk ? { approvalMode: "ask" as const, autoApprove: false, alwaysAllow: [] } : {}) };
-    const nextTask = persistedPin({ ...task, ...taskPatch, ...patch,
+    const approval = resetApprovalToAsk ? structuredClone(ASK_NOW) : {};
+    const own = sameModelSelection(selection, updateBotDefault ? selection : bot.modelSelection) ? undefined : structuredClone(selection);
+    const nextTask = persistedPin({ ...task, ...taskPatch, modelSelection: own, ...approval,
       ...(typeof taskPatch.title === "string" ? { title: taskPatch.title.trim().slice(0, 80) || UNTITLED_THREAD } : {}) });
-    // Older threads may still inherit settings. Freeze their effective
-    // values before updating the default so "other threads unchanged" also
-    // holds for workspaces created before per-thread approval settings.
-    const nextTasks = bot.tasks!.map((candidate) => candidate === task ? nextTask : !updateBotDefault ? candidate : {
-      ...candidate,
-      modelSelection: structuredClone(candidate.modelSelection ?? bot.modelSelection),
-      approvalMode: approvalModeFor(this.projectBotForTask(botId, candidate.threadId)!),
-      autoApprove: candidate.autoApprove ?? bot.autoApprove,
-      alwaysAllow: structuredClone(candidate.alwaysAllow ?? bot.alwaysAllow ?? []),
-    });
-    const next = { ...bot, ...(updateBotDefault ? patch : {}),
-      tasks: nextTasks };
-    this.saveBots(this.bots.map((candidate) => candidate === bot ? next : candidate));
+    const others = updateBotDefault ? this.withDefaultModel(bot, selection)! : bot.tasks!;
+    const nextTasks = bot.tasks!.map((candidate, index) => candidate === task ? nextTask : others[index]!);
+    const botPatch = updateBotDefault ? { modelSelection: structuredClone(selection), ...approval } : {};
+    this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, ...botPatch, tasks: nextTasks } : candidate));
     bot.tasks!.forEach((candidate, index) => Object.assign(candidate, nextTasks[index]));
-    if (updateBotDefault) Object.assign(bot, patch);
+    Object.assign(bot, botPatch);
     this.emit({ type: "bot", botId });
     return task;
   }
 
-  /** One durable write: never leave only part of a bot's threads updated. */
-  setAllThreadApprovalMode(botId: string, mode: "full" | "ask"): BotRecord | null {
+  followBotModel(botId: string, threadIds: readonly string[],
+    reset: (from: ModelSelection, to: ModelSelection) => Partial<TaskRecord> = () => ({})): string[] {
+    const bot = this.bot(botId);
+    if (!bot?.tasks) return [];
+    const listed = new Set(threadIds);
+    const patches = bot.tasks.map((task): Partial<TaskRecord> | null => !listed.has(task.threadId) || task.modelSelection === undefined ? null : {
+      ...reset(task.modelSelection, bot.modelSelection),
+      modelSelection: undefined,
+      ...(this.switchNeedsAsk(botId, task.threadId, task.modelSelection, bot.modelSelection) ? structuredClone(ASK_NOW) : {}),
+    });
+    const moved = bot.tasks.filter((_, index) => patches[index]).map((task) => task.threadId);
+    if (!moved.length) return [];
+    const nextTasks = bot.tasks.map((task, index) => patches[index] ? { ...task, ...patches[index] } : task);
+    this.saveBots(this.bots.map((candidate) => candidate === bot ? { ...bot, tasks: nextTasks } : candidate));
+    bot.tasks.forEach((task, index) => { if (patches[index]) Object.assign(task, patches[index]); });
+    const active = bot.tasks.find((task) => task.threadId === bot.threadId);
+    if (active) this.mirrorActiveTask(bot, active);
+    this.emit({ type: "bot", botId });
+    return moved;
+  }
+
+  setAllThreadApprovalMode(botId: string, mode: Exclude<ApprovalMode, "custom">): BotRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
-    const patch = { approvalMode: mode, autoApprove: false, alwaysAllow: [] };
+    const patch = { approvalMode: mode, autoApprove: mode === "auto", ...(mode === "full" ? { alwaysAllow: [] } : {}) };
     const tasks = (bot.tasks ?? []).map(task => ({ ...task, ...patch }));
     const next = { ...bot, ...patch, approvalGrant: undefined, tasks };
     this.saveBots(this.bots.map(candidate => candidate === bot ? next : candidate));
@@ -2706,11 +2322,7 @@ export class Store {
     return bot;
   }
 
-  /** Copy this bot's saved approval level and standing approvals onto one
-   * thread. A new thread already gets them; this is how an existing
-   * conversation catches up. Other threads, the transcript, and the bot
-   * default stay put. A grant that has not committed yet is ignored, so a
-   * refresh cannot copy the temporary Ask mask. */
+  /** An uncommitted grant is ignored, so a refresh cannot copy the temporary Ask mask. */
   refreshTaskPermissions(botId: string, threadId: string): TaskRecord | null {
     const bot = this.bot(botId);
     const task = this.taskByThread(botId, threadId);
@@ -2730,25 +2342,33 @@ export class Store {
     bot.pinnedMessageId = task.pinnedMessageId;
   }
 
-  /** A fresh context on the same bot: new thread, new session, same
-   * persona/tools/computer. Becomes the active task. It runs on the bot's
-   * default model unless the caller hands it one (a thread opened from
-   * another of this bot's threads keeps that thread's model). */
   createTask(botId: string, title?: string, activate = true, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: "ask" | "full",
-    modelSelection?: ModelSelection): TaskRecord | null {
+    modelSelection?: ModelSelection, cwd?: string): TaskRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
     if (projectId !== undefined && !this.project(botId, projectId)) return null;
+    const task = this.buildTask(bot, title, projectId, openedBy, approvalMode, modelSelection, cwd);
+    this.commitBotChange(bot, "the new thread", () => {
+      bot.tasks = [task, ...(bot.tasks ?? [])];
+      if (activate) this.mirrorActiveTask(bot, task);
+    });
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
+  private buildTask(bot: BotRecord, title?: string, projectId?: string, openedBy?: TaskOpenedBy, approvalMode?: "ask" | "full",
+    modelSelection?: ModelSelection, cwd?: string): TaskRecord {
     const createdAt = Date.now();
-    const task: TaskRecord = {
+    return {
       threadId: newId(),
       title: threadTitleFrom(title),
       createdAt,
       updatedAt: createdAt,
+      ...(cwd !== undefined ? { cwd } : {}),
       ...(projectId ? { projectId } : {}),
       ...(openedBy ? { openedBy: structuredClone(openedBy) } : {}),
       resumeCursors: {},
-      modelSelection: structuredClone(modelSelection ?? bot.modelSelection),
+      ...(modelSelection && !sameModelSelection(modelSelection, bot.modelSelection) ? { modelSelection: structuredClone(modelSelection) } : {}),
       approvalMode: approvalMode ?? approvalModeFor(bot),
       autoApprove: approvalMode ? false : Boolean(bot.autoApprove),
       alwaysAllow: approvalMode ? [] : [...(bot.alwaysAllow ?? [])],
@@ -2756,40 +2376,35 @@ export class Store {
       activity: "idle",
       busy: false,
     };
-    bot.tasks = [task, ...(bot.tasks ?? [])];
-    if (activate) {
-      this.mirrorActiveTask(bot, task);
-    }
-    this.saveBots();
-    this.emit({ type: "bot", botId });
-    return task;
   }
 
-  /** Attach (or complete) the opener record after the thread exists — the
-   * handoff id is only known once the thread it targets has an id, so a
-   * peer-opened thread is created first and stamped second. Never reachable
-   * from the HTTP task PATCH: openedBy is not a TASK_PATCH_FIELD. */
   setTaskOpenedBy(botId: string, threadId: string, openedBy: TaskOpenedBy): TaskRecord | null {
     const bot = this.bot(botId);
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
-    task.openedBy = structuredClone(openedBy);
-    this.saveBots();
+    this.commitBotChange(bot, "who opened the thread", () => { task.openedBy = structuredClone(openedBy); });
     this.emit({ type: "bot", botId });
     return task;
   }
 
-  /** Stamp or clear the closer record. `null` reopens: the next turn in a
-   * closed thread calls this so the row comes back to the sidebar. Never
-   * reachable from the HTTP task PATCH: closedBy is not a TASK_PATCH_FIELD. */
+  setTaskAskedAt(botId: string, threadId: string, at: number): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !Number.isFinite(at) || (task.askedAt ?? -1) >= at) return task ?? null;
+    task.askedAt = at;
+    saveBotsFor("when you last wrote in this thread", () => this.saveBots());
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
   setTaskClosedBy(botId: string, threadId: string, closedBy: TaskClosedBy | null): TaskRecord | null {
     const bot = this.bot(botId);
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
-    if (closedBy) task.closedBy = structuredClone(closedBy);
-    else if (!task.closedBy) return task;
-    else delete task.closedBy;
-    this.saveBots();
+    if (!closedBy && !task.closedBy) return task;
+    this.commitBotChange(bot, "who closed the thread", () => {
+      if (closedBy) task.closedBy = structuredClone(closedBy);
+      else delete task.closedBy;
+    });
     this.emit({ type: "bot", botId });
     return task;
   }
@@ -2798,8 +2413,7 @@ export class Store {
     const bot = this.bot(botId);
     const task = bot?.tasks?.find((t) => t.threadId === threadId);
     if (!bot || !task) return null;
-    this.mirrorActiveTask(bot, task);
-    this.saveBots();
+    this.commitBotChange(bot, "the thread switch", () => this.mirrorActiveTask(bot, task));
     this.emit({ type: "bot", botId });
     return bot;
   }
@@ -2808,54 +2422,58 @@ export class Store {
     return this.patchTask(botId, threadId, { title });
   }
 
-  /** Name a task after its first message, once. Returns the task it named
-   * so a caller can later replace exactly that machine-made title — and
-   * can see the peer provenance it must leave alone. */
   titleTaskFromFirstMessage(botId: string, text: string, threadId?: string): TaskRecord | null {
+    const bot = this.bot(botId);
     const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
-    if (!task || task.titleFromFirstMessage || (task.title !== UNTITLED_TASK && task.title !== UNTITLED_THREAD)) return null;
-    task.title = titleFromMessage(text);
-    task.titleFromFirstMessage = true;
-    this.saveBots();
+    if (!bot || !task || task.titleFromFirstMessage || (task.title !== UNTITLED_TASK && task.title !== UNTITLED_THREAD)) return null;
+    this.commitBotChange(bot, "the thread's title", () => {
+      task.title = titleFromMessage(text);
+      task.titleFromFirstMessage = true;
+    });
     this.emit({ type: "bot", botId });
     return task;
   }
 
-  /** Swap a machine-made first-message title for a generated one, once.
-   * Equality against the snippet is the whole contract: a rename by the
-   * person, by pair adoption, or by an earlier generated title each break
-   * it, so this never overwrites a name anyone chose. Regenerate title passes
-   * the title it started from, so a rename made while it ran stands. */
   retitleTask(botId: string, threadId: string, machineTitle: string, title: string): TaskRecord | null {
     const task = this.taskByThread(botId, threadId);
     if (!task || task.title !== machineTitle) return null;
     return this.renameTask(botId, threadId, threadTitleFrom(title));
   }
 
-  /** Delete a task and its transcript, retaining generated project files.
-   * When no visible tasks remain, replace it with a fresh conversation. */
   deleteTask(botId: string, threadId: string): BotRecord | null {
-    const bot = this.bot(botId);
-    if (!bot?.tasks) return null;
-    if (!bot.tasks.some((t) => t.threadId === threadId)) return null;
-    bot.tasks = bot.tasks.filter((t) => t.threadId !== threadId);
-    const visible = bot.tasks.find((task) => !task.routineRunId)
-      ?? this.createTask(botId, undefined, bot.threadId === threadId)!;
-    if (bot.threadId === threadId || this.taskByThread(botId, bot.threadId)?.routineRunId) {
-      this.mirrorActiveTask(bot, visible);
-    }
-    this.deleteThreadRecord(threadId);
-    bot.unread = bot.tasks.some(taskCountsAsBotUnread);
-    this.refreshBotActivity(bot);
-    this.saveBots();
-    this.emit({ type: "bot", botId });
-    return bot;
+    const result = this.deleteTasks(botId, [threadId]);
+    return result?.deleted.length ? result.bot : null;
   }
 
-  /** First-run seed: one bot so the app never opens empty — it gets a
-   * random friendly name like every other bot. */
+  /** Transcript rows and bots.json commit together, so either failing leaves every task, log file and subscriber untouched. */
+  deleteTasks(botId: string, threadIds: string[]): { bot: BotRecord; deleted: string[]; missing: string[] } | null {
+    const bot = this.bot(botId);
+    if (!bot?.tasks) return null;
+    const present = new Set(bot.tasks.map((t) => t.threadId));
+    const unique = [...new Set(threadIds)];
+    const deleted = unique.filter((id) => present.has(id));
+    const missing = unique.filter((id) => !present.has(id));
+    if (!deleted.length) return { bot, deleted, missing };
+    const doomed = new Set(deleted);
+    mdb.deleteThreads(deleted, () => this.commitBotChange(bot, "the thread deletion", () => {
+      const kept = bot.tasks!.filter((t) => !doomed.has(t.threadId));
+      const visible = kept.find((task) => !task.routineRunId) ?? this.buildTask(bot);
+      bot.tasks = kept.includes(visible) ? kept : [visible, ...kept];
+      if (doomed.has(bot.threadId) || this.taskByThread(botId, bot.threadId)?.routineRunId) this.mirrorActiveTask(bot, visible);
+      bot.unread = bot.tasks.some(taskCountsAsBotUnread);
+      this.refreshBotActivity(bot);
+    }));
+    for (const id of deleted) this.deleteThreadRecord(id, true);
+    this.emit({ type: "bot", botId });
+    return { bot, deleted, missing };
+  }
+
+  needsSeed() {
+    return this.bots.length === 0;
+  }
+
   seedIfEmpty() {
-    if (this.bots.length) return;
+    if (!this.needsSeed()) return;
     this.createBot();
   }
 }

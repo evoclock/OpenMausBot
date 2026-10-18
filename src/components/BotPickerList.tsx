@@ -1,6 +1,3 @@
-// The checkbox roster shared by "New Room" and "Manage Members": one row per
-// bot, a tick on the ones picked. Both callers own their own selection state —
-// this only draws it, so the two lists can never drift apart visually.
 import { Check } from "lucide-react";
 import type { Bot } from "@/state/store";
 import { BotAvatar } from "./Avatar";
@@ -15,7 +12,6 @@ export function BotPickerList({
   bots: Bot[];
   picked: Set<string>;
   onToggle: (id: string) => void;
-  /** shown in place of the list when there is nothing to pick from */
   emptyHint: string;
 }) {
   return (

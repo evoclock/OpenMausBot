@@ -162,7 +162,6 @@ function parseShareable(value: JsonValue | string): ParsedShareableTeam {
   if (typeof value === "string") return parseBotPackage(value);
   if (!isBotPackage(value)) return parseTeamManifest(value);
   // A shared team (v2) is read as a file: it cannot claim a publisher.
-  // Version 1 keeps its original shape for older callers.
   return (value as { version?: unknown }).version === 1 ? parseBotPackage(value) : parsePackageDocument(value, { trust: "file" });
 }
 
@@ -184,8 +183,7 @@ function safeSegment(value: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(value) && value !== "." && value !== "..";
 }
 
-/** Resolve only public GitHub Markdown playbooks and legacy JSON team files.
- * Other hosts never reach server fetch. */
+/** Public GitHub Markdown playbooks and legacy JSON team files only; other hosts never reach server fetch. */
 export function githubManifestUrls(input: string): string[] {
   let url: URL;
   try {

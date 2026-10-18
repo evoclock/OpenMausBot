@@ -16,7 +16,6 @@ describe("where a routine runs", () => {
     expect(routineRunsOn({ roomGoal: true, cloudHome: true })).toEqual({
       label: "My Cloud, with the whole group", hint: "Runs on schedule, even when your computer is off.",
     });
-    // A Cloud home has no Local VM or this computer: a copied bot's setting reads as My Cloud.
     expect(routineRunsOn({ roomGoal: false, computer: "vm", cloudHome: true }).label).toBe("My Cloud");
   });
 

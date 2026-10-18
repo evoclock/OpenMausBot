@@ -1,9 +1,6 @@
 import { z } from "zod";
 
-/** An organisation's desktop policy, received only over Electron's private
- * utility-parent port while this desktop is enrolled. It lives in memory: it
- * is never merged into config.json, and it adds no prompts or approvals —
- * a disallowed action is simply refused with a sentence saying who manages it. */
+/** Received only over Electron's private port and held in memory: never merged into config.json, and adds no prompts. */
 const policySchema = z.object({
   organizationId: z.string().uuid(),
   organizationName: z.string().trim().min(1).max(100),
@@ -12,8 +9,7 @@ const policySchema = z.object({
   companyModelsOnly: z.boolean(),
   allowedEngines: z.union([z.literal("all"), z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9-]{0,63}$/)).max(64)]),
   mcp: z.object({ allowCustom: z.boolean(), allowlist: z.array(z.string().trim().min(1).max(200)).max(100) }).strict(),
-  // The policy computer key "box" is Boat's historical wire name (org-policy
-  // schema shared with the desktop parent); the label is renamed, the key is not.
+  // "box" is Boat's historical key in the org-policy schema shared with the desktop parent.
   computers: z.object({ thisComputer: z.boolean(), localVm: z.boolean(), box: z.boolean(), vps: z.boolean() }).strict(),
   remoteAccess: z.boolean(),
 }).strict();
@@ -28,8 +24,7 @@ export function parseManagedPolicy(raw: unknown, now = Date.now()): ManagedPolic
   return parsed.data.expiresAt > now ? parsed.data : null;
 }
 
-/** `*` in a host pattern stands for one or more whole labels, never part of
- * one, so `*.example.com` cannot match `evil.test/x.example.com`. */
+/** `*` stands for one or more whole labels, never part of one. */
 function hostMatches(pattern: string[], host: string[]): boolean {
   if (!pattern.length) return !host.length;
   if (pattern[0] === "*") {
@@ -39,10 +34,7 @@ function hostMatches(pattern: string[], host: string[]): boolean {
   return host.length > 0 && pattern[0] === host[0] && hostMatches(pattern.slice(1), host.slice(1));
 }
 
-/** A name entry matches the configured server name. An address entry
- * (https:// only) is parsed like the server's URL: no credentials, the same
- * port, the host compared label by label, and the path separately (`*` there
- * matches any characters). Anything that does not parse never matches. */
+/** An address entry (https:// only) matches without credentials, on the same port, label by label; unparsable never matches. */
 export function mcpEntryMatches(entry: string, name: string, url?: string): boolean {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(entry)) return entry.toLowerCase() === name.toLowerCase();
   if (!url) return false;
@@ -57,7 +49,6 @@ export function mcpEntryMatches(entry: string, name: string, url?: string): bool
   return new RegExp(`^${path}$`).test(target.pathname);
 }
 
-/** A resource key claimed by bindTurnComputer, mapped to the policy's kind. */
 export function computerKindForResource(resource: string): ComputerKind | undefined {
   if (resource === "computer:host") return "thisComputer";
   if (resource.startsWith("computer:vm:")) return "localVm";
@@ -92,7 +83,6 @@ export class ManagedDesktopPolicy {
   }
   close() { clearTimeout(this.timer); this.policy = null; }
 
-  /** Why this organisation does not allow an instance to run a turn, or undefined. */
   modelRefusal(instance: { driverKind: string; displayName?: string }, company: boolean): string | undefined {
     const policy = this.current();
     if (!policy) return;
@@ -106,7 +96,6 @@ export class ManagedDesktopPolicy {
     const policy = this.current();
     return !policy || policy.mcp.allowCustom || policy.mcp.allowlist.some(entry => mcpEntryMatches(entry, name, url));
   }
-  /** Only approved servers reach engines while custom servers are off. */
   filterMcp<T extends object>(servers: Record<string, T>): Record<string, T> {
     if (!this.restrictsMcp()) return servers;
     return Object.fromEntries(Object.entries(servers).filter(([name, server]) =>

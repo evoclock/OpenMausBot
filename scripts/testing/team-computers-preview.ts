@@ -29,29 +29,29 @@ export async function launchTeamComputersPreview() {
       }
       if (request.headers.authorization !== "Bearer box_verification_fixture") return send({ message: "fixture authentication failed" }, 401);
       calls.push({ method, path });
-      // The provider list endpoint still answers with its historical "boxes" key.
-      if (method === "GET" && path === "/boxes") return send({ ok: true, boxes: boats });
-      if (method === "POST" && path === "/boxes") {
+      // Boat's public API v1: /sandboxes paths and sandbox/sandboxes envelopes.
+      if (method === "GET" && path === "/sandboxes") return send({ ok: true, type: "sandbox.list", sandboxes: boats, pageInfo: { nextCursor: null } });
+      if (method === "POST" && path === "/sandboxes") {
         if (refuseCreate) return send({ message: "Fixture account is rate-limited. Retry this computer." }, 429);
         const key = String(request.headers["idempotency-key"] ?? "");
         if (!key || body.noEnv !== true) return send({ message: "fixture requires isolated idempotent creation" }, 400);
         const previous = idempotency.get(key);
-        if (previous) return send({ ok: true, box: boats.find((boat) => boat.id === previous) });
+        if (previous) return send({ ok: true, type: "sandbox.created", sandbox: boats.find((boat) => boat.id === previous) }, 202);
         const id = `bx_2345678${"9abcdefghjkmnpqrstuvwxyz"[boats.length]}`;
         const boat = { id, name: "fixture-pending", state: "idle" };
         boats.push(boat); idempotency.set(key, id);
-        return send({ ok: true, box: boat }, 201);
+        return send({ ok: true, type: "sandbox.created", sandbox: boat }, 202);
       }
-      const match = path.match(/^\/boxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})(?:\/(commands|desktop|stop|resume))?$/);
+      const match = path.match(/^\/sandboxes\/(bx_[23456789abcdefghjkmnpqrstuvwxyz]{8})(?:\/(commands|desktop|stop|resume))?$/);
       const boat = boats.find((candidate) => candidate.id === match?.[1]);
       if (!match || !boat) return send({ message: "fixture resource not found" }, 404);
-      if (method === "GET" && !match[2]) return send({ ok: true, box: boat });
-      if (method === "PATCH" && !match[2]) { boat.name = body.name; return send({ ok: true, box: boat }); }
+      if (method === "GET" && !match[2]) return send({ ok: true, sandbox: boat });
+      if (method === "PATCH" && !match[2]) { boat.name = body.name; return send({ ok: true, sandbox: boat }); }
       if (method === "POST" && match[2] === "commands") return send({ ok: true, exitCode: 0, stdout: "", stderr: "" });
       if (method === "POST" && match[2] === "desktop") return send({ ok: true, desktopUrl: `https://desktop.invalid/${boat.id}` });
       if (method === "POST" && (match[2] === "stop" || match[2] === "resume")) {
         boat.state = match[2] === "stop" ? "archived" : "idle";
-        return send({ ok: true, box: boat });
+        return send({ ok: true, sandbox: boat }, 202);
       }
       // Unexpected deletion is deliberately refused and remains in receipts.
       return send({ message: "fixture does not implement this mutation" }, 405);

@@ -2,11 +2,17 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EngineSetup, EngineUpdateNotice, needsCli, needsSignIn } from "./EngineSetup";
+import { EngineSetup, EngineUpdateNotice, installCommandFor, needsCli, needsSignIn } from "./EngineSetup";
 import { engineStatus } from "./ModelPicker";
 import { StoreProvider, type InstanceInfo } from "@/state/store";
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("chooses the server installer even when the client has a different OS", () => {
+  vi.stubGlobal("window", { ogb: { platform: "win32" } });
+  expect(installCommandFor({ platform: "linux", command: { linux: "linux-install", win32: "windows-install" } })).toBe("linux-install");
+  expect(installCommandFor({ platform: "linux", command: { win32: "windows-only" } })).toBeNull();
+});
 
 function instance(snapshot: InstanceInfo["snapshot"]): InstanceInfo {
   return {
@@ -158,8 +164,7 @@ describe("server device-code sign-in", () => {
     };
     const markup = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: engine })));
     expect(markup).toContain("Continue with ChatGPT");
-    // Any OMB Cloud plan, not only Pro.
-    expect(markup).toContain("separate from OpenMausBot Cloud and API billing");
+    expect(markup).toContain("separate from MausBot Cloud and API billing");
     expect(markup).not.toContain("codex login");
     expect(markup).not.toContain("Device-code login");
   });
@@ -222,6 +227,14 @@ describe("API-key engine setup", () => {
     expect(html).toContain("Grok (API) needs an API key");
     expect(html).toContain("Open API keys");
     expect(html).not.toContain("config.json");
+  });
+
+  it("says so when the provider rejected the saved key", () => {
+    const html = render(keyEngine("grok", { state: "available", authenticated: false, reason: "The provider rejected this key." }));
+    expect(html).toContain("data-engine-setup-api-key");
+    expect(html).toContain("The provider rejected the saved key.");
+    expect(html).toContain("Open API keys");
+    expect(render(keyEngine("grok", { state: "unavailable" }))).not.toContain("rejected");
   });
 
   it("has no button on a remote client, whose settings hide the keys", () => {

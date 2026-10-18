@@ -1,19 +1,9 @@
-// Starting points for a new bot. A role is a name, a job, standing
-// instructions — enough that the bot can start working (or run /setup to
-// interview you) instead of arriving
-// blank. The user-facing library of whole teams lives in the Team library;
-// this is the single-bot shortlist shown at creation.
-
 export interface BotRole {
   id: string;
-  /** Default bot name; the user renames freely. */
   name: string;
   title: string;
   description: string;
-  /** SOUL.md-style standing instructions. */
   soul: string;
-  /** Connected-app slugs the role usually wants; shown as hints, never
-   * connected automatically. */
   apps: string[];
 }
 
@@ -72,7 +62,6 @@ export function botRole(id: string): BotRole | undefined {
   return BOT_ROLES.find((role) => role.id === id);
 }
 
-/** The PATCH body that turns a freshly created blank bot into this role. */
 export function roleProfilePatch(role: BotRole): {
   name: string;
   title: string;

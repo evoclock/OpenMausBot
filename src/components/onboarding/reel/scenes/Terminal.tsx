@@ -1,8 +1,3 @@
-// The "run it from the terminal too" scene. One authored moment: the
-// browser window rising out of the terminal, because that is the whole
-// promise: same app, text wizard first. The wizard's lines are the real
-// ones from server/cli-setup.ts, typed at a human pace, with the picker
-// drawn the way Clack draws it.
 import { useEffect, useState } from "react";
 import { MausAvatar } from "@/components/Avatar";
 import { cn } from "@/lib/cn";
@@ -57,9 +52,7 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playing, still]);
 
-  // a command types at ~14 chars/s; everything else prints whole
   const typedCmd = (text: string, at: number) => (still ? text : text.slice(0, Math.max(0, Math.floor((now - at) / 70))));
-  // the picker's cursor sits on the first option, so it needs no travel
   const lines = SCRIPT.filter((s) => now >= s.at).filter((s) => !(s.line.kind === "pick" && now >= 2900));
   const rising = now >= RISE_AT;
 
@@ -67,7 +60,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
     <div className="relative h-full w-full overflow-hidden bg-inset" role="img" aria-label={label}>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_0%,transparent_55%,rgba(0,0,0,0.28)_100%)]" aria-hidden="true" />
 
-      {/* the terminal */}
       <div
         className={cn(
           "animate-rise absolute inset-x-6 top-4 overflow-hidden rounded-xl border border-hairline/40 bg-[#0b0d10] font-mono text-[11px] leading-[1.6] text-[#d5dbe1] shadow-[0_18px_44px_-20px_rgba(0,0,0,0.7)]",
@@ -123,8 +115,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
         </div>
       </div>
 
-      {/* the browser window rising out of it: the same app, first run, as a
-          small honest replica of the real shell — sidebar, header, the card */}
       <div
         className={cn(
           "absolute inset-x-10 top-[62px] flex flex-col overflow-hidden rounded-[10px] border border-white/10 bg-[#202124]",
@@ -135,7 +125,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
         style={{ height: 224 }}
         aria-hidden="true"
       >
-        {/* browser chrome: a tab strip, then the toolbar with an omnibox */}
         <div className="bg-[#202124]">
           <div className="flex items-end gap-2 px-2.5 pt-1.5">
             <div className="mb-1.5 flex items-center gap-1.5">
@@ -164,7 +153,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
             <span className="text-[11px] leading-none tracking-[0.15em] text-[#9aa0a6]">⋮</span>
           </div>
         </div>
-        {/* the shell behind the card */}
         <div className="relative flex min-h-0 flex-1 bg-app">
           <div className="flex w-[104px] shrink-0 flex-col border-r border-hairline/40 bg-panel/70 p-2">
             <div className="h-5 rounded-md bg-inset" />
@@ -186,7 +174,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
               <MausAvatar color="green" state="happy" size={14} animated={false} trackPointer={false} />
               <div className="h-1.5 w-10 rounded bg-ink/70" />
             </div>
-            {/* dimmed shell under the welcome card, as the real first run looks */}
             <div className="absolute inset-0 top-[29px] bg-app/80" />
             <div className="absolute left-1/2 top-[6px] w-[196px] -translate-x-1/2 rounded-xl border border-hairline/50 bg-panel px-4 py-2.5 shadow-[0_18px_40px_-16px_rgba(0,0,0,0.7)]">
               <div className="flex flex-col items-center">
@@ -202,7 +189,6 @@ export function Terminal({ playing, onCue, onEnded, label }: SceneProps) {
         </div>
       </div>
 
-      {/* the guide: loading while the wizard runs, happy when the app opens */}
       <div className="absolute bottom-3 right-5 z-20">
         <div className="drop-shadow-[0_8px_18px_rgba(0,0,0,0.45)]">
           <MausAvatar color="green" state={rising ? "happy" : now > 1800 ? "working" : "loading"} size={36} animated={!still} trackPointer={false} />

@@ -93,10 +93,7 @@ export function phoneSecretKeyIdFromJwk(jwk: webcrypto.JsonWebKey): string | nul
     .toString("base64url");
 }
 
-/** A single canonical string is used by Swift and TypeScript. Every dynamic
- * field is route-safe ASCII and therefore cannot contain the newline
- * separator. Authenticating this metadata prevents a relay from moving one
- * ciphertext to another bot, conversation, card, device, or credential. */
+/** One canonical string shared with Swift. Authenticating it stops a relay moving a ciphertext to another bot, conversation, card, device or credential. */
 export function phoneSecretAAD(context: Pick<
   PhoneSecretContext,
   "keyId" | "deviceId" | "botId" | "threadId" | "messageId" | "target" | "requestKey"
@@ -122,12 +119,6 @@ export function phoneSecretAAD(context: Pick<
   return new TextEncoder().encode(fields.join("\n"));
 }
 
-/**
- * A stable, non-secret operation id for one exact HPKE envelope. Electron
- * uses it to join a retry whose HTTP response was lost instead of validating
- * and writing the same credential twice. A freshly encrypted submission has
- * a different encapsulated key/ciphertext and therefore a different id.
- */
 export function phoneSecretOperationId(context: PhoneSecretContext): string {
   const aad = phoneSecretAAD(context);
   return createHash("sha256")
@@ -155,10 +146,6 @@ export function assertPhoneSecretRequestMatches(
   }
 }
 
-/** Serializes the state transition for one pending credential card. Exact
- * retransmissions join the original operation; a separately encrypted value
- * cannot be mistaken for that retry, and callers can block dismiss/resume
- * while the operating-system store is committing. */
 export class PhoneSecretSubmissionRegistry {
   private readonly active = new Map<
     string,
@@ -204,9 +191,7 @@ export class PhoneSecretSubmissionRegistry {
     return this.hasActiveResource(this.resources({ groupId }));
   }
 
-  /** Claim a structural mutation before its first await. A submission and a
-   * destructive/rewind mutation can then never both pass their preflight
-   * checks and invalidate each other while the OS credential store is slow. */
+  /** Claim before the first await, so a submission and a destructive mutation never both pass preflight while the OS store is slow. */
   claimMutation(scope: {
     botId?: string;
     threadId?: string;
@@ -248,9 +233,7 @@ export class PhoneSecretSubmissionRegistry {
       throw new PhoneSecretError("This credential request is being changed. Try again.", 409);
     }
 
-    // Deferring work by one microtask lets the registry publish the active
-    // entry before decrypt/save begins, so no synchronous callback can slip a
-    // competing state transition through the gap.
+    // One microtask of deferral lets the registry publish the entry before decrypt/save, so no callback slips a competing transition in.
     const promise = Promise.resolve().then(work);
     const entry = { operationId, promise, resources };
     this.active.set(scope.cardKey, entry);
@@ -323,13 +306,7 @@ function decodeSaveResult(raw: unknown): { requestId: string; ok: boolean; error
   };
 }
 
-/**
- * Owns the narrow private bridge between the embedded server and Electron's
- * OS-encrypted credential document. The phone-facing HTTP route gives this
- * class ciphertext only. Plaintext exists only after HPKE opens it on the
- * desktop and is immediately handed to the already-existing credential save
- * path; it is never returned to HTTP, chat, SQLite, SSE, or logs.
- */
+/** The HTTP route hands this ciphertext only; plaintext exists only after HPKE opens it on the desktop and never reaches HTTP, chat, SQLite, SSE or logs. */
 export class PhoneSecretBridge {
   private identity: Promise<PhoneSecretIdentity> | null = null;
   private readonly pending = new Map<string, PendingSave>();
@@ -340,14 +317,7 @@ export class PhoneSecretBridge {
 
   constructor(
     send: SendPrivateMessage,
-    // Provider validation is part of the encrypted-store transaction and can
-    // legitimately take tens of seconds. This remains bounded, but outlives
-    // every provider's own deadline so a late successful save is not reported
-    // as a failure and then repeated underneath the user.
-    // Stay materially below the outer HTTPS proxy and phone deadlines. This
-    // leaves enough time for their JSON response to travel after a slow
-    // provider validation instead of turning a committed save into a client
-    // timeout at Cloudflare's boundary.
+    // Outlives every provider's validation deadline but stays below the HTTPS proxy and phone deadlines (Cloudflare's boundary).
     timeoutMs = 90_000,
     maximumPending = 8,
   ) {
@@ -361,8 +331,6 @@ export class PhoneSecretBridge {
     if (!message || typeof message !== "object" || Array.isArray(message)) return false;
     const record = message as Record<string, unknown>;
     if (record.type === "openmausbot:phone-secret-key") {
-      // Keep the rejection inside the promise. A request receives a bounded
-      // 503; an invalid parent message must never become an unhandled reject.
       this.identity = importIdentity(record);
       void this.identity.catch(() => {});
       return true;

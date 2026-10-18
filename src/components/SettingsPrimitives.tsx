@@ -1,6 +1,8 @@
-import { useEffect, useId, useRef, useState, type ComponentProps } from "react";
-import { Check, Copy } from "lucide-react";
+import { useId, type ComponentProps } from "react";
+import { Check, Copy, X } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { useCopyFeedback } from "@/lib/copy-text";
+import { t } from "@/lib/i18n";
 
 export function Switch({
   checked,
@@ -14,7 +16,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       className={cn(
-        "relative h-6 w-11 shrink-0 rounded-full transition-colors enabled:hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none",
+        "relative cursor-pointer h-6 w-11 shrink-0 rounded-full transition-colors enabled:hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none",
         checked ? "bg-accent" : "bg-control",
         className,
       )}
@@ -47,21 +49,22 @@ export function Card({
   );
 }
 
-/** Simple preferences share an aligned row; forms with several fields keep a Card. */
 export function SettingRow({
   title,
   subtitle,
   children,
   message,
+  className,
 }: {
   title: string;
   subtitle?: React.ReactNode;
   children: React.ReactNode;
   message?: React.ReactNode;
+  className?: string;
 }) {
   const titleId = useId();
   return (
-    <div role="group" aria-labelledby={titleId} className="setting-row border-t border-hairline/40 py-4 first:border-t-0">
+    <div role="group" aria-labelledby={titleId} className={cn("px-4", className)}>
       <div className="grid min-w-0 grid-cols-1 items-center gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-6">
         <div className="min-w-0">
           <div id={titleId} className="text-[14px] font-medium text-ink">{title}</div>
@@ -74,28 +77,8 @@ export function SettingRow({
   );
 }
 
-/** A command the user is meant to run, with one-click copy. */
 export function CommandLine({ command, copyLabel = "Copy command" }: { command: string; copyLabel?: string }) {
-  const [copied, setCopied] = useState(false);
-  const resetTimer = useRef<number | null>(null);
-
-  useEffect(
-    () => () => {
-      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-    },
-    [],
-  );
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
-      resetTimer.current = window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* clipboard permission can be denied; leave the button unchanged */
-    }
-  };
+  const { state, copy } = useCopyFeedback(command);
 
   return (
     <div className="flex items-center gap-2 rounded-lg bg-inset px-3 py-2">
@@ -104,11 +87,11 @@ export function CommandLine({ command, copyLabel = "Copy command" }: { command: 
       </code>
       <button
         type="button"
-        onClick={() => void copy()}
-        aria-label={copyLabel}
+        onClick={copy}
+        aria-label={state === "failed" ? t("common.copyFailed") : copyLabel}
         className="ui-icon-button shrink-0"
       >
-        {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+        {state === "copied" ? <Check size={13} className="text-success" /> : state === "failed" ? <X size={13} className="text-danger" /> : <Copy size={13} />}
       </button>
     </div>
   );

@@ -26,6 +26,27 @@ another fake engine. The multi-engine and older hook suites currently run on
 POSIX; the shared-control test is cross-platform. CI must establish Windows
 behavior rather than treating a local macOS run as Windows verification.
 
+## Shell calls that hit their time limit
+
+Claude Code stops a Bash call after 2 minutes unless the call passes a larger
+`timeout` (the driver pins the cap at 600000 ms through `BASH_MAX_TIMEOUT_MS`;
+native background tasks stay off). Engines with a shell get a "Long-running
+commands" prompt section, and a timed-out call's `PostToolUseFailure` hook gets
+`additionalContext` telling the model to rerun with a longer timeout or
+detached, or to use `mdfind`/a scoped folder instead of `find /`.
+
+```sh
+pnpm exec vitest run server/shell-timeout-hint.test.ts server/hooks.e2e.test.ts
+FAKE_CLAUDE_HOOKS=1 FAKE_CLAUDE_TOOL_CALLS='[{"name":"Bash","input":{"command":"find / -name x"},"ok":false,"output":"Exit code 143\nCommand timed out after 2m 0s"}]' \
+  node --experimental-strip-types scripts/control-omb.ts launch
+```
+
+Send one direct turn and one channel turn, then wait for each to settle. The fake echoes each
+failure hook's context into its reply, so the transcript shows the hint. The
+fixture's `fake-claude-dump.json` shows the prompt section, `BASH_MAX_TIMEOUT_MS`
+and the `PostToolUseFailure` hook registration. Last exercised 2026-10-13
+(direct and channel turns).
+
 ## Replies with no recorded work
 
 Android and desktop omit empty receipts. Both mobile parsers stop at the

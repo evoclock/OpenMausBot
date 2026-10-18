@@ -4,8 +4,6 @@ import { t } from "@/lib/i18n";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 import { AttentionThreadRows, type AttentionThread } from "./SidebarBotActivity";
 
-/** The pinned form of the attention panel: the same rows the popover lists,
- * living between search and the bots list so active work stays in view. */
 export function SidebarAttentionPanel({ entries, density, onUnpin, onJump, collapsed, onToggle }: {
   entries: AttentionThread[];
   density: SidebarDensity;

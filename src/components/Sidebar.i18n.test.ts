@@ -1,6 +1,3 @@
-// The sidebar is the one screen that is always on display, so it is where an
-// untranslated string is most visible. These cover the two shapes the rest of
-// the file repeats: a row rendered through t(), and copy built in a helper.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -70,7 +67,6 @@ describe("archive / delete confirmation copy", () => {
     const remove = botConfirmCopy("delete", "Willow");
     expect(remove.body).toContain("Willow");
     expect(remove.confirmLabel).toBe("Excluir");
-    // a name is never a catalog value, so it survives every language
     setLocale("zh");
     expect(botConfirmCopy("delete", "Willow").title).toBe("删除 Willow？");
   });
@@ -112,7 +108,6 @@ describe("room delete confirmation copy", () => {
 
   it("keeps the room's name intact in other languages", () => {
     setLocale("pt-br");
-    // untranslated keys fall back to English; the name is never a catalog value
     expect(roomDeleteCopy({ name: "Launch plan" }).title).toContain("Launch plan");
     expect(roomDeleteCopy({ name: "Launch plan" }).confirmLabel).toBe(t("sidebar.room.deleteChannel"));
   });

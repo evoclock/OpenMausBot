@@ -39,8 +39,6 @@ function compactDetail(value: string | undefined): string {
   return clean.length > DETAIL_LIMIT ? `${clean.slice(0, DETAIL_LIMIT - 1).trimEnd()}…` : clean;
 }
 
-/** A lifecycle receipt can outlive its isolated execution task. Only offer
- * navigation while the task is still present in the owning bot's task list. */
 export function hasRoutineExecutionTask(
   tasks: ReadonlyArray<{ threadId: string }> | undefined,
   executionThreadId: string | undefined,
@@ -55,17 +53,13 @@ export function RoutineRunCard({
   onOpen,
 }: {
   message: Message;
-  /** Opens the isolated execution task; absent when it no longer exists. */
   onOpen?: () => void;
 }) {
   const run = message.routineRun;
-  // Newer computers can send this message kind to an older or partially
-  // hydrated client. Keep the concise text fallback visible instead of
-  // leaving an unexplained hole in the conversation.
   if (!run) {
     const fallback = compactDetail(message.text);
     return fallback ? (
-      <div className="w-fit max-w-[min(42rem,88%)] rounded-2xl bg-card px-4 py-2.5 text-[14px] leading-relaxed text-ink">
+      <div className="w-fit max-w-[min(var(--chat-bubble-max),var(--chat-card-pct))] rounded-2xl bg-card px-4 py-2.5 text-[14px] leading-relaxed text-ink">
         {fallback}
       </div>
     ) : null;

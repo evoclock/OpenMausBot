@@ -1,6 +1,3 @@
-// A screenshot in a 1:1 chat loads from the image route, never from inline
-// pixels: live frames carry none, and neither does the paged transcript the
-// desktop hydrates from after a reload.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, describe, expect, it, vi } from "vitest";

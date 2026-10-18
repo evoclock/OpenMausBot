@@ -1,14 +1,6 @@
-// What the companion tells the harness on its own, rather than relaying for a
-// phone. The harness has no idea devices exist: a phone's requests reach it
-// as this computer's own. So when a phone is unpaired, only the companion
-// knows, and a Live call that phone holds would otherwise keep running until
-// it went quiet. This notice closes that gap.
-//
-// It travels the relay's own authenticated path — loopback, the companion
-// marker, the device id and, under the desktop app, the private relay token —
-// to the one route the harness keeps for the companion alone
-// (routes.ts COMPANION_NOTICES). Best effort: a harness that is not running
-// has no call to end.
+// The one notice the companion sends the harness on its own: a phone was
+// unpaired, so the Live call it holds can end (the harness hears a phone as
+// this computer). Sent over the relay's authenticated path; best effort.
 import { request as httpRequest } from "node:http";
 
 import { companionIdentityHeaders } from "./proxy.ts";
@@ -17,9 +9,7 @@ const DEVICE_ID = /^[\w-]{1,128}$/;
 const NOTICE_TIMEOUT_MS = 4_000;
 
 export interface DeviceRevokedNotice {
-  /** Where the harness listens on loopback. */
   harnessPort: number;
-  /** The registry id of the phone that was just unpaired. */
   deviceId: string;
   /** The desktop app's private relay token; absent for a standalone harness. */
   mutationToken?: string;

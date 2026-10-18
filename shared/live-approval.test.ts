@@ -19,6 +19,14 @@ describe("liveCardKind", () => {
     expect(liveDecisionRefusal(card({ requestId: "r1", tool: "update_model", modelRequest: {} as OptionCardData["modelRequest"] })))
       .toBe("This request is reviewed on screen.");
   });
+  it("sends a quota-switch offer to the screen, though it looks like a question", () => {
+    // A spoken answer to a question becomes a message to the bot once its
+    // asker is gone; an engine's name must never be sent that way.
+    const offer = card({ requestId: "r1", options: ["Codex", "Not now"], fixedOptions: true, quotaSwitch: { engines: [{ instanceId: "codex", name: "Codex" }] } });
+    expect(liveCardKind(offer)).toBe("review");
+    expect(liveDecisionRefusal(offer)).toBe("This request is reviewed on screen.");
+    expect(liveCardKind({ ...offer, answered: "answer" })).toBeNull();
+  });
   it("ignores settled cards and cards without a request", () => {
     expect(liveCardKind(card({ requestId: "r1", tool: "Bash", answered: "allow" }))).toBeNull();
     expect(liveCardKind(card({ requestId: "r1", tool: "Bash", dismissed: true }))).toBeNull();

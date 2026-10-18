@@ -33,9 +33,7 @@ describe("where a conversation works", () => {
     expect(toolPlace("mcp__computer__screenshot", "cloud")).toBe("cloud");
     expect(toolPlace("click", "local")).toBe("local");
     expect(toolPlace("computer_exec", "vm")).toBe("vm");
-    // the computer server's browser_click acts inside the desktop
     expect(toolPlace("browser_click", "cloud")).toBe("cloud");
-    // an unpinned Auto conversation has no known computer yet
     expect(toolPlace("screenshot", "auto")).toBeNull();
     expect(toolPlace("screenshot", "browser")).toBeNull();
     for (const name of ["Bash", "Read", "list_bots", "recall", "propose_routine", "mcp__agents__ask_bot"]) {

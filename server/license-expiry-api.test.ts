@@ -1,8 +1,3 @@
-// A lapsing license through the running server: the isolated fixture booted
-// with a stand-in enterprise layer whose key expires soon, or expired a few
-// days ago, read back from /api/edition, the startup log, and the config
-// Settings reads as an admin and as a chat-only device. No real licence is
-// involved; the fixture's home is disposable.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,7 +53,6 @@ describe("license expiry through the running server", () => {
       edition: "enterprise", features: ["budgets"], license: { expiresAt, expiresInDays: edition.expiresInDays },
     });
     expect((await server.memberConfig()).edition).toEqual({ edition: "enterprise", features: ["budgets"] });
-    // a member's /api/edition says what is entitled, not when it lapses
     const member = await server.memberEdition();
     expect(member).toMatchObject({ edition: "enterprise", features: ["budgets"] });
     expect(member).not.toHaveProperty("expiresInDays");

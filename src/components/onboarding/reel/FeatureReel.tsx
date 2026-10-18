@@ -1,7 +1,3 @@
-// The reel beat: six short scenes, under a minute in all, answering "what
-// is this thing?". Each plays once and advances; the last holds until
-// Continue. The guide reacts to each scene's cues, and the dots let the
-// user replay any scene.
 import { useState } from "react";
 import { withViewTransition } from "../view-transition";
 import { ProgressDots } from "../ProgressDots";

@@ -1,10 +1,3 @@
-// How a held outbound action reads at a glance: "Send to Linear?" and
-// "Create linear comment ×2", rather than the Composio slug the bot called.
-//
-// The rules match the phones (ios/Sources/CompanionCore/ApprovalCard.swift):
-// the computer's own list of calls when the card carries one, else the
-// "App · Label" first line of each block in the subtitle. The full request
-// stays on the card; this is only the headline and the line under it.
 import { t } from "@/lib/i18n";
 import type { OptionCardData } from "@/state/store";
 
@@ -13,13 +6,9 @@ export interface OutboundCall {
   label: string;
 }
 
-/** At most this many distinct actions are named on the summary line. */
 const SUMMARY_GROUPS = 3;
 
-/** The subtitle is `App · Label` then the arguments on the next line, per
- * call, calls separated by a blank line. JSON.stringify never writes a raw
- * newline, so the first line of each block is always its heading. Any block
- * that does not read that way makes the whole subtitle unreadable. */
+/** Per call, `App · Label` then its JSON arguments; JSON.stringify never writes a raw newline. */
 export function parseOutboundCalls(subtitle: string): OutboundCall[] {
   const calls: OutboundCall[] = [];
   for (const block of subtitle.split("\n\n")) {
@@ -38,7 +27,6 @@ export function parseOutboundCalls(subtitle: string): OutboundCall[] {
   return calls;
 }
 
-/** The calls an outbound card covers, or [] for any other card. */
 export function outboundCalls(card: Pick<OptionCardData, "outboundRequest" | "subtitle">): OutboundCall[] {
   if (!card.outboundRequest) return [];
   const calls = card.outboundRequest.calls;
@@ -46,15 +34,12 @@ export function outboundCalls(card: Pick<OptionCardData, "outboundRequest" | "su
   return parseOutboundCalls(card.subtitle);
 }
 
-/** The one app the calls go to, or null when they name several or none. */
 export function outboundApp(calls: OutboundCall[]): string | null {
   if (calls.length === 0 || calls.some((call) => !call.app)) return null;
   const apps = new Set(calls.map((call) => call.app));
   return apps.size === 1 ? calls[0]!.app : null;
 }
 
-/** Each distinct action once, in first-seen order, "×N" when it repeats;
- * past three, the rest are counted. */
 export function collapseOutboundCalls(calls: OutboundCall[], namingApps: boolean): string {
   const order: OutboundCall[] = [];
   const counts = new Map<string, number>();
@@ -74,17 +59,24 @@ export function collapseOutboundCalls(calls: OutboundCall[], namingApps: boolean
 }
 
 export interface OutboundSummary {
-  /** "Send to Linear?", or "Send on your behalf?" for several apps or none. */
   headline: string;
-  /** "Create linear comment ×2"; empty when the request could not be read. */
   summary: string;
+  opaque?: true;
 }
 
-/** Headline and summary for an outbound card; undefined for any other card. */
+const OPAQUE_TOOL = "COMPOSIO_PROXY_EXECUTE";
+
 export function outboundSummary(card: Pick<OptionCardData, "outboundRequest" | "subtitle">): OutboundSummary | undefined {
   if (!card.outboundRequest) return undefined;
   const calls = outboundCalls(card);
   const app = outboundApp(calls);
+  if (card.outboundRequest.tool === OPAQUE_TOOL) {
+    return {
+      headline: t("approval.outbound.runCode", { app: app ?? card.outboundRequest.app ?? "Composio" }),
+      summary: "",
+      opaque: true,
+    };
+  }
   return {
     headline: app ? t("approval.outbound.sendTo", { app }) : t("approval.outbound.sendOnBehalf"),
     summary: collapseOutboundCalls(calls, app === null),
@@ -94,8 +86,6 @@ export function outboundSummary(card: Pick<OptionCardData, "outboundRequest" | "
 /** Composio names its tools TOOLKIT_ACTION_WORDS, all upper case. */
 const COMPOSIO_TOOL = /^[A-Z][A-Z0-9]+_([A-Z0-9_]+)$/;
 
-/** A Composio slug as a verb phrase, "LINEAR_CREATE_LINEAR_COMMENT" →
- * "create linear comment"; undefined for any other name. */
 export function composioActionPhrase(tool: string): string | undefined {
   const match = COMPOSIO_TOOL.exec(tool);
   if (!match) return undefined;

@@ -1,5 +1,4 @@
-// Real HTTP + stdio MCP contract tests: a model's claim is never the receipt.
-// The only writes performed by tools are in a fresh temporary directory.
+// Real HTTP + stdio MCP contract tests; tools write only in a fresh temporary directory.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
@@ -9,9 +8,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ensureDirs, NATIVE_DIR } from "../config.ts";
+import { BUILT_IN_DATA_SYSTEM_PROMPT } from "../data/instructions.ts";
 import type { ProviderInstance, SendTurnInput } from "../contracts.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { recordEvents } from "../testing/events.ts";
+import { startFakeHttpMcp } from "../testing/fake-http-mcp-server.ts";
+import { whopLikeCatalog } from "../testing/whop-like-catalog.ts";
 import { GrokDriver } from "./grok.ts";
 import { CerebrasDriver } from "./cerebras.ts";
 import { MinimaxDriver } from "./minimax.ts";
@@ -54,8 +56,7 @@ function answer(response: ServerResponse, text = "The operation is complete.") {
   sse(response, [chunk({ content: text }, "stop")]);
 }
 
-// This fake implements MCP on the wire, without importing the production
-// transport or using a fake execution callback in the runtime under test.
+// MCP on the wire, without the production transport or a fake execution callback.
 const MCP_SCRIPT = `
 import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -156,6 +157,184 @@ async function fixture(script: Script, provider: Provider = "openai-compat", api
   };
 }
 
+describe("a searched MCP catalog", () => {
+  it("asks about the tool call_tool runs, and never about a search", async () => {
+    const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(300) });
+    cleanups.push(() => remote.close());
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) sse(response, [chunk({ content: null, tool_calls: [toolCall("whop_search_tools", '{"query":"list payments"}', "call_search")] }, "tool_calls")]);
+      else if (round === 2) sse(response, [chunk({ content: null, tool_calls: [toolCall("whop_call_tool", '{"name":"payments_list","arguments":{"company_id":"biz_1"}}', "call_run")] }, "tool_calls")]);
+      else answer(response);
+    });
+    await f.start({ integrations: { custom: { whop: { type: "http", url: remote.url, headers: {} } } } });
+    const opened = await f.recorder.until((event) => event.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "whop_payments_list", summary: expect.stringContaining("biz_1") });
+    expect(remote.calls).toEqual([]);
+    await f.instance.adapter.respondToRequest(f.threadId, opened.requestId!, { behavior: "allow" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.recorder.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+    expect(remote.calls).toEqual([{ name: "payments_list", arguments: { company_id: "biz_1" } }]);
+    expect(f.recorder.events.flatMap((event) => event.type === "item.started" && event.itemType === "tool" ? [event.title] : []))
+      .toEqual(["whop_search_tools", "whop_payments_list"]);
+    const names = f.requests[0].tools!.map((tool) => tool.function.name);
+    expect(names.filter((name) => name.startsWith("whop_"))).toEqual(["whop_search_tools", "whop_describe_tool", "whop_call_tool"]);
+    expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_search", content: expect.stringContaining("payments_list") });
+  });
+});
+
+describe("approvals that follow the other engines", () => {
+  it("runs OpenMausBot's own agents tools without a card, while a configured server's tool still asks", async () => {
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) sse(response, [chunk({ tool_calls: [toolCall("agents_write", '{"name":"peer","value":"sent"}', "call_agents")] }, "tool_calls")]);
+      else if (round === 2) sse(response, [chunk({ tool_calls: [toolCall("audit_write", '{"name":"receipt","value":"done"}', "call_audit")] }, "tool_calls")]);
+      else answer(response);
+    });
+    const agents = f.integrations!.custom!.audit as NonNullable<SendTurnInput["integrations"]>["agents"];
+    await f.start({ integrations: { ...f.integrations, agents } });
+    const opened = await f.recorder.until((event) => event.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "audit_write" });
+    expect(f.effects()).toEqual([{ name: "peer", value: "sent" }]);
+    await f.instance.adapter.respondToRequest(f.threadId, opened.requestId!, { behavior: "allow" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.recorder.events.filter((event) => event.type === "request.opened")).toHaveLength(1);
+    expect(f.effects()).toEqual([{ name: "peer", value: "sent" }, { name: "receipt", value: "done" }]);
+  });
+
+  it("keeps \"Always allow this session\" for that exact tool for the rest of the conversation", async () => {
+    const calls = [
+      toolCall("audit_write", '{"name":"one","value":"1"}', "call_1"), toolCall("audit_write", '{"name":"two","value":"2"}', "call_2"), null,
+      toolCall("audit_write", '{"name":"three","value":"3"}', "call_3"), toolCall("audit_fail", '{"name":"four","value":"4"}', "call_4"), null,
+      toolCall("audit_write", '{"name":"guest","value":"g"}', "call_g"), toolCall("audit_write", '{"name":"guest2","value":"g"}', "call_g2"), null,
+      toolCall("audit_write", '{"name":"five","value":"5"}', "call_5"), null,
+    ];
+    const f = await fixture((_body, response, round) => {
+      const call = calls[round - 1];
+      if (call) sse(response, [chunk({ tool_calls: [call] }, "tool_calls")]);
+      else answer(response);
+    });
+    const opened = () => f.recorder.events.filter((event) => event.type === "request.opened");
+    await f.start();
+    const first = await f.recorder.until((event) => event.type === "request.opened");
+    expect(first).toMatchObject({ tool: "audit_write", allowSession: true });
+    expect(await f.instance.adapter.respondToRequest(f.threadId, first.requestId!, { behavior: "allow", always: true })).toBe("allowed-once");
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(opened()).toHaveLength(1);
+    expect(f.effects().map((effect) => effect.name)).toEqual(["one", "two"]);
+
+    f.recorder.events.splice(0);
+    await f.start();
+    const other = await f.recorder.until((event) => event.type === "request.opened");
+    expect(other).toMatchObject({ tool: "audit_fail", allowSession: true });
+    expect(f.effects().map((effect) => effect.name)).toEqual(["one", "two", "three"]);
+    await f.instance.adapter.respondToRequest(f.threadId, other.requestId!, { behavior: "deny" });
+    await f.completed();
+
+    f.recorder.events.splice(0);
+    await f.start({ guestConfined: true });
+    const guest = await f.recorder.until((event) => event.type === "request.opened");
+    expect(guest).toMatchObject({ tool: "audit_write", allowSession: false });
+    expect(await f.instance.adapter.respondToRequest(f.threadId, guest.requestId!, { behavior: "allow", always: true })).toBe("allowed-once");
+    const again = await f.recorder.until((event) => event.type === "request.opened" && event.requestId !== guest.requestId);
+    expect(again).toMatchObject({ tool: "audit_write", allowSession: false });
+    await f.instance.adapter.respondToRequest(f.threadId, again.requestId!, { behavior: "deny" });
+    await f.completed();
+    expect(f.effects().map((effect) => effect.name)).toEqual(["one", "two", "three", "guest"]);
+
+    f.recorder.events.splice(0);
+    await f.instance.adapter.sendTurn({ threadId: randomUUID(), text: "Store it here too.", model: "fixture-model", integrations: f.integrations });
+    const elsewhere = await f.recorder.until((event) => event.type === "request.opened");
+    expect(elsewhere).toMatchObject({ tool: "audit_write" });
+    await f.instance.adapter.respondToRequest(elsewhere.threadId, elsewhere.requestId!, { behavior: "deny" });
+    await f.completed();
+    expect(f.effects().map((effect) => effect.name)).toEqual(["one", "two", "three", "guest"]);
+  });
+});
+
+describe("whose allow \"Always allow this session\" keeps", () => {
+  it("keeps it for the bot it was given to on that server: not a roommate on the same thread, nor a changed server", async () => {
+    const calls = [
+      toolCall("audit_write", '{"name":"mira","value":"1"}', "call_1"), null,
+      toolCall("audit_write", '{"name":"clive","value":"2"}', "call_2"), null,
+      toolCall("audit_write", '{"name":"mira2","value":"3"}', "call_3"), null,
+      toolCall("audit_write", '{"name":"changed","value":"4"}', "call_4"), null,
+    ];
+    const f = await fixture((_body, response, round) => {
+      const call = calls[round - 1];
+      if (call) sse(response, [chunk({ tool_calls: [call] }, "tool_calls")]);
+      else answer(response);
+    });
+    const opened = () => f.recorder.events.filter((event) => event.type === "request.opened");
+    // a room runs each member's turn on the room's one thread
+    await f.start({ botId: "mira" });
+    const first = await f.recorder.until((event) => event.type === "request.opened");
+    expect(await f.instance.adapter.respondToRequest(f.threadId, first.requestId!, { behavior: "allow", always: true })).toBe("allowed-once");
+    await f.completed();
+
+    f.recorder.events.splice(0);
+    await f.start({ botId: "clive" });
+    const roommate = await f.recorder.until((event) => event.type === "request.opened");
+    expect(roommate).toMatchObject({ tool: "audit_write", allowSession: true });
+    await f.instance.adapter.respondToRequest(f.threadId, roommate.requestId!, { behavior: "deny" });
+    await f.completed();
+
+    f.recorder.events.splice(0);
+    await f.start({ botId: "mira" });
+    await f.completed();
+    expect(opened()).toHaveLength(0);
+
+    // the person pointed "audit" at another launch of the server
+    const audit = f.integrations!.custom!.audit as { command: string; args: string[]; env: Record<string, string> };
+    f.recorder.events.splice(0);
+    await f.start({ botId: "mira", integrations: { custom: { audit: { ...audit, env: { ...audit.env, AUDIT_PROFILE: "other" } } } } });
+    const changed = await f.recorder.until((event) => event.type === "request.opened");
+    expect(changed).toMatchObject({ tool: "audit_write", allowSession: true });
+    await f.instance.adapter.respondToRequest(f.threadId, changed.requestId!, { behavior: "deny" });
+    await f.completed();
+    expect(f.effects().map((effect) => effect.name)).toEqual(["mira", "mira2"]);
+  });
+});
+
+describe("built-in Data provider parity", () => {
+  it.each(["openai-compat", "grok", "minimax", "cerebras"] as const)("mounts and executes Data through %s with the shared instructions", async (provider) => {
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) sse(response, [chunk({ tool_calls: [toolCall("data_write")] }, "tool_calls")]);
+      else answer(response);
+    }, provider);
+    const data = f.integrations!.custom!.audit as NonNullable<SendTurnInput["integrations"]>["data"];
+    expect(f.instance.adapter.capabilities.dataMcp).toBe(true);
+    await f.start({ integrations: { data }, system: BUILT_IN_DATA_SYSTEM_PROMPT });
+    await f.decide();
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests[0].tools?.map(tool => tool.function.name)).toContain("data_write");
+    expect(f.requests[0].messages).toContainEqual({ role: "system", content: BUILT_IN_DATA_SYSTEM_PROMPT });
+    expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
+    expect(f.requests[1].messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "call_write", content: expect.stringContaining("Stored receipt=done") }));
+  });
+});
+
+describe("a searched MCP catalog's misses", () => {
+  it("are guidance the model recovers from, so the turn still succeeds", async () => {
+    const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(300) });
+    cleanups.push(() => remote.close());
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) sse(response, [chunk({ content: null, tool_calls: [
+        toolCall("whop_describe_tool", '{"name":"payments_teleport"}', "call_unknown"),
+        { ...toolCall("whop_search_tools", '{"limit":"eight"}', "call_empty"), index: 1 },
+      ] }, "tool_calls")]);
+      else answer(response, "There is no such tool; I searched for the right one instead.");
+    });
+    await f.start({ integrations: { custom: { whop: { type: "http", url: remote.url, headers: {} } } } });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.recorder.events.some((event) => event.type === "request.opened")).toBe(false);
+    const results = f.requests[1].messages.filter((message) => message.role === "tool").map((message) => JSON.parse(message.content as string));
+    expect(results).toEqual([
+      { ok: true, result: expect.stringContaining("No tool named") },
+      { ok: true, result: expect.stringContaining("search_tools needs") },
+    ]);
+    expect(remote.calls).toEqual([]);
+  });
+});
+
 describe("optional built-in question compatibility", () => {
   const unsupported = { error: { message: "This model does not support tools." } };
   it.each([
@@ -177,7 +356,6 @@ describe("optional built-in question compatibility", () => {
     expect(f.requests[1]).not.toHaveProperty("tools");
     expect(f.requests[1].messages).toEqual(f.requests[0].messages);
     expect(f.effects()).toEqual([]);
-    // A rejection for this turn is not a persisted provider setting.
     f.recorder.events.length = 0;
     await f.start({ integrations: undefined });
     expect(await f.completed()).toMatchObject({ ok: true });
@@ -416,8 +594,6 @@ describe.each<Provider>(["openai-compat", "grok", "minimax"])("%s structured too
     await f.start({ integrations: undefined, system: "Fixture persona", transcript: [{ role: "user", text: "Earlier question" }, { role: "assistant", text: "Earlier answer" }] });
     expect(await f.completed()).toMatchObject({ ok: true });
     expect(f.requests).toHaveLength(1);
-    // ask_user is the runtime's built-in, so it is offered even with no MCP
-    // server mounted — and nothing else is.
     expect(f.requests[0].tools?.map((tool) => tool.function.name)).toEqual(["ask_user"]);
     expect(f.requests[0].messages.map((message) => message.role)).toEqual(["system", "user", "assistant", "user"]);
     expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: imitation }));
@@ -440,8 +616,6 @@ describe.each<Provider>(["openai-compat", "grok", "minimax"])("%s structured too
     const opened = await f.recorder.until((event) => event.type === "request.opened");
     if (opened.type !== "request.opened") throw new Error("expected a question card");
     expect(opened).toMatchObject({ requestType: "question", tool: "ask_user", questions });
-    // A multi-question card cannot flatten to one choice list without
-    // losing which question an answer belongs to.
     expect(opened.choices).toBeUndefined();
     expect(f.requests[0].tools).toContainEqual({
       type: "function",
@@ -454,18 +628,21 @@ describe.each<Provider>(["openai-compat", "grok", "minimax"])("%s structured too
     expect(f.effects()).toEqual([]);
   }, 20_000);
 
-  it("returns an unanswered ask_user as a denial the model must not paper over", async () => {
+  it("completes the turn when an ask_user goes unanswered, instead of ending it as a denial", async () => {
     const f = await fixture((_body, response, round) => {
       if (round === 1) sse(response, [chunk({ content: null, tool_calls: [toolCall("ask_user", JSON.stringify({ questions: [{ question: "Ship it?" }] }), "call_ask")] }, "tool_calls")]);
-      else answer(response, "I went ahead and shipped it.");
+      else answer(response, "I proceeded without the answer.");
     }, provider);
     await f.start();
     const opened = await f.recorder.until((event) => event.type === "request.opened");
     expect(await f.instance.adapter.respondToRequest(f.threadId, opened.requestId!, { behavior: "deny" })).toBe("rejected");
-    expect(await f.completed()).toMatchObject({ ok: false, denials: ["ask_user"] });
+    const completed = await f.completed();
+    expect(completed).toMatchObject({ ok: true });
+    expect((completed as any).stopReason).not.toBe("tool_error");
+    expect((completed as any).denials).toBeUndefined();
     expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_ask" });
     expect(JSON.parse(String(f.requests[1].messages.at(-1)?.content))).toMatchObject({
-      ok: false,
+      ok: true,
       result: expect.stringContaining("did not answer"),
     });
   }, 20_000);
@@ -540,7 +717,7 @@ describe("structured tool execution boundaries", () => {
     expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
   });
 
-  // Groq's wording (#2077), truncated in the runtime error but not in the body.
+  // Groq's wording, truncated in the runtime error but not in the body.
   const reasoningRejection = { error: {
     message: "'messages.2' : for 'role:assistant' the following must be satisfied[('messages.2' : property 'reasoning_content' is unsupported)]",
     type: "invalid_request_error",
@@ -565,7 +742,6 @@ describe("structured tool execution boundaries", () => {
     const resent = f.requests[2].messages;
     expect(resent.some((message) => "reasoning_content" in message)).toBe(false);
     expect(resent).toEqual(f.requests[1].messages.map(({ reasoning_content: _omitted, ...message }) => message));
-    // The rejected request executed nothing; the call ran exactly once.
     expect(f.effects()).toEqual([{ name: "receipt", value: "done" }]);
     expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
 
@@ -889,7 +1065,6 @@ describe("structured tool execution boundaries", () => {
   });
 
   it("finishes a tool-heavy task that needs more than sixteen steps", async () => {
-    // A tool-heavy model (one call per step) used to be cut off at 16 steps.
     const f = await fixture((_body, response, round) => round <= 40
       ? sse(response, [chunk({ tool_calls: [toolCall("audit_write", `{"name":"step","value":"${round}"}`, `call_${round}`)] }, "tool_calls")])
       : answer(response));
@@ -919,7 +1094,6 @@ describe("structured tool execution boundaries", () => {
   });
 
   it("stops at 200 tool calls in one turn without running the batch that crosses it", async () => {
-    // The turn's total is separate from the 32-per-reply bound.
     const f = await fixture((_body, response, round) => sse(response, [chunk({
       tool_calls: Array.from({ length: 25 }, (_, index) => ({
         ...toolCall("audit_write", `{"name":"r${round}","value":"${index}"}`, `call_${round}_${index}`), index,
@@ -936,8 +1110,6 @@ describe("structured tool execution boundaries", () => {
   });
 
   it("keeps Grok's native log small on a long turn with large tool results", async () => {
-    // Logging the whole transcript on every step grows with the square of the
-    // step count; a step is logged by its message count, like the other engines.
     ensureDirs();
     const large = "note ".repeat(4_000);
     const f = await fixture((_body, response, round) => round <= 20
@@ -947,7 +1119,6 @@ describe("structured tool execution boundaries", () => {
     expect(await f.completed()).toMatchObject({ ok: true });
     expect(f.effects()).toHaveLength(20);
     const log = readFileSync(join(NATIVE_DIR, `${f.threadId}.ndjson`), "utf8");
-    // The whole turn's log is smaller than one tool result.
     expect(log.length).toBeLessThan(large.length);
     const outgoing = log.trim().split("\n").map((line) => JSON.parse(line) as { dir: string; msg: unknown })
       .filter((entry) => entry.dir === "out").map((entry) => entry.msg);
@@ -984,5 +1155,25 @@ describe("structured tool execution boundaries", () => {
     const pending = f.recorder.events.find((event) => event.type === "request.opened");
     if (pending) expect(await f.instance.adapter.respondToRequest(f.threadId, pending.requestId!, { behavior: "allow" })).toBe("unavailable");
     expect(f.recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+  });
+});
+
+describe("a configured MCP server that cannot mount", () => {
+  it("is skipped with a notice, and the turn runs with the remaining servers", async () => {
+    const f = await fixture((_body, response) => answer(response));
+    const broken = join(f.directory, "broken-mcp.mjs");
+    // Answers initialize with an error, as a server needing sign-in or refusing its credential (401) does.
+    writeFileSync(broken, `process.stdin.setEncoding("utf8");let b="";process.stdin.on("data",(c)=>{b+=c;let n;while((n=b.indexOf("\\n"))!==-1){const m=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(m.id!==undefined)process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,error:{code:-32001,message:"401 Unauthorized"}})+"\\n");}});`);
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await f.start({ integrations: { custom: { ...f.integrations!.custom, slack: { command: process.execPath, args: [broken], env: {} } } } });
+      expect(await f.completed()).toMatchObject({ ok: true });
+    } finally { console.warn = warn; }
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.notice", message: expect.stringContaining(`MCP server "slack" was skipped`) }));
+    expect(f.recorder.events.some((event) => event.type === "runtime.error")).toBe(false);
+    const names = f.requests[0].tools!.map((tool) => tool.function.name);
+    expect(names).toContain("audit_write");
+    expect(names.some((name) => name.startsWith("slack_"))).toBe(false);
   });
 });

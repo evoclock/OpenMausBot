@@ -1,8 +1,3 @@
-// Rotation for the per-thread NDJSON tees: a cap must keep whole lines and
-// the recent tail the inspector serves (including mid-turn, when appends
-// continue right after a rotation), leave exactly one file so the delete
-// and retention paths cannot orphan a fragment, and do nothing at all
-// unless a cap is configured.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -71,7 +66,6 @@ describe("thread log rotation", () => {
     expect(statSync(file).size).toBeLessThanOrEqual(2000);
     expect(kept.length).toBeGreaterThan(0);
     expect(kept.length).toBeLessThan(original.length);
-    // a strict suffix of the original stream: whole records, newest kept
     expect(original.slice(-kept.length)).toEqual(kept);
   });
 
@@ -79,8 +73,6 @@ describe("thread log rotation", () => {
     writeLines(EVENTS_DIR, 120);
     const file = join(EVENTS_DIR, `${THREAD}.ndjson`);
     capThreadLog(file, 2000);
-    // the turn keeps going after the rotation: new appends land in the
-    // rewritten file and the tail read stays continuous
     appendFileSync(file, log(1000) + log(1001));
     const linesNow = linesOf(EVENTS_DIR);
     const page = readThreadEvents({ eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR, threadId: THREAD, limit: 5 });
@@ -95,16 +87,15 @@ describe("thread log rotation", () => {
     const file = join(EVENTS_DIR, `${THREAD}.ndjson`);
     capThreadLog(file, 500);
     expect(readdirSync(EVENTS_DIR)).toEqual([`${THREAD}.ndjson`]);
-    // the exact unlink thread, bot and group delete (and the retention
-    // sweep) already perform removes everything rotation ever wrote
     unlinkSync(file);
     expect(readdirSync(EVENTS_DIR)).toEqual([]);
   });
 
-  it("the bus caps its canonical log after appending", () => {
+  it("the bus caps its canonical log after appending", async () => {
     bindThreadLogCapProvider(() => 900);
     const bus = new EventBus();
     for (let i = 0; i < 30; i++) bus.publish(busEvent(i));
+    await bus.flush();
     const file = join(EVENTS_DIR, `${THREAD}.ndjson`);
     const lines = linesOf(EVENTS_DIR);
     expect(statSync(file).size).toBeLessThanOrEqual(900);

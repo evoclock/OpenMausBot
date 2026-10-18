@@ -30,7 +30,8 @@ the standing instructions, then checks:
   file preset and no bot or team, and `GET /api/bot-presets` lists it with
   `skillsEnabled: false`;
 - `POST /api/bots` with that `preset` adds its skill switched off, its
-  starter notes and the `installedPackage.presetKey` stamp, on Ask; with the
+  starter notes and the `installedPackage.presetKey` stamp, at the default
+  Full access level; with the
   saved defaults applied too, the preset's skill wins over the defaults';
 - an organization preset (written into `org-library/presets.json` as the
   organization library stores one) is listed first under its publisher and

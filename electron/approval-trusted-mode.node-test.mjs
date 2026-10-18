@@ -39,9 +39,23 @@ test("all-thread grants wait for committed thread modes and compensate the same 
   }
 });
 
-test("all-thread grants reject mixed scopes", () => {
-  for (const mode of ["auto", "custom", "edits"]) assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", mode, false, undefined, undefined, undefined, false, true), /all-threads/);
+test("all-thread grants take every level but Custom, and reject mixed scopes", () => {
+  for (const mode of ["ask", "edits", "auto", "full"]) {
+    assert.equal(trustedApprovalModeRequest(REQUEST_ID, "bot-1", mode, false, undefined, undefined, undefined, false, true).allThreads, true);
+  }
+  assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", "custom", false, undefined, undefined, undefined, false, true), /all-threads/);
   assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", "full", false, "thread", undefined, undefined, false, true), /all-threads/);
+});
+
+test("an all-thread Auto leaving Custom settles on its one reply, with no grant phases", async () => {
+  const proc = fakeProcess();
+  const coordinator = createTrustedApprovalModeCoordinator({ randomId: () => REQUEST_ID });
+  const pending = coordinator.request(proc, "bot-1", "auto", { allThreads: true, acknowledgeLocalAuto: true });
+  assert.deepEqual(proc.messages[0], { type: "approval-trusted-mode-set", requestId: REQUEST_ID, botId: "bot-1", mode: "auto", acknowledgeLocalAuto: true, allThreads: true });
+  const bot = { id: "bot-1", approvalMode: "auto", tasks: [{ threadId: "rules", approvalMode: "auto" }] };
+  coordinator.receive(proc, { type: "approval-trusted-mode-result", requestId: REQUEST_ID, ok: true, bot });
+  assert.deepEqual(await pending, bot);
+  assert.equal(proc.messages.length, 1);
 });
 
 test("scoped composer grants wait for the real commit and keep the bot default", async () => {
@@ -82,7 +96,6 @@ test("permission refresh stays on one thread", () => {
   assert.equal(message.refreshPermissions, true);
   assert.equal(message.threadOnly, true);
   assert.equal(message.threadId, "thread-1");
-  // A refresh without thread scope would let a lost reply downgrade the bot.
   assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", "full", false, "thread-1", undefined, undefined, false, false, true), /permission refresh/);
   assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", "full", false, undefined, undefined, undefined, false, true, true), /permission refresh/);
   assert.throws(() => trustedApprovalModeRequest(REQUEST_ID, "bot-1", "ask", false, undefined, undefined, undefined, false, false, "yes"), /permission refresh/);

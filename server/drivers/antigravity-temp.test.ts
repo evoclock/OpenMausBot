@@ -1,6 +1,4 @@
-// Antigravity's Windows unpack folders: where they go, and what may delete
-// them. Every test runs on every OS: Windows paths and process lookups are
-// injected, and the folders are real directories under a throwaway root.
+// Every test runs on every OS: Windows paths and process lookups are injected; folders are real, under a throwaway root.
 import {
   existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync,
 } from "node:fs";
@@ -21,8 +19,7 @@ import {
   unpackFolderOwnerPids,
 } from "./antigravity-temp.ts";
 
-// Runs just before the code under test renames (claims) a folder, so a test
-// can stage what another remover does in between. Unset: a plain rename.
+// Runs just before the code under test claims a folder, so a test can stage another remover in between.
 const beforeRename = vi.hoisted(() => ({ run: null as null | ((from: string) => void) }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
@@ -52,8 +49,6 @@ const hexName = (pid: number, counter = 2) => `_MEI${pid.toString(16).padStart(8
 /** Older names: `_MEI` + decimal ID + counter. */
 const decimalName = (pid: number, counter = 2) => `_MEI${pid}${counter}`;
 
-/** A fake unpack folder with a file inside, optionally with Antigravity's
- * marker files, and optionally dated in the past. */
 function unpackFolder(
   parent: string,
   name: string,
@@ -80,9 +75,7 @@ describe("Antigravity's temp folder", () => {
     expect(work).toBe(antigravityTempDir(dataDir, "work"));
     expect(dirname(work)).toBe(join(dataDir, "tmp", "agy"));
     expect(antigravityTempRoot(dataDir)).toBe(dirname(work));
-    // Short: the runtime unpacks files up to 120 characters deep.
     expect(work.slice(dataDir.length)).toMatch(/^[\\/]tmp[\\/]agy[\\/][0-9a-f]{12}$/u);
-    // Instance IDs that differ only in case stay apart on case-insensitive disks.
     expect(antigravityTempDir(dataDir, "Work")).not.toBe(work);
     expect(antigravityTempDir(dataDir, "personal")).not.toBe(work);
   });
@@ -112,7 +105,6 @@ describe("reading an unpack folder's process ID", () => {
 
   it("keeps every reading of an older decimal name, so a live owner is never missed", () => {
     expect(unpackFolderOwnerPids(decimalName(17348))).toEqual([17348, 1734, 173]);
-    // Eight digits read both ways.
     expect(unpackFolderOwnerPids(`_MEI${12345678}2`)).toEqual(expect.arrayContaining([0x12345678, 12345678, 1234567, 123456]));
   });
 
@@ -173,7 +165,6 @@ describe("the automatic sweep", () => {
     mkdirSync(antigravityTempDir(dataDir, "work"), { recursive: true });
     expect(await sweepAntigravityTemp("work", { dataDir, isAlive: () => false })).toBe(0);
     expect(existsSync(other)).toBe(true);
-    // The system temp folder is only ever cleaned when the person asks.
     expect(existsSync(system)).toBe(true);
   });
 
@@ -218,9 +209,7 @@ describe("Free up space", () => {
 
   function fixture() {
     const dataDir = tempRoot("free");
-    // Resolved as the code resolves it, with the native call: macOS keeps
-    // temp behind a link, and Windows runners name it with an 8.3 short
-    // name (RUNNER~1) that only the native call expands.
+    // Resolved natively: macOS keeps temp behind a link, and Windows runners name it with an 8.3 short name.
     const systemTemp = realpathSync.native(tempRoot("free-system"));
     const alive = new Set([0x1111]);
     const folders = {
@@ -247,7 +236,6 @@ describe("Free up space", () => {
     expect(scan.complete).toBe(true);
     // Payloads plus the two marker files in each system leftover.
     expect(scan.bytes).toBe(4_000 + 10_000 + 20_000 + 1_000 + 2 * ("licences".length + "dll".length));
-    // Looking deletes nothing.
     for (const path of Object.values(folders)) expect(existsSync(path)).toBe(true);
   });
 

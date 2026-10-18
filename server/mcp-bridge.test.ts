@@ -1,9 +1,7 @@
-// The bridge's dead-transport watchdog, pinned at the unit level: the 45s
-// e2e wait is too slow for the suite, and the property that matters is not
-// the constant but the decision table — silence alone never kills, only
-// silence PLUS a failed liveness probe does, and traffic always vetoes.
+// Unit level: the 45 s e2e wait is too slow for the suite, and what matters is the decision table, not the constant.
 import { describe, expect, it, vi } from "vitest";
 
+import { CONTROL_REFUSAL_PLAIN, CONTROL_UNCONFIRMED, CONTROL_WAITED, type ControlState } from "./control-client.ts";
 import {
   createGateInterceptor,
   createInactivityWatchdog,
@@ -12,7 +10,6 @@ import {
   runLivenessProbe,
 } from "./mcp-bridge.ts";
 
-/** a probe whose answers the test scripts one call at a time */
 function scriptedProbe(answers: boolean[]) {
   const calls: Array<(alive: boolean) => void> = [];
   let handed = 0;
@@ -36,17 +33,14 @@ describe("createInactivityWatchdog", () => {
       const scripted = scriptedProbe([true, false]);
       createInactivityWatchdog({ inactivityMs: 1_000, probe: scripted.probe, onDead });
 
-      // first silence window: the probe answers alive → no kill, re-armed
       await vi.advanceTimersByTimeAsync(1_000);
       expect(scripted.calls).toHaveLength(1);
       expect(onDead).not.toHaveBeenCalled();
 
-      // second silence window: the probe fails → dead, exactly once
       await vi.advanceTimersByTimeAsync(1_000);
       expect(scripted.calls).toHaveLength(2);
       expect(onDead).toHaveBeenCalledTimes(1);
 
-      // dead is terminal: no timer survives to fire again
       await vi.advanceTimersByTimeAsync(10_000);
       expect(onDead).toHaveBeenCalledTimes(1);
     } finally {
@@ -65,15 +59,12 @@ describe("createInactivityWatchdog", () => {
         onDead,
       });
 
-      // steady traffic keeps the probe from ever firing
       for (let i = 0; i < 5; i += 1) {
         await vi.advanceTimersByTimeAsync(900);
         watchdog.touch();
       }
       expect(probeResolvers).toHaveLength(0);
 
-      // silence fires the probe — but a byte arriving WHILE it runs must
-      // outrank even a failed answer (a slow screenshot finishing is life)
       await vi.advanceTimersByTimeAsync(1_000);
       expect(probeResolvers).toHaveLength(1);
       watchdog.touch();
@@ -81,7 +72,6 @@ describe("createInactivityWatchdog", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(onDead).not.toHaveBeenCalled();
 
-      // the veto re-armed the window; a stopped watchdog stays quiet
       watchdog.stop();
       probeResolvers = [];
       await vi.advanceTimersByTimeAsync(10_000);
@@ -162,32 +152,34 @@ describe("createLineSplitter", () => {
 describe("createGateInterceptor", () => {
   const frame = (method: string, id?: number) => JSON.stringify({ jsonrpc: "2.0", id, method, params: {} });
   const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const free: ControlState = { held: false, helpOpen: false };
+  const person: ControlState = { held: true, helpOpen: false, reason: "person" };
 
-  function harness(isHeld: () => Promise<boolean>) {
+  function harness(check: () => Promise<ControlState>) {
     const forwarded: string[] = [];
     const refused: string[] = [];
     const intercept = createGateInterceptor({
-      isHeld,
+      check,
       forward: (line) => forwarded.push(line),
       refuse: (line) => refused.push(line),
     });
     return { forwarded, refused, intercept };
   }
+  const refusalText = (line: string) => JSON.parse(line).result.content[0].text as string;
 
   it("forwards everything untouched while nobody is driving", async () => {
-    const { forwarded, refused, intercept } = harness(async () => false);
+    const { forwarded, refused, intercept } = harness(async () => free);
     for (const line of [frame("initialize", 1), frame("tools/list", 2), frame("tools/call", 3), "not json at all"]) {
       intercept(line);
     }
     await drain();
     expect(refused).toEqual([]);
     expect(forwarded).toHaveLength(4);
-    // byte-for-byte: the transparent path must not re-serialize a frame
     expect(forwarded[3]).toBe("not json at all");
   });
 
   it("refuses only tools/call while the person is driving", async () => {
-    const { forwarded, refused, intercept } = harness(async () => true);
+    const { forwarded, refused, intercept } = harness(async () => person);
     intercept(frame("tools/list", 1));
     intercept(frame("tools/call", 2));
     await drain();
@@ -196,18 +188,18 @@ describe("createGateInterceptor", () => {
     const answer = JSON.parse(refused[0]!);
     expect(answer.id).toBe(2);
     expect(answer.result.isError).toBe(true);
-    expect(answer.result.content[0].text).toMatch(/taken control/i);
+    expect(answer.result.content[0].text).toBe(CONTROL_REFUSAL_PLAIN);
   });
 
-  it("preserves protocol order even though the held-check is async", async () => {
+  it("preserves protocol order even though the check is async", async () => {
     const order: string[] = [];
     let calls = 0;
-    let releaseFirst!: (held: boolean) => void;
-    const first = new Promise<boolean>((resolve) => (releaseFirst = resolve));
+    let releaseFirst!: (state: ControlState) => void;
+    const first = new Promise<ControlState>((resolve) => (releaseFirst = resolve));
     let drained!: () => void;
     const allForwarded = new Promise<void>((resolve) => (drained = resolve));
     const intercept = createGateInterceptor({
-      isHeld: () => (calls++ === 0 ? first : Promise.resolve(false)),
+      check: () => (calls++ === 0 ? first : Promise.resolve(free)),
       forward: (line) => {
         const parsed = JSON.parse(line);
         order.push(`fwd:${parsed.id ?? parsed.marker}`);
@@ -219,12 +211,12 @@ describe("createGateInterceptor", () => {
     intercept(frame("tools/call", 2));
     intercept(JSON.stringify({ marker: "drained" }));
     expect(order).toEqual([]);
-    releaseFirst(false);
+    releaseFirst(free);
     await allForwarded;
     expect(order).toEqual(["fwd:1", "fwd:2", "fwd:drained"]);
   });
 
-  it("fails closed when the control check rejects", async () => {
+  it("fails closed when the control check rejects, without blaming a person", async () => {
     const { forwarded, refused, intercept } = harness(async () => {
       throw new Error("harness went away");
     });
@@ -232,26 +224,59 @@ describe("createGateInterceptor", () => {
     await drain();
     expect(refused).toHaveLength(1);
     expect(JSON.parse(refused[0]!).result.isError).toBe(true);
+    expect(refusalText(refused[0]!)).toBe(CONTROL_UNCONFIRMED);
     expect(forwarded).toEqual([]);
   });
 
-  it("returns the current thread-contention reason without changing human takeover guidance", async () => {
+  it("words each hold by what the harness said: its reason, a person, or nothing it could confirm", async () => {
     const refused: string[] = [];
-    let reason: string | undefined = "Another thread is using this computer. Pause this task.";
-    const isHeld = vi.fn(async () => true);
-    const intercept = createGateInterceptor({
-      isHeld,
-      forward: () => {},
-      refuse: (line) => refused.push(line),
-      getRefusalReason: () => reason,
-    });
+    let state: ControlState = { held: true, helpOpen: false, blockedReason: "Another thread is using this computer." };
+    const check = vi.fn(async () => state);
+    const intercept = createGateInterceptor({ check, forward: () => {}, refuse: (line) => refused.push(line) });
     await intercept(frame("tools/list", 1));
-    expect(isHeld).not.toHaveBeenCalled();
+    expect(check).not.toHaveBeenCalled();
     await intercept(frame("tools/call", 2));
-    expect(JSON.parse(refused[0]!).result.content[0].text).toBe(reason);
-    reason = undefined;
+    expect(refusalText(refused[0]!)).toBe("Another thread is using this computer.");
+    state = person;
     await intercept(frame("tools/call", 3));
-    expect(JSON.parse(refused[1]!).result.content[0].text).toMatch(/person has taken control/i);
+    expect(refusalText(refused[1]!)).toBe(CONTROL_REFUSAL_PLAIN);
+    state = { held: true, helpOpen: false };
+    await intercept(frame("tools/call", 4));
+    expect(refusalText(refused[2]!)).toBe(CONTROL_UNCONFIRMED);
+  });
+
+  // Codex gives one tool call 60 s, so a call forwarded after a long wait could act twice on the model's retry.
+  it("never forwards a call answered free late, whether the harness held its check or it queued behind another", async () => {
+    vi.useFakeTimers();
+    try {
+      const checks: Array<(state: ControlState) => void> = [];
+      const forwarded: string[] = [];
+      const refused: string[] = [];
+      const intercept = createGateInterceptor({
+        check: () => new Promise<ControlState>((resolve) => checks.push(resolve)),
+        forward: (line) => forwarded.push(line),
+        refuse: (line) => refused.push(line),
+        actWithinMs: 1_000,
+      });
+      const quick = intercept(frame("tools/call", 1));
+      await vi.advanceTimersByTimeAsync(900);
+      checks.shift()!(free);
+      await quick;
+      expect(forwarded).toEqual([frame("tools/call", 1)]);
+
+      const held = intercept(frame("tools/call", 2));
+      const queued = intercept(frame("tools/call", 3));
+      await vi.advanceTimersByTimeAsync(1_500);
+      checks.shift()!(free);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(checks).toHaveLength(1);
+      checks.shift()!(free);
+      await Promise.all([held, queued]);
+      expect(forwarded).toEqual([frame("tools/call", 1)]);
+      expect(refused.map((line) => [JSON.parse(line).id, refusalText(line)])).toEqual([[2, CONTROL_WAITED], [3, CONTROL_WAITED]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -291,7 +316,6 @@ describe("createMcpBridgeInterceptor", () => {
       forward: (line) => forwarded.push(line),
     });
     for (const line of [frame("initialize", 1), frame("tools/list", 2), "not json"]) {
-      // A writer's byte count/backpressure result is not a gate promise.
       expect(intercept(line)).toBeUndefined();
     }
     expect(answered).toEqual([]);
@@ -304,7 +328,7 @@ describe("createMcpBridgeInterceptor", () => {
     const intercept = createMcpBridgeInterceptor({
       answer: (line) => answered.push(line),
       forward: (line) => forwarded.push(line),
-      gate: { isHeld: async () => true },
+      gate: { check: async () => ({ held: true, helpOpen: false, reason: "person" }) },
     });
     intercept(frame("ping", 1));
     intercept(frame("tools/call", 2));
@@ -313,7 +337,7 @@ describe("createMcpBridgeInterceptor", () => {
     expect(answered).toHaveLength(2);
     expect(JSON.parse(answered[0]!)).toEqual({ jsonrpc: "2.0", id: 1, result: {} });
     expect(JSON.parse(answered[1]!).result.isError).toBe(true);
-    expect(JSON.parse(answered[1]!).result.content[0].text).toMatch(/taken control/i);
+    expect(JSON.parse(answered[1]!).result.content[0].text).toBe(CONTROL_REFUSAL_PLAIN);
   });
 
   it("forwards other frames through the gate", async () => {
@@ -322,7 +346,7 @@ describe("createMcpBridgeInterceptor", () => {
     const intercept = createMcpBridgeInterceptor({
       answer: (line) => answered.push(line),
       forward: (line) => forwarded.push(line),
-      gate: { isHeld: async () => true },
+      gate: { check: async () => ({ held: true, helpOpen: false, reason: "person" }) },
     });
     intercept(frame("tools/list", 1));
     await drain();

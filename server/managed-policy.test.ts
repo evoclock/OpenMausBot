@@ -41,7 +41,6 @@ describe("organisation desktop policy overlay", () => {
     const { managed } = overlay(policy({ companyModelsOnly: true, allowedEngines: ["claudeAgent", "codex"] }));
     expect(managed.modelRefusal({ driverKind: "claudeAgent", displayName: "Claude" }, false)).toBe("Fixture Agency allows only company models on this computer. Choose a Company model for this bot.");
     expect(managed.modelRefusal({ driverKind: "claudeAgent" }, true)).toBeUndefined();
-    // Engine rules apply to Company instances too.
     expect(managed.modelRefusal({ driverKind: "openai-compat", displayName: "OpenAI-compatible" }, true)).toBe("Fixture Agency does not allow the OpenAI-compatible engine on this computer. Choose another model for this bot.");
     managed.apply(policy({ allowedEngines: ["codex"] }));
     expect(managed.modelRefusal({ driverKind: "claudeAgent", displayName: "Claude" }, false)).toMatch(/does not allow the Claude engine/);
@@ -133,9 +132,7 @@ describe("organisation desktop policy overlay", () => {
   });
 });
 
-// Every computer claim in index.ts goes through bindTurnComputer. Run its
-// actual guard (not a copy), and the refusal it asks, against a synthetic
-// policy and, for an OMB Cloud home, the Cloud home switch.
+// Every computer claim in index.ts goes through bindTurnComputer: run its actual guard, not a copy.
 describe("claim-time computer refusal in bindTurnComputer", () => {
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const start = source.indexOf("\nasync function bindTurnComputer(");
@@ -168,7 +165,6 @@ describe("claim-time computer refusal in bindTurnComputer", () => {
     await expect(bindTurnComputer({}, "computer:vm:shared")).rejects.toThrow(cloudHomePlaceRefusal("vm"));
     await expect(bindTurnComputer({}, "computer:box:bx_1")).resolves.toBe("claimed");
     await expect(bindTurnComputer({}, "computer:vps:alias:bot")).resolves.toBe("claimed");
-    // The same guard on any other server claims both.
     await expect(bind(managed)({}, "computer:host")).resolves.toBe("claimed");
     await expect(bind(managed)({}, "computer:vm:shared")).resolves.toBe("claimed");
   });

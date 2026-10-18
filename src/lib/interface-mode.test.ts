@@ -14,8 +14,7 @@ function memoryStorage() {
 
 let local: ReturnType<typeof memoryStorage>;
 
-// The module keeps a per-session choice, so every case loads a fresh copy
-// over the same storage, the way a relaunch would.
+// The module keeps a per-session choice, so each case loads a fresh copy over the same storage, as a relaunch would.
 async function fresh() {
   vi.resetModules();
   return import("./interface-mode");
@@ -36,7 +35,6 @@ describe("interface mode", () => {
     const { readAdvancedMode, settleAdvancedModeDefault, ADVANCED_MODE_KEY } = await fresh();
     expect(readAdvancedMode()).toBe(false);
     settleAdvancedModeDefault();
-    // The skin key written right after boot must not flip a fresh install.
     local.setItem("omb-skin", "midnight");
     expect(local.getItem(ADVANCED_MODE_KEY)).toBe("0");
     expect((await fresh()).readAdvancedMode()).toBe(false);

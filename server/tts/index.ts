@@ -9,9 +9,7 @@ import * as systemVoices from "./system-voices.ts";
 export type VoiceProvider = "elevenlabs" | "fish" | "system" | "chatterbox" | "xai";
 
 export class NoVoiceConfigured extends Error {
-  // a plain field rather than a constructor parameter property: the harness
-  // runs under `node --experimental-strip-types`, which is strip-ONLY, so a
-  // parameter property is rejected at load time even though it typechecks
+  // Not a parameter property: the harness runs under strip-only `node --experimental-strip-types`, which rejects one at load.
   readonly reason: "key" | "voice";
 
   constructor(reason: "key" | "voice", hint?: string) {
@@ -25,8 +23,6 @@ export class NoVoiceConfigured extends Error {
   }
 }
 
-/** The ElevenLabs credential in use: the person's own key, else the one
- * included with Cloud Pro. Settings' own-key flows read cfg.tts.key instead. */
 const elevenLabs = (cfg: AppConfig) => voiceCredential(cfg.tts?.key);
 
 export function voiceProvider(cfg: AppConfig): VoiceProvider {
@@ -34,9 +30,6 @@ export function voiceProvider(cfg: AppConfig): VoiceProvider {
   return provider === "xai" || provider === "fish" || provider === "system" || provider === "chatterbox" ? provider : "elevenlabs";
 }
 
-/** The system provider needs no credential — it is only ever offered where
- * the platform actually has it, so "configured" means "this engine can
- * speak", not "a key is on file". */
 export function providerConfigured(cfg: AppConfig): boolean {
   const provider = voiceProvider(cfg);
   if (provider === "xai") return Boolean(cfg.xai?.key);
@@ -57,8 +50,6 @@ export function voiceConfigured(cfg: AppConfig): boolean {
   return Boolean(elevenLabs(cfg) && cfg.tts?.voice);
 }
 
-/** A per-bot voice is a complete choice too; it should not be blocked just
- * because the app-wide fallback has not been selected yet. */
 export function voiceReady(cfg: AppConfig, voiceId?: string): boolean {
   const provider = voiceProvider(cfg);
   if (provider === "xai") return Boolean(cfg.xai?.key && (voiceId || cfg.tts?.voice));
@@ -70,11 +61,7 @@ export function voiceReady(cfg: AppConfig, voiceId?: string): boolean {
   return Boolean(elevenLabs(cfg) && (voiceId || cfg.tts?.voice));
 }
 
-/** What the settings panel needs. Never includes the key — same write-only
- * rule as every other credential. baseUrl and model are Chatterbox
- * settings, not credentials, so they come back in full; `fishModel` is the
- * Fish Audio speech model, resolved to its default when unset. `included`
- * says the voice is Cloud Pro's, not a saved key. */
+/** Never includes the key. */
 export function describeVoice(cfg: AppConfig) {
   const provider = voiceProvider(cfg);
   const included = provider === "elevenlabs" && elevenLabs(cfg)?.included === true;
@@ -111,8 +98,6 @@ export async function listVoices(cfg: AppConfig, run?: systemVoices.Runner): Pro
   return elevenlabs.listVoices(credential.token, credential.api);
 }
 
-/** Synthesize one utterance. Throws NoVoiceConfigured when there is nothing
- * to speak with, which the route turns into a 409 the client can explain. */
 export function speak(cfg: AppConfig, text: string, voiceId?: string, run?: systemVoices.Runner) {
   const provider = voiceProvider(cfg);
   if (provider === "xai") {
@@ -124,8 +109,6 @@ export function speak(cfg: AppConfig, text: string, voiceId?: string, run?: syst
   }
   if (provider === "system") {
     const voice = voiceId || cfg.tts?.voice;
-    // An injected runner is the cross-platform test seam for `/usr/bin/say`;
-    // production calls omit it and remain strictly Darwin-gated.
     if (!systemVoices.systemVoicesAvailable() && !run) throw new NoVoiceConfigured("key");
     if (!voice) throw new NoVoiceConfigured("voice");
     return systemVoices.synthesizeSystem(text, voice, run);

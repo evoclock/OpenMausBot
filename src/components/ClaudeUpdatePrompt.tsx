@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Check, Copy, Download, Loader2, RefreshCw } from "lucide-react";
+import { Check, Copy, Download, Loader2, RefreshCw, X } from "lucide-react";
 
 import { t } from "@/lib/i18n";
+import { useCopyFeedback } from "@/lib/copy-text";
 import { api, useStore, type InstanceInfo } from "@/state/store";
 
 const UPDATE_COMMAND = "claude update";
@@ -13,11 +14,6 @@ type Phase =
   | { kind: "manual" }
   | { kind: "failed"; error: string };
 
-/** Offered under a failed turn whose Claude Code is too old for the model.
- * The bot runs Claude Code's own updater through the same route as Engines
- * (which refuses while another Claude turn is running), or the person takes
- * the command and runs it themselves. Retry follows either path, because the
- * update alone does not resend the message that failed. */
 export function ClaudeUpdatePrompt({
   instance,
   onRetry,
@@ -27,7 +23,8 @@ export function ClaudeUpdatePrompt({
 }) {
   const { refreshInstances } = useStore();
   const [phase, setPhase] = useState<Phase>({ kind: "ask" });
-  const [copied, setCopied] = useState(false);
+  const { state: copyState, copy: copyCommand } = useCopyFeedback(UPDATE_COMMAND);
+  const copyLabel = t(copyState === "failed" ? "common.copyFailed" : "chat.claudeUpdate.copy");
 
   const update = () => {
     if (phase.kind === "updating") return;
@@ -99,16 +96,12 @@ export function ClaudeUpdatePrompt({
             <span className="flex-1 select-all">{UPDATE_COMMAND}</span>
             <button
               type="button"
-              onClick={() => {
-                void navigator.clipboard?.writeText(UPDATE_COMMAND);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1200);
-              }}
-              aria-label={t("chat.claudeUpdate.copy")}
-              title={t("chat.claudeUpdate.copy")}
+              onClick={copyCommand}
+              aria-label={copyLabel}
+              title={copyLabel}
               className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
             >
-              {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+              {copyState === "copied" ? <Check size={13} className="text-success" /> : copyState === "failed" ? <X size={13} className="text-danger" /> : <Copy size={13} />}
             </button>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">

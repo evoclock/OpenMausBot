@@ -26,15 +26,13 @@ describe("VPS SSH connection sharing supplied by the app", () => {
   });
 });
 
-// The sharing itself is POSIX: forward-slash control paths, colon-separated
-// PATH, file modes. Windows never installs it, so these do not run there.
+// The sharing is POSIX (control paths, PATH, file modes); Windows never installs it.
 describe.skipIf(process.platform === "win32")("VPS SSH connection sharing on POSIX", () => {
   it("writes a config that includes the person's own file first and fills in sharing and timeouts", () => {
     const home = scratch();
     const userConfig = join(home, "config"); writeFileSync(userConfig, "Host my-vps\n  ControlMaster no\n");
     const text = vpsSshConfigText("/data/ssh", userConfig, join(home, "missing-system-config"));
     const lines = text.split("\n");
-    // theirs first, so ssh's first-value-wins rule keeps their choices
     expect(lines.findIndex((line) => line === `Include ${JSON.stringify(userConfig)}`)).toBeLessThan(lines.indexOf("Host *"));
     expect(text).toContain("  ControlMaster auto");
     expect(text).toContain('  ControlPath "/data/ssh/cm-%C"');
@@ -42,7 +40,6 @@ describe.skipIf(process.platform === "win32")("VPS SSH connection sharing on POS
     expect(text).toContain("  ServerAliveInterval 15");
     expect(text).toContain("  ConnectTimeout 10");
     expect(text).not.toContain("missing-system-config");
-    // no user file: no dangling Include
     expect(vpsSshConfigText("/data/ssh", join(home, "absent"), join(home, "absent2"))).not.toContain("Include");
   });
 
@@ -57,7 +54,6 @@ describe.skipIf(process.platform === "win32")("VPS SSH connection sharing on POS
     expect(statSync(join(data, "ssh", "bin", "ssh")).mode & 0o777).toBe(0o700);
     expect(statSync(setup.configPath!).mode & 0o777).toBe(0o600);
     expect(statSync(join(data, "ssh")).mode & 0o777).toBe(0o700);
-    // idempotent: a second call leaves the same files
     expect(prepareVpsSsh(data, `${fakeBin}:/usr/bin`, "darwin")).toEqual(setup);
   });
 
@@ -66,7 +62,7 @@ describe.skipIf(process.platform === "win32")("VPS SSH connection sharing on POS
     mkdirSync(join(data, "ssh", "bin"), { recursive: true });
     writeFileSync(join(data, "ssh", "bin", "ssh"), "#!/bin/sh\n"); chmodSync(join(data, "ssh", "bin", "ssh"), 0o700);
     const setup = prepareVpsSsh(data, `${join(data, "ssh", "bin")}:${scratch()}`, "linux");
-    expect(setup.path.startsWith(join(data, "ssh", "bin"))).toBe(true); // the caller's own PATH, unchanged
+    expect(setup.path.startsWith(join(data, "ssh", "bin"))).toBe(true);
     expect(setup.path.split(":").filter((entry) => entry === join(data, "ssh", "bin"))).toHaveLength(1);
     expect(existsSync(setup.configPath!)).toBe(true);
   });
@@ -76,8 +72,7 @@ describe.skipIf(process.platform === "win32")("VPS SSH connection sharing on POS
     const userConfig = join(home, "my config");
     writeFileSync(userConfig, "Host fixture-vps\n  HostName 192.0.2.1\n");
     const config = vpsSshConfigText("/isolated/space path/100%", userConfig, join(home, "absent"));
-    // A real file, not /dev/stdin: spawnSync feeds stdin through a socketpair, and
-    // Linux refuses to reopen it (ENXIO), so the CI runners cannot read the config.
+    // A real file, not /dev/stdin: spawnSync feeds stdin through a socketpair, which Linux refuses to reopen (ENXIO).
     const generatedConfig = join(home, "generated config");
     writeFileSync(generatedConfig, config);
     const parsed = spawnSync("/usr/bin/ssh", ["-G", "-F", generatedConfig, "fixture-vps"], { encoding: "utf8" });
