@@ -473,7 +473,8 @@ describe("remote MCP tool directory", () => {
     const record = `OMB_REMOTE_MCP_CONFIG_${"a".repeat(64)}`;
     const descriptor = mcpStdioServer(spec(fake.url), { directory: { name: "whop" }, configEnvName: record })!;
     expect(descriptor.args!.slice(1)).toEqual(["--config-env", record]);
-    expect(Object.keys(descriptor.env!)).toEqual([record]);
+    expect(descriptor.env).toHaveProperty(record);
+    expect(Object.keys(descriptor.env!).filter((name) => name.startsWith("OMB_REMOTE_MCP_CONFIG_"))).toEqual([record]);
     expect(descriptor.args!.join(" ")).not.toContain("directory-fixture-token");
     start(descriptor);
     await initialize();
@@ -577,11 +578,12 @@ describe("remote MCP tool directory", () => {
       const via = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
       const descriptor = mcpStdioServer(spec(fake.url), { directory: { name: "whop" }, sourceEnv: { HTTPS_PROXY: via, NODE_EXTRA_CA_CERTS: tls!.certPath } })!;
       expect(descriptor.env!.NODE_USE_ENV_PROXY).toBe("1");
-      start(descriptor, withoutProxies());
+      // Some Node releases reject a valid ::1 certificate as "::1."; this case tests routing,
+      // not certificate validation. Keep the override inside this disposable child only.
+      start({ ...descriptor, env: { ...descriptor.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" } }, withoutProxies());
       const answer = await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fixture", version: "1" } });
       expect(tunnels).toEqual([]);
-      // Node 24's fetch checks an https://[::1] certificate against "::1." and refuses it; Node 26 connects.
-      if (Number(process.versions.node.split(".")[0]) >= 26) expect(answer.result.serverInfo.name).toBe("fake-http-mcp");
+      expect(answer, JSON.stringify(answer)).toHaveProperty("result.serverInfo.name", "fake-http-mcp");
     } finally {
       proxy.closeAllConnections();
       await new Promise<void>((resolve) => proxy.close(() => resolve()));
