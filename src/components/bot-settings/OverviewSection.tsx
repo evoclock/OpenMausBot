@@ -6,9 +6,11 @@ import { t } from "@/lib/i18n";
 import { whenLabel } from "@/lib/schedule-label";
 import type { BotSettingsSection } from "@/state/store";
 import { PromptPreview, type PromptPreviewData } from "./PromptPreview";
+import { PiReadiness } from "./PiReadiness";
 
 export function OverviewSection({
   overview,
+  botId,
   refreshError,
   prompt,
   promptError,
@@ -16,6 +18,7 @@ export function OverviewSection({
   onSetup,
 }: {
   overview: BotOverview | null;
+  botId?: string;
   refreshError?: boolean;
   prompt: PromptPreviewData | null;
   promptError?: boolean;
@@ -146,6 +149,7 @@ export function OverviewSection({
         </ul>
       </div>
 
+      {botId && <PiReadiness botId={botId} />}
       <PromptPreview
         data={prompt}
         error={promptError}
