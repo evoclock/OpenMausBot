@@ -34,6 +34,12 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: snapshot.state } }), context);
           return;
         }
+        if (snapshot.iteration !== task.state.checkpoint.sequence) {
+          store.transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["iteration result persisted without matching durable checkpoint; reconcile outward effects"]);
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+          return;
+        }
         const current = store.transition(task.input.id, "running", Math.max(Date.now(), snapshot.updatedAt + 1));
         try {
           const result = await inner.invoke(current.contract, current.iteration,

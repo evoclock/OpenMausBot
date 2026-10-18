@@ -37,6 +37,37 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   } finally { await runner.close(); }
 });
 
+test("a persisted result without its task checkpoint parks instead of replaying", async () => {
+  const dir = fixtureDir();
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const original = RunContractStore.prototype.transition;
+    RunContractStore.prototype.transition = function(id, state, at, evidence) {
+      const result = original.call(this, id, state, at, evidence);
+      if (state === 'waiting') { process.stdout.write('result stored\\n'); process.exit(0); }
+      return result;
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { return { kind: 'progress', evidence: ['external action may have happened'] }; }
+    });
+    await runner.start(${JSON.stringify(contract)});
+    await new Promise(() => {});`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /result stored/);
+  let replayed = false;
+  const reopened = await openOuterRunner(dir, {
+    async invoke() { replayed = true; return { kind: "verified", evidence: ["invalid"] }; },
+  });
+  try {
+    reopened.resume();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(reopened.get(contract.id)?.state, "blocked");
+    assert.equal(replayed, false);
+  } finally { await reopened.close(); }
+});
+
 test("an interrupted outward effect is parked after a process crash", async () => {
   const dir = fixtureDir();
   const source = `import { openOuterRunner } from './server/outer-runner.ts';
