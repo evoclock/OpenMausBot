@@ -2309,6 +2309,9 @@ function stopParkedCards(threadId: string): void {
   }
 }
 
+// A coordinated start can await host policy before startTurn claims the thread.
+// Keep queued direct messages behind that in-flight handshake.
+const coordinationDispatchReservations = new Map<string, string>();
 function directRootQueued(threadId: string): boolean {
   return coordinator.active().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
 }
@@ -4455,6 +4458,7 @@ const coordinator: Coordinator = createCoordinator({
         };
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) { abort(); return; }
+        coordinationDispatchReservations.set(node.threadId, node.id);
         void startTurn(bot.id, turnText, {
           threadId: node.threadId, cardContinuation: true, commsDepth: MAX_COMMS_DEPTH,
           requestMessageId: directRequestOwners.get(node.threadId)?.generations.has(node.rootId)
@@ -4463,7 +4467,10 @@ const coordinator: Coordinator = createCoordinator({
           unattended: isUnattended(bot.id, node.threadId),
           coordination: { id: node.id, resumed, settle: finish },
           onDispatchError: error => finish({ ok: false, text: error }),
-        }).catch(error => finish({ ok: false, text: String(error) }));
+        }).catch(error => finish({ ok: false, text: String(error) })).finally(() => {
+          if (coordinationDispatchReservations.get(node.threadId) === node.id) coordinationDispatchReservations.delete(node.threadId);
+          queueMicrotask(drainQueuedSends);
+        });
       });
       return runRoomNode(node, group, bot, signal, parent, (operation, result, coordination) =>
         runGroupMemberTurn(group.id, node.threadId, bot.id, MAX_COMMS_DEPTH, new Set(),
@@ -7748,6 +7755,9 @@ bus.subscribe((event: RuntimeEvent) => {
 
 // One drain at a time: the coordinator's changed hook can re-enter it, which would append the same held line twice.
 let drainingQueuedSends = false, queuedSendsDrainOwed = false;
+// A queued start awaits the dispatch policy before startTurn claims its slot. Reserve
+// that gap so a second drain cannot remove the next FIFO item prematurely.
+const queuedDispatchReservations = new Map<string, number>();
 function drainQueuedSends() {
   if (!followupsReady) return;
   if (drainingQueuedSends) { queuedSendsDrainOwed = true; return; }
@@ -7774,11 +7784,23 @@ function drainQueuedSendsNow() {
         resolve();
           // A turn that never started publishes no completion to wake the groups behind it.
         queueMicrotask(drainQueuedSends);
-      }).catch(reject);
+      }).catch(reject).finally(() => {
+        const remaining = (queuedDispatchReservations.get(botId) ?? 1) - 1;
+        if (remaining) queuedDispatchReservations.set(botId, remaining);
+        else queuedDispatchReservations.delete(botId);
+        queueMicrotask(drainQueuedSends);
+      });
     }),
     // Provider completion can precede its dispatch promise: keep the queue until that exact handshake releases its claim.
-    (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
-      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
+    (botId, threadId, head) => {
+      const reserved = queuedDispatchReservations.get(botId) ?? 0;
+      const blocked = threadBusy(botId, threadId) || coordinationDispatchReservations.has(threadId) || botAtThreadCapacity(botId)
+        || store.tasks(botId).filter((task) => threadBusy(botId, task.threadId)).length + reserved >= maxConcurrentBotThreads(cfg)
+        || Boolean(activeGroupTurnForBot(botId)) || directRootQueued(threadId)
+        || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId));
+      if (!blocked) queuedDispatchReservations.set(botId, reserved + 1);
+      return blocked;
+    },
   );
 }
 

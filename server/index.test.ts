@@ -1424,14 +1424,18 @@ describe("harness HTTP API", () => {
         .filter((message: { role?: string; kind?: string; text?: string }) =>
           message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length;
       rmSync(isolatedFinishGate, { force: true });
+      rmSync(isolatedDump, { force: true });
       const laterText = "A later turn while the earlier question is still unanswered.";
       const laterSent = await isolatedApi("POST", `/api/bots/${bot.id}/messages`, { text: laterText });
       expect(laterSent.status).toBe(202);
       await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
         .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(true);
+      // A busy task can still be preparing its CLI. Wait for this turn's dump,
+      // not the previous launch, before releasing the provider's finish gate.
+      expect(JSON.stringify(await readJsonFileWhenReady(isolatedDump, 15_000))).toContain(laterText);
       writeFileSync(isolatedFinishGate, "finish");
       await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
-        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(false);
+        .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 15_000 }).toBe(false);
       const afterSubsequentTurn = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
       const laterUserMessage = afterSubsequentTurn.find((message: { id: string }) => message.id === laterSent.body.message.id);
       expect(laterUserMessage).toMatchObject({ role: "user", text: laterText });
@@ -1470,6 +1474,7 @@ describe("harness HTTP API", () => {
         .filter((message: { role?: string; kind?: string; text?: string }) =>
           message.role === "bot" && message.kind === "text" && message.text === "fixture turn completed").length;
       rmSync(isolatedFinishGate, { force: true });
+      rmSync(isolatedDump, { force: true });
       const lateAnswer = await isolatedApi("POST", `/api/bots/${bot.id}/respond`, {
         requestId,
         behavior: "answer",
@@ -1482,6 +1487,7 @@ describe("harness HTTP API", () => {
       expect(lateAnswer.body.queued).toBeUndefined();
       await expect.poll(async () => (await isolatedApi("GET", "/api/bots?messages=0")).body.bots
         .find((candidate: { id: string }) => candidate.id === bot.id)?.busy, { timeout: 5_000 }).toBe(true);
+      expect(JSON.stringify(await readJsonFileWhenReady(isolatedDump, 15_000))).toContain("README");
       await expect.poll(async () => {
         const messages = (await isolatedApi("GET", `/api/threads/${bot.threadId}/messages`)).body.messages;
         const question = messages.find((message: { id: string }) => message.id === cardId)?.card;
@@ -1515,7 +1521,7 @@ describe("harness HTTP API", () => {
         await removeTempDir(isolatedHome);
       }
     }
-  }, 30_000);
+  }, 60_000);
 
   it("reconciles durable working goal cards with scheduler truth after a restart", async () => {
     const state = await api("GET", "/api/bots?messages=30");
