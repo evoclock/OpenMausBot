@@ -44,7 +44,8 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         return { kind: "blocked", evidence: ["distinct worker and reviewer routes are unavailable"] };
       }
       const workspace = await host.acquire(contract, requestId);
-      if (workspace.repository !== contract.repository || !workspace.directory || !workspace.leaseId) {
+      if (workspace.repository !== contract.repository || workspace.branch !== contract.ref ||
+        !workspace.base || !workspace.directory || !workspace.leaseId) {
         return { kind: "blocked", evidence: ["isolated workspace does not match the run contract"] };
       }
       const report = await host.runPlaybook(workspace, roles.development,
