@@ -723,7 +723,8 @@ it("runs a message sent while a teammate works, keeps the assignment, and names 
 }), 60_000);
 
 it("parks a message behind outstanding teammate work when the bot opts in, then runs it after", () => fixture(async f => {
-  f.plan[f.lead.id] = { delayMs: 4000, reply: "CSV export implemented" };
+  const gate = join(f.session.info.dataDir, "parked-message-release");
+  f.plan[f.lead.id] = { gateFile: gate, reply: "CSV export implemented" };
   f.plan[f.chief.id] = { turns: [
     { steps: structuredClone(f.plan[f.chief.id].steps), reply: "Assigned to Engineering" },
     { reply: "The requested CSV export is implemented and verified" },
@@ -740,6 +741,7 @@ it("parks a message behind outstanding teammate work when the bot opts in, then 
   expect((await f.messages(f.chief.activeTaskId)).some((message: any) => message.text === "Also make sure the export is UTF-8.")).toBe(false);
   expect(f.evidence().filter((turn: any) => turn.botId === f.chief.id)).toHaveLength(1);
   expect(f.nodes().find((node: any) => node.id === assignment.id).status).not.toBe("cancelled");
+  writeFileSync(gate, "finish after the message is parked");
 
   expect((await f.wait()).status).toBe("settled");
   await expect.poll(() => f.evidence().filter((turn: any) => turn.botId === f.chief.id).length, { timeout: 20_000 }).toBe(3);
