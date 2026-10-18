@@ -8,11 +8,22 @@ export const runContractSchema = z.object({
   botId: z.string().min(1),
   repository: z.string().min(1),
   ref: z.string().min(1),
-  successChecks: z.array(z.string().min(1)).min(1),
+  successCriteria: z.array(z.string().min(1)).min(1),
+  repositoryClass: z.enum(["agent-private", "external"]),
   allowedEffects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])),
-  deadline: z.number().int().positive(),
-  maxIterations: z.number().int().positive(),
-}).strict();
+  authorisedExternalWrites: z.array(z.object({
+    repository: z.string().min(1),
+    effects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])).min(1),
+  }).strict()).default([]),
+}).strict().superRefine((contract, ctx) => {
+  if (contract.repositoryClass !== "external") return;
+  const granted = new Set(contract.authorisedExternalWrites
+    .filter((entry) => entry.repository === contract.repository)
+    .flatMap((entry) => entry.effects));
+  for (const effect of contract.allowedEffects) {
+    if (!granted.has(effect)) ctx.addIssue({ code: "custom", message: `external write requires explicit authorisation: ${effect}` });
+  }
+});
 export type RunContract = z.infer<typeof runContractSchema>;
 export const runStateSchema = z.enum(["queued", "running", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
@@ -37,10 +48,8 @@ export function advanceRun(current: RunSnapshot, next: RunState, at: number, evi
   const snapshot = runSnapshotSchema.parse(current);
   if (!edges[snapshot.state].includes(next)) throw new Error("invalid run transition");
   if (!Number.isSafeInteger(at) || at <= snapshot.updatedAt) throw new Error("run time must advance");
-  if (at >= snapshot.contract.deadline && (next === "running" || next === "done")) throw new Error("run deadline expired");
   if (next === "done" && !evidence.some((item) => item.trim())) throw new Error("completion requires verification evidence");
   const iteration = snapshot.iteration + (next === "running" ? 1 : 0);
-  if (iteration > snapshot.contract.maxIterations) throw new Error("run iteration limit reached");
   return runSnapshotSchema.parse({ ...snapshot, state: next, iteration, updatedAt: at, evidence: [...snapshot.evidence, ...evidence] });
 }
 

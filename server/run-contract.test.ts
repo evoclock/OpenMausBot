@@ -6,7 +6,8 @@ import { advanceRun, RunContractStore, type RunContract } from "./run-contract.t
 
 const contract: RunContract = {
   id: "11111111-1111-4111-8111-111111111111", botId: "fixture", repository: "fixture/repo", ref: "review",
-  successChecks: ["isolated fixture passes"], allowedEffects: ["edit"], deadline: 1000, maxIterations: 2,
+  successCriteria: ["inner loop confirms the goal"], repositoryClass: "agent-private", allowedEffects: ["edit"],
+  authorisedExternalWrites: [],
 };
 
 test("run contract survives reopening and terminal states cannot restart", () => {
@@ -26,17 +27,26 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   second.close();
 });
 
-test("run contract rejects replay, expiry and excess iterations", () => {
+test("run contract does not impose a time or iteration budget", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);
   assert.throws(() => store.create(contract, 2));
-  assert.throws(() => advanceRun(queued, "running", 1000), /deadline/);
   assert.throws(() => advanceRun(queued, "running", 1), /time/);
-  store.transition(contract.id, "running", 2);
-  store.transition(contract.id, "blocked", 3);
-  store.transition(contract.id, "running", 4);
-  store.transition(contract.id, "blocked", 5);
-  assert.throws(() => store.transition(contract.id, "running", 6), /iteration/);
-  assert.equal(store.get(contract.id)?.state, "blocked");
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    store.transition(contract.id, "running", iteration * 2 + 2);
+    store.transition(contract.id, "blocked", iteration * 2 + 3);
+  }
+  assert.equal(store.get(contract.id)?.iteration, 10);
+  store.close();
+});
+
+test("external writes need exact per-run authorisation; critical effects cannot enter the contract", () => {
+  const store = new RunContractStore(":memory:");
+  assert.throws(() => store.create({ ...contract, repositoryClass: "external" }, 1), /external write/);
+  const authorised = { ...contract, repositoryClass: "external" as const,
+    authorisedExternalWrites: [{ repository: contract.repository, effects: ["edit" as const] }] };
+  assert.equal(store.create(authorised, 1).contract.repositoryClass, "external");
+  assert.throws(() => store.create({ ...contract, id: "22222222-2222-4222-8222-222222222222",
+    allowedEffects: ["merge" as "edit"] }, 2));
   store.close();
 });
