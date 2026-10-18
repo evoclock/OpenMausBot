@@ -25,7 +25,7 @@ export const runContractSchema = z.object({
   }
 });
 export type RunContract = z.infer<typeof runContractSchema>;
-export const runStateSchema = z.enum(["queued", "running", "blocked", "unverified", "done", "failed", "cancelled"]);
+export const runStateSchema = z.enum(["queued", "running", "waiting", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
 export const runSnapshotSchema = z.object({
   contract: runContractSchema,
@@ -38,7 +38,8 @@ export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 
 const edges: Record<RunState, readonly RunState[]> = {
   queued: ["running", "blocked", "cancelled"],
-  running: ["blocked", "unverified", "done", "failed", "cancelled"],
+  running: ["waiting", "blocked", "unverified", "done", "failed", "cancelled"],
+  waiting: ["running", "blocked", "cancelled"],
   blocked: ["running", "failed", "cancelled"],
   unverified: ["running", "failed", "cancelled"],
   done: [], failed: [], cancelled: [],
