@@ -1,5 +1,7 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
+import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
+import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
   DRIVER_SCOPED_GATE_CONFIG,
   driverScopedDispatchRefusal,
@@ -263,7 +265,6 @@ import type { DataContext } from "./data-context.ts";
 import { promptWithDataContext } from "../shared/data-context.ts";
 import { admit } from "./admission.ts";
 import {
-  drainSteeredMessages,
   hasQueuedSteeredMessages,
   isSteeredMessageQueued,
   onSteeredQueueChange,
@@ -1563,11 +1564,6 @@ function bookTurnUsage(row: Omit<UsageRow, "at" | "costSource">, tokensReported 
   }
 }
 
-function queuedTurnTrigger(item: { trigger?: UsageTrigger; sender?: ResolvedSender; peerAsk?: unknown }): UsageTrigger | undefined {
-  if (item.trigger) return item.trigger;
-  if (item.peerAsk) return undefined;
-  return item.sender ? { kind: "user", label: item.sender.name } : { kind: "owner" };
-}
 const providerAuthSessions = new ProviderAuthSessions();
 const mcpOAuth = new McpOAuthManager({
   file: join(DATA_DIR, "mcp-oauth.json"),
@@ -2309,6 +2305,9 @@ function stopParkedCards(threadId: string): void {
   }
 }
 
+// A coordinated start can await host policy before startTurn claims the thread.
+// Keep queued direct messages behind that in-flight handshake.
+const coordinationDispatchReservations = new Map<string, string>();
 function directRootQueued(threadId: string): boolean {
   return coordinator.active().some((n) => !n.parentId && !n.groupId && n.threadId === threadId && n.status === "queued");
 }
@@ -2476,38 +2475,8 @@ function threadBusy(botId: string, threadId: string): boolean {
   return store.taskByThread(botId, threadId)?.busy === true || directTurnDispatchClaims.has(threadId);
 }
 
-function parksBehindCoordination(botId: string, threadId: string): boolean {
-  if (!awaitingTeammates(threadId)) return false;
-  return (store.projectBotForTask(botId, threadId) ?? store.bot(botId))?.parkDirectMessages === true;
-}
-
-function botAtThreadCapacity(botId: string): boolean {
-  // threadBusy, not the stored flag: a reservation holds its slot after an early completion clears the flag.
-  return store.tasks(botId).filter((task) => threadBusy(botId, task.threadId)).length >= maxConcurrentBotThreads(cfg);
-}
-
 function hasDirectDispatch(botId: string): boolean {
   return [...directTurnDispatchClaims.values()].some((claim) => claim.botId === botId);
-}
-
-/** Must match what startTurn admits for a direct thread. */
-function canAdmitDirectTurn(botId: string, threadId: string): boolean {
-  return admit("peer", {}, {
-    threadBusy: threadBusy(botId, threadId),
-    atCapacity: botAtThreadCapacity(botId),
-    groupTurn: Boolean(activeGroupTurnForBot(botId)),
-  }).action === "start";
-}
-
-function unattendedDispatchState(botId: string): "ready" | "busy" | "missing" {
-  const bot = store.bot(botId);
-  const decision = admit("unattended", {}, {
-    botPresent: Boolean(bot),
-    atCapacity: Boolean(bot) && botAtThreadCapacity(botId),
-    groupTurn: Boolean(bot) && Boolean(activeGroupTurnForBot(botId)),
-  });
-  if (decision.action === "refuse") return decision.code === "missing" ? "missing" : "busy";
-  return "ready";
 }
 
 function requestedTaskBot(botId: string, rawThreadId: unknown): BotRecord {
@@ -3134,6 +3103,9 @@ const store = new Store(
   (instanceId) => registry.cliTarget(instanceId)?.driverKind,
   () => cfg.language ?? Intl.DateTimeFormat().resolvedOptions().locale,
 );
+const { parksBehindCoordination, botAtThreadCapacity, canAdmitDirectTurn, unattendedDispatchState } = createDirectAdmission({
+  store, cfg, threadBusy, awaitingTeammates, activeGroupTurnForBot,
+});
 const creditMoves = cloudCredit && createCreditMoves({ credit: cloudCredit, store, context: selectionContext, threadBusy, saveDefault: saveNewBotModel,
   defaults: () => [cfg.defaultModelSelection, cfg.newBotDefaults?.profile.modelSelection], engineName: id => registry.get(id)?.displayName ?? id,
   log: line => console.warn(line) });
@@ -4455,6 +4427,7 @@ const coordinator: Coordinator = createCoordinator({
         };
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) { abort(); return; }
+        coordinationDispatchReservations.set(node.threadId, node.id);
         void startTurn(bot.id, turnText, {
           threadId: node.threadId, cardContinuation: true, commsDepth: MAX_COMMS_DEPTH,
           requestMessageId: directRequestOwners.get(node.threadId)?.generations.has(node.rootId)
@@ -4463,7 +4436,10 @@ const coordinator: Coordinator = createCoordinator({
           unattended: isUnattended(bot.id, node.threadId),
           coordination: { id: node.id, resumed, settle: finish },
           onDispatchError: error => finish({ ok: false, text: error }),
-        }).catch(error => finish({ ok: false, text: String(error) }));
+        }).catch(error => finish({ ok: false, text: String(error) })).finally(() => {
+          if (coordinationDispatchReservations.get(node.threadId) === node.id) coordinationDispatchReservations.delete(node.threadId);
+          queueMicrotask(drainQueuedSends);
+        });
       });
       return runRoomNode(node, group, bot, signal, parent, (operation, result, coordination) =>
         runGroupMemberTurn(group.id, node.threadId, bot.id, MAX_COMMS_DEPTH, new Set(),
@@ -7746,41 +7722,20 @@ bus.subscribe((event: RuntimeEvent) => {
   drainQueuedSends();
 });
 
-// One drain at a time: the coordinator's changed hook can re-enter it, which would append the same held line twice.
-let drainingQueuedSends = false, queuedSendsDrainOwed = false;
-function drainQueuedSends() {
-  if (!followupsReady) return;
-  if (drainingQueuedSends) { queuedSendsDrainOwed = true; return; }
-  drainingQueuedSends = true;
-  try { drainQueuedSendsNow(); } finally {
-    drainingQueuedSends = false;
-    if (queuedSendsDrainOwed) { queuedSendsDrainOwed = false; drainQueuedSends(); }
-  }
-}
-function drainQueuedSendsNow() {
-  drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds, unattended, head) =>
-    new Promise<void>((resolve, reject) => {
-      void startTurn(botId, prompt, {
-        threadId, userMessage, excludeMessageIds: excludeIds, unattended, onTurnSettled: resolve,
-        trigger: queuedTurnTrigger(head), ...(head.origin ? { origin: head.origin } : {}),
-      }).catch((err) => {
-        const why = err instanceof Error ? err.message : String(err);
-        const chief = head.peerAsk?.incident ? store.bot(botId) : null;
-        if (chief) incidentRefused(chief, threadId, store.activePath(threadId).filter(line => excludeIds.includes(line.id)).map(line => line.peerAsk), why);
-        else store.appendMessage(threadId, {
-          role: "bot", kind: "activity",
-          tool: failedTurnTool(`queued message could not start — ${why}`),
-        });
-        resolve();
-          // A turn that never started publishes no completion to wake the groups behind it.
-        queueMicrotask(drainQueuedSends);
-      }).catch(reject);
-    }),
-    // Provider completion can precede its dispatch promise: keep the queue until that exact handshake releases its claim.
-    (botId, threadId, head) => threadBusy(botId, threadId) || botAtThreadCapacity(botId) || Boolean(activeGroupTurnForBot(botId))
-      || directRootQueued(threadId) || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
-  );
-}
+const queuedSendDrain = createQueuedSendDrain({
+  store, ready: () => followupsReady, start: startTurn,
+  blocked: (botId, threadId, head, reserved) => threadBusy(botId, threadId)
+    || coordinationDispatchReservations.has(threadId) || botAtThreadCapacity(botId)
+    || store.tasks(botId).filter((task) => threadBusy(botId, task.threadId)).length + reserved >= maxConcurrentBotThreads(cfg)
+    || Boolean(activeGroupTurnForBot(botId)) || directRootQueued(threadId)
+    || (!head.peerAsk?.incident && parksBehindCoordination(botId, threadId)),
+  onError: (botId, threadId, excludeIds, head, reason) => {
+    const chief = head.peerAsk?.incident ? store.bot(botId) : null;
+    if (chief) incidentRefused(chief, threadId, store.activePath(threadId).filter(line => excludeIds.includes(line.id)).map(line => line.peerAsk), reason);
+    else store.appendMessage(threadId, { role: "bot", kind: "activity", tool: failedTurnTool(`queued message could not start — ${reason}`) });
+  },
+});
+function drainQueuedSends() { queuedSendDrain(); }
 
 async function startOrQueueDirectMessage(botId: string, threadId: string, text: string, replyTo?: Message, sendId?: string, sender?: ResolvedSender, trigger?: UsageTrigger, via?: "call", callId?: string, dataContext?: DataContext) {
   const decision = admit("direct", {}, {

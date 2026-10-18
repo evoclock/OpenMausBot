@@ -430,7 +430,7 @@ export function BotActivityPicker({ bot }: { bot: Bot }) {
         onChange={(event) => dispatch({ type: "switchTask", botId: bot.id, threadId: event.target.value })}
       >
         <option value="" disabled>{t("task.otherActivity", { count: activity.length })}</option>
-        {activity.map((task) => <option key={task.threadId} value={task.threadId}>
+        {activity.map((task) => <option key={task.threadId} value={task.threadId} dir="auto">
           {task.title} · {task.activity === "waiting-on-you" ? t("task.waiting") : task.waitingForTeammates ? t("task.waitingOnTeammate") : task.busy || task.activity === "working" ? t("chat.activity.working") : task.queued ? t("task.queued") : t("task.unread")}
         </option>)}
       </Select>

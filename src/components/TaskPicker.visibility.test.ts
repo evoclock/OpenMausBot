@@ -37,10 +37,19 @@ describe("optional bot thread picker", () => {
     expect(renderToStaticMarkup(createElement(TaskPicker, { bot }))).toBe("");
     const markup = renderToStaticMarkup(createElement(BotActivityPicker, { bot }));
     expect(markup).toContain('aria-label="Other activity (4)"');
-    expect(markup).toContain('value="waiting">Approval needed · Waiting');
-    expect(markup).toContain('value="working">Research · Working');
-    expect(markup).toContain('value="queued">Next job · Queued');
-    expect(markup).toContain('value="unread">Finished reply · Unread');
+    const options = [...markup.matchAll(/<option\b([^>]*)>([^<]*)<\/option>/g)]
+      .map(([, attributes, label]) => ({
+        value: attributes.match(/\bvalue="([^"]*)"/)?.[1],
+        dir: attributes.match(/\bdir="([^"]*)"/)?.[1],
+        label,
+      })).filter((option) => option.value);
+    expect(options).toEqual(expect.arrayContaining([
+      { value: "waiting", dir: "auto", label: "Approval needed · Waiting" },
+      { value: "working", dir: "auto", label: "Research · Working" },
+      { value: "queued", dir: "auto", label: "Next job · Queued" },
+      { value: "unread", dir: "auto", label: "Finished reply · Unread" },
+    ]));
+    expect(options).toHaveLength(4);
     expect(markup).not.toContain("Quiet history");
     expect(markup).toContain("Current chat");
     expect(markup).not.toContain('value="current"');

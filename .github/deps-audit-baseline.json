@@ -1,0 +1,11 @@
+{
+  "base": "fork/main",
+  "advisories": [
+    { "id": 1158521, "package": "fast-uri", "version": "3.1.5", "path": ".>ajv>fast-uri" },
+    { "id": 1158524, "package": "fast-uri", "version": "3.1.5", "path": ".>ajv>fast-uri" },
+    { "id": 1158527, "package": "fast-uri", "version": "3.1.5", "path": ".>ajv>fast-uri" },
+    { "id": 1158530, "package": "fast-uri", "version": "3.1.5", "path": ".>ajv>fast-uri" },
+    { "id": 1239943, "package": "fast-uri", "version": "3.1.5", "path": ".>ajv>fast-uri" },
+    { "id": 1241209, "package": "source-map-js", "version": "1.2.1", "path": "apps__docs>fumadocs-mdx>vite>postcss>source-map-js" }
+  ]
+}

@@ -1354,10 +1354,14 @@ process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result})+'\\n');});`)
       const envVars = JSON.parse(seen.argv.find((arg: string) => arg.startsWith("mcp_servers.whop.env_vars=")).split("=").slice(1).join("="));
       expect(envVars).toEqual(expect.arrayContaining(["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"]));
       expect(envVars).not.toContain("NODE_USE_ENV_PROXY");
-      expect(seen.argv).toContain('mcp_servers.whop.env={ "NODE_USE_ENV_PROXY" = "1", "NO_PROXY" = "localhost,127.0.0.1,::1,[::1]", "no_proxy" = "localhost,127.0.0.1,::1,[::1]" }');
+      const proxyConfig = seen.argv.find((arg: string) => arg.startsWith("mcp_servers.whop.env="));
+      expect(proxyConfig).toContain('"NODE_USE_ENV_PROXY" = "1"');
+      // NO_PROXY can include the caller's own exclusions; loopback must still be exempt.
+      expect(proxyConfig).toMatch(/"NO_PROXY" = "[^"]*localhost,127\.0\.0\.1,::1,\[::1\]"/);
+      expect(proxyConfig).toMatch(/"no_proxy" = "[^"]*localhost,127\.0\.0\.1,::1,\[::1\]"/);
       expect(seen.env.NODE_USE_ENV_PROXY).toBeUndefined();
       // Node 24's fetch hangs on a plain http request through an env proxy.
-      expect(seen.argv).toContain('mcp_servers.plain.env={ "NODE_USE_ENV_PROXY" = "0" }');
+      expect(seen.argv.find((arg: string) => arg.startsWith("mcp_servers.plain.env="))).toContain('"NODE_USE_ENV_PROXY" = "0"');
       expect(JSON.parse(seen.argv.find((arg: string) => arg.startsWith("mcp_servers.plain.env_vars=")).split("=").slice(1).join("="))).not.toContain("NODE_USE_ENV_PROXY");
       expect(seen.env.HTTPS_PROXY).toBe("http://proxy.example.test:3128");
       const exclusions = seen.calls.find((call: { method: string }) => call.method === "thread/start").params.config["shell_environment_policy.exclude"];

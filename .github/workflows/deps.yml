@@ -1,0 +1,67 @@
+name: Dependencies
+on:
+  pull_request:
+  schedule:
+    - cron: '0 8 * * 1'
+permissions:
+  contents: read
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          pnpm audit --audit-level high --prod --json > "$RUNNER_TEMP/prod-audit.json" || status=$?
+          if ((status > 1)); then
+            echo '::error::pnpm audit failed for a reason other than findings'
+            exit "$status"
+          fi
+      - name: Check weekly audit against the recorded main baseline
+        if: github.event_name == 'schedule'
+        run: node .github/tools/deps_audit_gate.mjs "$RUNNER_TEMP/prod-audit.json"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-base
+          persist-credentials: false
+      - name: Compare PR audit with the base branch
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=0
+          (cd trusted-base && pnpm audit --audit-level high --prod --json) > "$RUNNER_TEMP/base-audit.json" || status=$?
+          if ((status > 1)); then
+            echo '::error::Baseline audit failed for a reason other than findings'
+            exit "$status"
+          fi
+          node --input-type=module - "$RUNNER_TEMP/prod-audit.json" "$RUNNER_TEMP/base-audit.json" <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
+          const current = read(process.argv[2]);
+          const base = read(process.argv[3]);
+          const findings = (report) => {
+            if (!report?.advisories) throw new Error('Invalid audit output');
+            return Object.values(report.advisories).filter(a => ['high', 'critical'].includes(a.severity))
+              .flatMap(a => (a.findings || []).flatMap(f => (f.paths || []).map(path =>
+                JSON.stringify([a.id, a.module_name, f.version, path]))));
+          };
+          const known = new Set(findings(base));
+          const unexpected = findings(current).filter(item => !known.has(item));
+          for (const item of unexpected) console.error(`::error::New production advisory: ${item}`);
+          if (unexpected.length) process.exitCode = 1;
+          else console.log(`::notice::Only ${known.size} production findings already present on the base branch remain.`);
+          NODE

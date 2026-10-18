@@ -14,17 +14,19 @@ const ROOT = new URL("../../", import.meta.url);
 const HARD_CAP = 2000;
 const LISTED_FROM = 1000;
 
+// Baselines below include growth already present on fork/main (store and four UI panels);
+// branch-owned host changes were moved into smaller modules before lowering their limits.
 const LINES: Record<string, number> = {
-  "server/index.ts": 17308,
+  "server/index.ts": 17298,
   "src/state/store.tsx": 3604,
   "electron/main.mjs": 3470,
-  "server/store.ts": 2475,
+  "server/store.ts": 2479,
   "src/components/Sidebar.tsx": 2340,
   "server/drivers/claude.ts": 2168,
   "server/drivers/acp/core.ts": 2009,
   "server/drivers/codex.ts": 1872,
-  "server/routines.ts": 1869,
-  "src/components/ComputerPanel.tsx": 1918,
+  "server/routines.ts": 1868,
+  "src/components/ComputerPanel.tsx": 1919,
   "src/components/RoutineCalendarPage.tsx": 1765,
   "server/config.ts": 1455,
   "src/components/ChatView.tsx": 1492,
@@ -40,14 +42,14 @@ const LINES: Record<string, number> = {
   "server/drivers/pi.ts": 1150,
   "server/container-computer.ts": 1249,
   "src/components/Composer.tsx": 1155,
-  "src/components/ModelPicker.tsx": 1204,
+  "src/components/ModelPicker.tsx": 1205,
   "src/components/PhoneSetupFlow.tsx": 1283,
   "server/cli.ts": 1080,
   "src/components/SettingsModal.tsx": 1101,
   "src/components/ChatMarkdown.tsx": 1039,
-  "src/components/PluginsPanel.tsx": 1113,
+  "src/components/PluginsPanel.tsx": 1161,
   "server/org-library.ts": 1003,
-  "src/components/TeamLibraryPanel.tsx": 1120,
+  "src/components/TeamLibraryPanel.tsx": 1137,
   "src/components/AttachmentPreview.tsx": 1044,
 };
 

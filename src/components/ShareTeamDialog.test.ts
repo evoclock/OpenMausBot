@@ -10,6 +10,7 @@ vi.mock("./DesktopCapabilities", () => ({
 
 import { saveShareFile, SHARE_VIEW_START, shareRefused, tickedSkills, type ShareResponse } from "@/lib/team-share";
 import { teamImportPreview } from "@/lib/team-import";
+import { t } from "@/lib/i18n";
 import { ApiError } from "@/state/store";
 import { ShareSkillChoices, ShareTeamContents } from "./ShareTeamDialog";
 import { TeamMenuItems } from "./Sidebar";
@@ -97,7 +98,7 @@ describe("importing a shared team", () => {
     const pending = teamImportPreview(fixture());
     const words = text(renderToStaticMarkup(createElement(TeamImportDetails, { pending, importedNames: ["Morgan", "Scout", "Quill"] })));
     for (const line of [
-      "Shared instructions", "49 per seat", "Morgan leads", "1 group chat", "1 playbooks", "Routines: 2 · paused",
+      "Shared instructions", "49 per seat", "Morgan leads", "1 group chat", t("templates.playbooks", { count: pending.playbooks }), "Routines: 2 · paused",
       "Connections to finish: 1 · keys and passwords are never included", "CRM · https://mcp.example.com/crm",
       "Starter notes: 2", "Preset bots: 1 · appear in New bot",
       "Included skills — added switched off", "pricing-policy, research-brief", "Offered skills — not added to any bot", "objection-handling",

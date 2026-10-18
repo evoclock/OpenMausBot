@@ -272,6 +272,7 @@ describe("start_thread on yourself", () => {
       release(first.body.threadId);
       await expect.poll(async () => (await taskOf(pm.id, second.body.threadId))?.busy, { timeout: 15_000 }).toBe(true);
       expect((await taskOf(pm.id, third.body.threadId)).busy).toBe(false);
+      await liveToken(second.body.threadId);
       release(second.body.threadId);
       await expect.poll(async () => (await taskOf(pm.id, third.body.threadId))?.busy, { timeout: 15_000 }).toBe(true);
       release(third.body.threadId);
