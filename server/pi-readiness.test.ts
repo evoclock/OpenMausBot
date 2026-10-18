@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkPiReadiness, parsePiRoles, piRpcProbe } from "./pi-readiness.ts";
+import { checkPiReadiness, parsePiRoles, piProjectRoot, piRpcProbe } from "./pi-readiness.ts";
 
 const fixtures: string[] = [];
 function fixture() {
@@ -52,6 +52,21 @@ describe("Pi readiness", () => {
     expect(result.roles.development.ready).toBe(true);
     expect(result.roles["independent-review"].ready).toBe(true);
     expect(JSON.stringify(result)).not.toContain("fixture/dev");
+  });
+
+  it("reads role data from the repository root for a nested bot working folder", async () => {
+    const { root, agentDir } = fixture();
+    const nested = join(root, "work", "nested");
+    mkdirSync(join(root, ".git"));
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(root, ".pi", "pstack-model-roles.v1.json"), JSON.stringify(roles));
+    expect(piProjectRoot(nested)).toBe(root);
+    const result = await checkPiReadiness({ cli: "fake-pi", env: {}, cwd: nested, agentDir,
+      probe: async (_cli, _env, _cwd, command) => command === "get_commands"
+        ? { commands: [{ name: "poteto-mode-pi", source: "skill" }] }
+        : { models: [{ provider: "fixture", id: "dev" }, { provider: "fixture", id: "review" }] },
+    });
+    expect(result.roles.development.ready).toBe(true);
   });
 
   it("exchanges RPC frames with an isolated fake CLI and skill package", async () => {

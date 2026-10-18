@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { spawnCli } from "./procs.ts";
 
 export type PiRole = "development" | "independent-review";
@@ -40,6 +40,16 @@ export async function piRpcProbe(cli: string, env: NodeJS.ProcessEnv, cwd: strin
     });
     child.stdin.write(`${JSON.stringify({ type: command, id: "readiness", ...selection })}\n`);
   });
+}
+
+export function piProjectRoot(cwd: string): string | null {
+  let dir = resolve(cwd);
+  while (true) {
+    if (existsSync(resolve(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 export function parsePiRoles(text: string): Record<PiRole, string | null> {
@@ -86,7 +96,8 @@ export async function checkPiReadiness(options: {
   if (options.skillOnly) return result;
   let roles: Record<PiRole, string | null>;
   try {
-    roles = parsePiRoles(readFileSync(resolve(cwd, ".pi/pstack-model-roles.v1.json"), "utf8"));
+    const root = piProjectRoot(cwd);
+    roles = parsePiRoles(readFileSync(resolve(root ?? cwd, ".pi/pstack-model-roles.v1.json"), "utf8"));
   } catch {
     return result;
   }
