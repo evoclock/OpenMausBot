@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_OUTBOUND_POLICY } from "../../shared/outbound.ts";
 import { readBotActivity } from "../activity.ts";
 import { activityCsv, activityEntries, parseActivityWhat, readAdminActivityRange } from "../admin-activity.ts";
@@ -10,6 +12,7 @@ import { boundRetentionDays, decisionsCsv, readDecisionRange, readDecisions } fr
 import { editionForMembers, editionStatus, entitled } from "../enterprise.ts";
 import { fleetAvailable, fleetRequest, fleetSocketPath } from "../fleet-client.ts";
 import { noteKeyAccepted, noteKeyRejected } from "../key-rejections.ts";
+import { runSnapshotSchema } from "../run-contract.ts";
 import type { OutboundCounts } from "../outbound-counts.ts";
 import { loadPlanUsage, planAccountsFromInstances } from "../plan-usage.ts";
 import { checkProviderKey, PROVIDER_KEY_KINDS, providerBaseUrl, type ProviderKeyKind } from "../provider-key-check.ts";
@@ -130,6 +133,23 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       }
       const limit = parsedLimit;
       return json(res, 200, readThreadEvents({ eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR, threadId, limit }));
+    }
+
+    if (method === "GET" && path.startsWith("/api/coding-runs/")) {
+      res.setHeader("cache-control", "no-store");
+      if (!auth.scopes.includes("admin")) return json(res, 403, { error: "admin required" });
+      const id = path.slice("/api/coding-runs/".length);
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return json(res, 400, { error: "invalid run id" });
+      try {
+        const db = new DatabaseSync(join(DATA_DIR, "runtime.db"), { readOnly: true });
+        try {
+          const row = db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;
+          return row ? json(res, 200, runSnapshotSchema.parse(JSON.parse(row.snapshot))) : json(res, 404, { error: "no such run" });
+        } finally { db.close(); }
+      } catch (error) {
+        if (error instanceof Error && /no such table|unable to open database file/.test(error.message)) return json(res, 404, { error: "no such run" });
+        throw error;
+      }
     }
 
     // Subscription windows (5-hour and weekly). Unlisted, so it stays admin.
