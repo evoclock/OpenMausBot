@@ -7,11 +7,21 @@ import { describe, expect, it } from "vitest";
 import { hostTimeout } from "./testing/host-timeout.ts";
 import {
   assertSafeCliArgv,
+  cliExecutionStdio,
   describeSpawnFailure,
   estimatedWindowsCommandLineChars,
   execCli,
   WINDOWS_SAFE_COMMAND_LINE_CHARS,
 } from "./procs.ts";
+
+describe("driver-scoped child process isolation", () => {
+  it("isolates scoped execution output while preserving ignored stdin and unscoped options", () => {
+    expect(cliExecutionStdio("inherit", true)).toEqual(["pipe", "pipe", "pipe"]);
+    expect(cliExecutionStdio("ignore", true)).toEqual(["ignore", "pipe", "pipe"]);
+    expect(cliExecutionStdio(["ignore", "inherit", "inherit"], true)).toEqual(["ignore", "pipe", "pipe"]);
+    expect(cliExecutionStdio(undefined, false)).toBeUndefined();
+  });
+});
 
 describe("Windows CLI argument safety", () => {
   it("accepts ordinary launches", () => {

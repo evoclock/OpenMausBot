@@ -30,6 +30,8 @@ const NODE_REQUIRE = {
 // Every file run as its own process.
 const ENTRY_POINTS = [
   "index.ts",
+  // The driver-owned stdio broker pins this exact image path.
+  "driver-scoped-launch.ts",
   "message-search.worker.ts",
   // the `openmausbot` command
   "openmausbot.ts",

@@ -1,6 +1,6 @@
-// Entry point for a future native-contained bot instance. The trusted host
-// must pin this entrypoint, assignment identity, and mounted broker socket;
-// running server/index.ts directly bypasses this offline integration seam.
+// Entry point for a host-contained bot instance. The trusted host must pin
+// this entrypoint; it owns run/assignment identity and the stdio broker. Running
+// server/index.ts directly bypasses this scoped integration seam.
 // Set the immutable runtime marker before loading the gate module: it
 // snapshots launcher-owned settings at import time.
 process.env.OMB_DRIVER_SCOPED_BOOT = "1";
