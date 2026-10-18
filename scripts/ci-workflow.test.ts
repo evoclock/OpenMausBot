@@ -10,8 +10,13 @@ describe('repository CI and release boundaries', () => {
   it('runs independent, read-only typecheck, lint, and test jobs on PRs and main', () => {
     expect(ci.on).toEqual({ pull_request: null, push: { branches: ['main'] } });
     expect(ci.permissions).toEqual({ contents: 'read' });
-    expect(Object.keys(ci.jobs)).toEqual(['typecheck', 'lint', 'test']);
-    for (const [name, command] of [['typecheck', 'pnpm typecheck'], ['lint', 'pnpm lint'], ['test', 'pnpm exec vitest run']]) {
+    expect(Object.keys(ci.jobs)).toEqual(['typecheck', 'lint', 'test-shard', 'test']);
+    expect(ci.jobs['test-shard'].strategy).toEqual({ 'fail-fast': false, matrix: { shard: [1, 2, 3, 4] } });
+    expect(ci.jobs.test.needs).toEqual(['test-shard']);
+    expect(ci.jobs.test.if).toBe('always()');
+    expect(ci.jobs.test.steps[0].env.SHARD_RESULT).toBe('${{ needs.test-shard.result }}');
+    expect(ci.jobs.test.steps[0].run).toBe('test "$SHARD_RESULT" = success');
+    for (const [name, command] of [['typecheck', 'pnpm typecheck'], ['lint', 'pnpm lint'], ['test-shard', 'pnpm exec vitest run --shard=${{ matrix.shard }}/4']]) {
       const steps = ci.jobs[name].steps;
       expect(steps.some((step: { run?: string }) => step.run === 'pnpm install --frozen-lockfile')).toBe(true);
       expect(steps.some((step: { run?: string }) => step.run === command)).toBe(true);

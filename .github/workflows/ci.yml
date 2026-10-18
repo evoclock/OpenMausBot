@@ -45,9 +45,13 @@ jobs:
           node .github/tools/public_term_scan.mjs
           node --test .github/tools/*.test.mjs
           python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'
-  test:
+  test-shard:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,4 +62,13 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vitest run
+      - run: pnpm exec vitest run --shard=${{ matrix.shard }}/4
+  test:
+    if: always()
+    needs: [test-shard]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every shard to pass
+        env:
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+        run: test "$SHARD_RESULT" = success
