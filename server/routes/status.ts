@@ -4,6 +4,8 @@ import { activityCsv, activityEntries, parseActivityWhat, readAdminActivityRange
 import { loadBrand } from "../brand.ts";
 import { browserEngineStatus, ensureChrome, installAgentBrowserBinary, resolveAgentBrowserBinary } from "../browser-engine.ts";
 import { DATA_DIR, EVENTS_DIR, NATIVE_DIR, instanceConfigs, type AppConfig } from "../config.ts";
+import { checkPiReadiness } from "../pi-readiness.ts";
+import { piEnvironment } from "../drivers/pi.ts";
 import { boundRetentionDays, decisionsCsv, readDecisionRange, readDecisions } from "../decision-log.ts";
 import { editionForMembers, editionStatus, entitled } from "../enterprise.ts";
 import { fleetAvailable, fleetRequest, fleetSocketPath } from "../fleet-client.ts";
@@ -37,6 +39,20 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
   } = deps;
   return async ({ req, res, url, path, method, auth, json, readBody }) => {
     let m: RegExpMatchArray | null = null;
+    if (method === "GET" && path === "/api/pi/readiness") {
+      if (!auth.scopes.includes("admin")) return json(res, 403, { error: "admin access required" });
+      res.setHeader("cache-control", "no-store");
+      const botId = url.searchParams.get("botId");
+      const bot = botId && /^[\w-]+$/.test(botId) ? store.bot(botId) : null;
+      if (!bot) return json(res, 404, { error: "bot not found" });
+      const selected = bot.modelSelection.instanceId;
+      const pi = instanceConfigs(cfg)[selected];
+      if (pi?.driver !== "piAgent") return json(res, 200, { available: false });
+      const settings = pi.config as { cli?: string; agentDir?: string } | undefined;
+      return json(res, 200, { available: true, ...await checkPiReadiness({
+        cli: settings?.cli || "pi", env: piEnvironment(process.env), cwd: bot.cwd || process.cwd(), agentDir: settings?.agentDir,
+      }) });
+    }
     // The packaged app's port fallback: the forked child proves it is ours by echoing its pid.
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR), capabilities: {
