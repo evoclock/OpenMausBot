@@ -38,6 +38,15 @@ test("missing or same role blocks work before workspace allocation", async () =>
   assert.deepEqual(route.calls, []);
 });
 
+test("a workspace on another branch blocks before dispatch", async () => {
+  const route = host();
+  route.acquire = async () => { route.calls.push("acquire"); return {
+    repository: contract.repository, directory: "isolated", branch: "unapproved", base: "base", leaseId: "lease",
+  }; };
+  assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
+  assert.deepEqual(route.calls, ["acquire"]);
+});
+
 test("a favorable reviewer alone never completes an unverified run", async () => {
   const route = host();
   route.verifyWithPstack = async () => null;
