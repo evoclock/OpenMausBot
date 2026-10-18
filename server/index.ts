@@ -1,5 +1,12 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
+import {
+  DRIVER_SCOPED_GATE_CONFIG,
+  driverScopedDispatchRefusal,
+  driverScopedWriteGate,
+  requireDriverStartupGate,
+  runDriverScopedModelCall,
+} from "./driver-startup-gate.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -5640,7 +5647,12 @@ const sideJobs = createSideJobs({
 const memoryUpkeep = createMemoryUpkeep({
   bots: () => store.bots,
   bot: (id) => store.bot(id) ?? undefined,
-  engine: (botId) => sideJobs.text("memory", botId),
+  engine: (botId) => {
+    const job = sideJobs.text("memory", botId);
+    return job ? {
+      generateText: (prompt, options) => runDriverScopedModelCall(() => job.generateText(prompt, options)),
+    } : null;
+  },
   busy: (botId) => botHasActiveTurn(botId),
   addToAboutMe: (from, texts) => {
     const current = cfg.profile?.aboutMe ?? "";
@@ -5666,6 +5678,8 @@ const memoryUpkeep = createMemoryUpkeep({
     if (CLOUD_HOME && !cloudOwnerOnlyThread(threadId)) return null;
     return captureTurnFor(threadId, turnId);
   },
+  beforeWrite: driverScopedWriteGate,
+  // On a Cloud home upkeep only works on the owner's conversations, so writes are the owner's (lending-memory.ts).
   ...(lendingMemory ? { writing: <T>(botId: string, write: () => T): T => lendingMemory.trustedWrite(botId, write) } : {}),
   quietMs: () => captureQuietMs(cfg),
   tidyHour: () => tidyHour(cfg),
@@ -8186,7 +8200,7 @@ async function generateThreadTitle(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const reply = await Promise.race([
-      provider.generateText!(prompt, { signal: expiry.signal }),
+      runDriverScopedModelCall(() => provider.generateText!(prompt, { signal: expiry.signal })),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           expiry.abort();
@@ -8256,6 +8270,12 @@ async function startTurn(
   },
 ) {
   workspaceMaintenance.assertAvailable();
+  // A scoped bot runtime re-asks the host broker on every dispatch: queued
+  // sends, routine runs and delegations admitted while the assignment was
+  // live must stop once it is held or its claim expires. Throws before any
+  // transcript or provider state is touched; unscoped launches skip this.
+  const scopedRefusal = await driverScopedDispatchRefusal();
+  if (scopedRefusal) throw Object.assign(new Error(scopedRefusal), { status: 503 });
   const profile = store.bot(botId);
   if (!profile) throw Object.assign(new Error("no such bot"), { status: 404 });
   const threadId = opts?.threadId ?? profile.threadId;
@@ -10393,6 +10413,14 @@ async function runClaimedGroupMemberTurn(
   // Rebuild the turn once from the fresh bot rather than mix a stale adapter with fresh permissions.
   setupRetry = 0,
 ): Promise<boolean> {
+  // Rooms dispatch per member here, not through startTurn: the recurring
+  // scoped-gate check must live in both seams to cover group goals, room
+  // queue drains and chained @mentions.
+  const scopedRefusal = await driverScopedDispatchRefusal();
+  if (scopedRefusal) {
+    onDispatchError?.(scopedRefusal);
+    return false;
+  }
   if (workspaceMaintenance.active) {
     onDispatchError?.("A workspace backup or restore is in progress.");
     return false;
@@ -17178,6 +17206,13 @@ restoreChannelMessages();
   if (movedAutoPins) console.log(`Works on: moved ${movedAutoPins} auto-pinned thread(s) to their bot's current Works on`);
 }
 
+// A scoped launch checks before importing this module AND again immediately
+// before either listener can accept requests or any startup queue can drain.
+// Native containment must pin the scoped entrypoint: ordinary unscoped app
+// launches intentionally remain independent and are NOT a safe bot runtime.
+if (DRIVER_SCOPED_GATE_CONFIG.enabled) {
+  await requireDriverStartupGate(DRIVER_SCOPED_GATE_CONFIG);
+}
 server.listen(PORT, "127.0.0.1", async () => {
   companyRuntimeReady();
   console.log(`openmausbot server on http://127.0.0.1:${PORT}`);

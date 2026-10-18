@@ -238,7 +238,7 @@ describe("the upkeep loop", () => {
   let organizePrompts: string[];
   let transcript: Map<string, CaptureTurn>;
 
-  const upkeep = () => createMemoryUpkeep({
+  const upkeep = (beforeWrite?: () => Promise<void>, logs?: string[]) => createMemoryUpkeep({
     bots: () => [BOT],
     bot: (id) => (id === BOT.id ? BOT : undefined),
     engine: () => engine,
@@ -252,6 +252,8 @@ describe("the upkeep loop", () => {
     quietMs: () => 60_000,
     tidyHour: () => 3,
     now: () => clock,
+    ...(beforeWrite ? { beforeWrite } : {}),
+    ...(logs ? { log: (line: string) => { logs.push(line); } } : {}),
   });
 
   beforeEach(() => {
@@ -281,6 +283,117 @@ describe("the upkeep loop", () => {
   });
 
   const memory = () => readFileSync(join(workspaceDir(BOT.id), "MEMORY.md"), "utf8");
+
+  it("blocks capture writes when the scoped broker holds after the model call", async () => {
+    ensureWorkspace(BOT.id);
+    const before = memory();
+    let modelCalls = 0;
+    let held = false;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      held = true;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const service = upkeep(async () => {
+      if (held) throw new Error("driver startup gate refused dispatch");
+    });
+
+    await expect(service.capture({ botId: BOT.id, threadId: "t1", turns: [{ person: "I like jazz", bot: "Noted." }] }))
+      .rejects.toThrow(/refused/);
+    expect(modelCalls).toBe(1);
+    expect(memory()).toBe(before);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toBeUndefined();
+  });
+
+  it("returns truthful partial capture evidence when the About me gate holds after notebook writes", async () => {
+    ensureWorkspace(BOT.id);
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const logs: string[] = [];
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker hold");
+    }, logs);
+
+    service.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Noted." });
+    service.flushThread("t1");
+    await service.idle();
+    await flushMemoryJournal(BOT.id);
+
+    expect(modelCalls).toBe(1);
+    expect(logs.join("\n")).toMatch(/Capture saved 1 notebook fact\(s\).*About me was not updated.*instance will not retry this batch automatically/);
+    expect(memory()).toContain("The person likes jazz");
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "capture" && row.path === "MEMORY.md")).toBe(true);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toMatchObject({ added: 1, aboutMe: 0, note: expect.stringMatching(/not updated/) });
+    await service.idle();
+    expect(modelCalls).toBe(1);
+  });
+
+  it("returns completed topic writes when the status-record gate is unavailable", async () => {
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "Acme needs a logo", kind: "fact", topic: "Acme" }]);
+    } };
+    const logs: string[] = [];
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker unavailable");
+    }, logs);
+
+    service.noteTurn(BOT.id, "t1", { person: "Acme needs a logo", bot: "Noted." });
+    service.flushThread("t1");
+    await service.idle();
+    await flushMemoryJournal(BOT.id);
+    const report = service.status(BOT.id).lastCapture!;
+
+    expect(modelCalls).toBe(1);
+    expect(report).toMatchObject({ added: 0, topics: 1, aboutMe: 0 });
+    expect(report.note).toMatch(/status was not recorded.*instance will not retry this batch automatically/);
+    expect(logs.join("\n")).toMatch(/1 topic fact\(s\).*status was not recorded.*instance will not retry this batch automatically/);
+    expect(readMemoryTopic(BOT.id, "acme.md")).toContain("Acme needs a logo");
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "capture" && row.path === "memory/acme.md")).toBe(true);
+    expect(service.status(BOT.id).lastCapture).toMatchObject({ topics: 1, note: expect.stringMatching(/status was not recorded/) });
+    await service.idle();
+    expect(modelCalls).toBe(1);
+  });
+
+  it("does not write when backup pause starts during the scoped gate check", async () => {
+    ensureWorkspace(BOT.id);
+    const before = memory();
+    let modelCalls = 0;
+    let gateStarted!: () => void;
+    let releaseGate!: () => void;
+    const started = new Promise<void>((resolve) => { gateStarted = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    engine = { generateText: async () => {
+      modelCalls += 1;
+      return JSON.stringify([{ text: "The person likes jazz", kind: "preference", aboutUser: true }]);
+    } };
+    const service = upkeep(() => {
+      gateStarted();
+      return gate;
+    });
+
+    const capture = service.capture({ botId: BOT.id, threadId: "t1", turns: [{ person: "I like jazz", bot: "Noted." }] });
+    await started;
+    service.pause();
+    releaseGate();
+    const report = await capture;
+
+    expect(modelCalls).toBe(1);
+    expect(report.added).toBe(0);
+    expect(memory()).toBe(before);
+    expect(aboutMeAdded).toEqual([]);
+    expect(service.status(BOT.id).lastCapture).toBeUndefined();
+  });
 
   it("captures new facts as dated, sourced entries, journaled as upkeep, and adds About me lines", async () => {
     ensureWorkspace(BOT.id);
@@ -413,6 +526,12 @@ describe("the upkeep loop", () => {
     engine = {};
     expect((await upkeep().capture({ botId: BOT.id, threadId: "t", turns: [{ person: "x", bot: "y" }] })).note).toBe(NO_TEXT_ENGINE);
     expect(prompts).toEqual([]);
+    const logs: string[] = [];
+    const ordinary = upkeep(undefined, logs);
+    ordinary.noteTurn(BOT.id, "ordinary", { person: "x", bot: "y" });
+    ordinary.flushThread("ordinary");
+    await ordinary.idle();
+    expect(logs.some((line) => line.includes("capture outcome"))).toBe(false);
   });
 
   it("tidies: archives the expired, merges duplicates, strikes a contradiction, all undoable rows", async () => {
@@ -442,6 +561,137 @@ describe("the upkeep loop", () => {
     const rows = readMemoryJournal(BOT.id, 10);
     expect(rows.filter((row) => row.actor === "upkeep" && row.via === "tidy").map((row) => row.path)).toEqual(["MEMORY.md", "memory/archive.md"]);
     expect(rows[0]!.path).toBe("MEMORY.md");
+  });
+
+  it("does not perform an organize move when hold arrives after its model response", async () => {
+    ensureWorkspace(BOT.id);
+    const original = "- 2026-09-25 · The client Acme wants logo revisions.\n";
+    writeMemoryFile(BOT.id, original);
+    organizeAnswer = '{"moves":[{"i":0,"topic":"acme","aliases":["client"]}]}';
+    let checks = 0;
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker hold");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(report.note).toMatch(/Organization was blocked.*suppressed for the rest of this process today/);
+    expect(memory()).toBe(original);
+    expect(readMemoryTopic(BOT.id, "acme.md")).toBeNull();
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).filter((row) => row.via === "organize")).toHaveLength(0);
+    expect(organizePrompts).toHaveLength(1);
+    expect(service.status(BOT.id).lastTidy?.note).toMatch(/Organization was blocked/);
+    await service.tick();
+    expect(organizePrompts).toHaveLength(1);
+  });
+
+  it("keeps scoped organization evidence when backup pause stops the later tidy step", async () => {
+    ensureWorkspace(BOT.id);
+    writeMemoryFile(BOT.id, [
+      "- 2026-09-25 · The client Acme wants logo revisions.",
+      "- 2026-09-25 · The client Beta needs a website.",
+      "- 2026-09-25 · The trip to Rome is in October.",
+      "- 2026-09-25 · The project Cedar uses Rust.",
+      "- 2026-09-25 · The meeting with Delta is on Friday.",
+      "- 2026-09-25 · The vendor Echo ships on Mondays.",
+      "",
+    ].join("\n"));
+    let service!: ReturnType<typeof upkeep>;
+    engine = { generateText: async (prompt) => {
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[{"i":0,"topic":"acme"}]}';
+      }
+      service.pause();
+      return '{"pairs":[]}';
+    } };
+    service = upkeep(async () => {});
+
+    const report = await service.tidy(BOT.id);
+
+    expect(report).toMatchObject({ organized: 1, expired: 0, duplicates: 0 });
+    expect(report.note).toMatch(/Organization completed.*tidy step was skipped/);
+    expect(memory()).not.toContain("Acme wants logo revisions");
+    expect(readMemoryTopic(BOT.id, "acme.md")).toContain("Acme wants logo revisions");
+    expect(service.status(BOT.id).lastTidy).toMatchObject({ organized: 1, note: expect.stringMatching(/Organization completed/) });
+  });
+
+  it("does not tidy after the contradiction model response when the write gate is unavailable", async () => {
+    ensureWorkspace(BOT.id);
+    const original = [
+      "- 2026-09-01 · Likes tea", "- 2026-09-02 · Likes tea", "- 2026-09-03 · Has a dog",
+      "- 2026-09-04 · Drives a Honda", "- 2026-09-05 · Plays chess", "- 2026-09-06 · Office is in Pune", "",
+    ].join("\n");
+    writeMemoryFile(BOT.id, original);
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async (prompt) => {
+      modelCalls += 1;
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[]}';
+      }
+      prompts.push(prompt);
+      return '{"pairs":[]}';
+    } };
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 2) throw new Error("broker unavailable");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(modelCalls).toBe(2);
+    expect(report.note).toMatch(/scoped write gate blocked tidy changes/);
+    expect(memory()).toBe(original);
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).filter((row) => row.via === "tidy")).toHaveLength(0);
+    expect(service.status(BOT.id).lastTidy?.note).toMatch(/scoped write gate blocked tidy changes/);
+    await service.tick();
+    expect(modelCalls).toBe(2);
+  });
+
+  it("reports tidy writes when the status gate refuses and suppresses automatic replay for the day", async () => {
+    ensureWorkspace(BOT.id);
+    writeMemoryFile(BOT.id, [
+      "- 2026-09-01 · Likes tea", "- 2026-09-02 · Likes tea", "- 2026-09-03 · Has a dog",
+      "- 2026-09-04 · Drives a Honda", "- 2026-09-05 · Plays chess", "- 2026-09-06 · Office is in Pune", "",
+    ].join("\n"));
+    let modelCalls = 0;
+    let checks = 0;
+    engine = { generateText: async (prompt) => {
+      modelCalls += 1;
+      if (prompt.includes(ORGANIZE_MARKER)) {
+        organizePrompts.push(prompt);
+        return '{"moves":[]}';
+      }
+      prompts.push(prompt);
+      return '{"pairs":[]}';
+    } };
+    const service = upkeep(async () => {
+      checks += 1;
+      if (checks === 3) throw new Error("broker unavailable");
+    });
+
+    const report = await service.tidy(BOT.id);
+
+    expect(modelCalls).toBe(2);
+    expect(report.duplicates).toBe(1);
+    expect(report.note).toMatch(/Tidy changes shown above were saved.*status was not recorded.*suppressed for the rest of this process today/);
+    expect(memory().match(/Likes tea/g)).toHaveLength(1);
+    await flushMemoryJournal(BOT.id);
+    expect(readMemoryJournal(BOT.id, 5).some((row) => row.via === "tidy" && row.path === "MEMORY.md")).toBe(true);
+    expect(service.status(BOT.id).lastTidy).toMatchObject({ duplicates: 1, note: expect.stringMatching(/status was not recorded/) });
+    await service.tick();
+    expect(modelCalls).toBe(2);
+
+    // A deliberate manual pass may run; only the automatic same-day retry is suppressed.
+    const manual = await service.tidy(BOT.id);
+    expect(manual.duplicates).toBe(0);
+    expect(modelCalls).toBe(3);
+    expect(service.status(BOT.id).lastTidy?.note).toBeUndefined();
   });
 
   it("moves detail the bot wrote itself out of MEMORY.md into topics, keeping core facts", async () => {

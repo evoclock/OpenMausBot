@@ -1,3 +1,4 @@
+// Modified in 2026: fail closed when persisted routine queue state is unreadable.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -693,7 +694,10 @@ export class RoutineManager {
     try {
       const disk = JSON.parse(readFileSync(this.file, "utf8")) as Partial<RoutineFile>;
       if (disk === null || typeof disk !== "object" || Array.isArray(disk)) throw new Error("Invalid routines file");
-      for (const key of ["routines", "runs", "routineRequestReceipts", "webhookRunReceipts"] as const) {
+      if (disk.version !== 1 || !Array.isArray(disk.routines) || !Array.isArray(disk.runs)) {
+        throw new Error("Invalid routines file: expected version 1 with routines and runs");
+      }
+      for (const key of ["routineRequestReceipts", "webhookRunReceipts"] as const) {
         if (key in disk && !Array.isArray(disk[key])) throw new Error(`Invalid routines file: ${key} is not a list`);
       }
       this.routines = Array.isArray(disk.routines)
@@ -777,6 +781,8 @@ export class RoutineManager {
         known.add(key);
       }
     } catch (error) {
+      // Missing files start empty. Unreadable or malformed files remain frozen
+      // below, so the scheduler cannot overwrite admitted work or lose evidence.
       this.routines = [];
       this.unloadedRoutines = [];
       this.runs = [];

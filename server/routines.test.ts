@@ -1,3 +1,4 @@
+// Modified in 2026: cover fail-closed loading of persisted routine queues.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,6 +118,44 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("routines startup state", () => {
+  it("starts fresh only when the routines file is absent", () => {
+    const h = harness();
+    expect(h.manager.listRoutines()).toEqual([]);
+    expect(new RoutineManager(h.options).listRuns()).toEqual([]);
+  });
+
+  it.each(["", "{broken", "{}", '{"version":1,"routines":[],"runs":null}'])(
+    "freezes persisted work with an invalid routines file: %s", (contents) => {
+      const h = harness();
+      writeFileSync(h.options.file!, contents);
+      const manager = new RoutineManager(h.options);
+      expect(manager.listRoutines()).toEqual([]);
+      expect(() => manager.create({
+        name: "Health check",
+        prompt: "Check the fixture",
+        botId: "maus-1",
+        schedule: { type: "interval", everyMinutes: 5, anchorAt: new Date(2026, 7, 17, 8, 0, 0).getTime() },
+      })).toThrow(expect.objectContaining({ status: 503 }));
+      expect(readFileSync(h.options.file!, "utf8")).toBe(contents);
+    },
+  );
+
+  it("does not treat an unreadable routines path as a fresh workspace", () => {
+    const h = harness();
+    mkdirSync(h.options.file!);
+    const manager = new RoutineManager(h.options);
+    expect(manager.listRoutines()).toEqual([]);
+    expect(() => manager.create({
+      name: "Health check",
+      prompt: "Check the fixture",
+      botId: "maus-1",
+      schedule: { type: "interval", everyMinutes: 5, anchorAt: new Date(2026, 7, 17, 8, 0, 0).getTime() },
+    })).toThrow(expect.objectContaining({ status: 503 }));
+    expect(statSync(h.options.file!).isDirectory()).toBe(true);
+  });
 });
 
 describe("bounded scheduled overlap and run health", () => {
