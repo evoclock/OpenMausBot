@@ -1,24 +1,15 @@
-// Voice set-up, where a call asked for it. The call button's help used to
-// send people to the bot's full settings (in Simple mode, the whole Advanced
-// fold-out) just to paste a key and pick a voice. This is the same
-// VoiceSettings card in a small glass pop-up over the chat, with the bot's
-// full Voice section one link away, and the call one click away once a
-// voice is ready.
-//
-// It saves the way the bot's own settings do (the bot update and the
-// workspace voice config). A desktop paired to another computer can't make
-// those writes (the host keeps the engine and its key), so the call help
-// opens the remote agent settings there instead of this.
 import { useEffect, useId, useRef, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { CheckCircle2, ChevronRight, Loader2, Phone, X } from "lucide-react";
 
 import { glassPopupFrameStyle } from "@/lib/glass-popup";
 import { t } from "@/lib/i18n";
-import { useStore, type Bot } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
+import { openBot, useStore, type Bot } from "@/state/store";
 import { BotAvatar } from "./Avatar";
 import { VoiceSettings } from "./VoiceSettings";
 import { useBotSettingsDerived } from "./bot-settings/useBotSettingsDerived";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
@@ -33,21 +24,15 @@ export function VoiceSetupDialog({
   onStartCall,
   returnFocusRef,
 }: {
-  /** Whose voice this sets: the bot being called, or in a room the first
-   * member still without one. */
   bot: Bot;
-  /** Who the call goes to (a room's name for a group call). */
   callName: string;
-  /** The call button's own test, live: a call can start now. */
   ready: boolean;
   onClose: () => void;
-  /** Starts the call exactly as the call button does. */
   onStartCall: () => void;
-  /** Focus goes back here on close: the call button. */
   returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const { state, dispatch } = useStore();
-  // The patch the bot settings' Voice section hands the same card.
+  const showThreads = useShowThreads();
   const { patch } = useBotSettingsDerived(bot);
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -63,9 +48,6 @@ export function VoiceSetupDialog({
       Array.from(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []).filter(
         (element) => element.getClientRects().length > 0,
       );
-    // The voice picker shows once the engine is set up (its key saved, its
-    // server address set), and then a voice is what's missing: start there.
-    // Until then, start in the first field: the key, or the server address.
     (
       dialog?.querySelector<HTMLElement>(VOICE_PICKER) ??
       dialog?.querySelector<HTMLElement>(FIRST_FIELD) ??
@@ -87,8 +69,6 @@ export function VoiceSetupDialog({
       }
       const first = items[0]!;
       const last = items.at(-1)!;
-      // Focus falls out when the control holding it goes away (switching
-      // engines removes the key field): Tab brings it back either way.
       if (document.activeElement === dialog || !dialog.contains(document.activeElement)) {
         event.preventDefault();
         (event.shiftKey ? last : first).focus();
@@ -107,13 +87,10 @@ export function VoiceSetupDialog({
     };
   }, [returnFocusRef]);
 
-  // Everything the pop-up leaves out (notifications, the rest of the bot's
-  // profile) is in the full settings, opened at Voice. In a room the bot is a
-  // member, so open its chat first, as the call help always did.
   const openAllSettings = () => {
     close();
-    if (state.selectedId !== bot.id) dispatch({ type: "select", id: bot.id });
-    dispatch({ type: "toggleSettings", open: true, section: "voice" });
+    if (state.selectedId !== bot.id) openBot(dispatch, bot, showThreads);
+    openBotSettings(dispatch, "voice");
   };
 
   return createPortal(
@@ -122,8 +99,7 @@ export function VoiceSetupDialog({
       style={glassPopupFrameStyle()}
       onMouseDown={(event) => event.target === event.currentTarget && close()}
     >
-      {/* A sibling, not the parent: a backdrop-filter on an ancestor would
-          stop the pop-up's own glass from seeing the app behind it. */}
+      {/* A sibling, not the parent: a backdrop-filter on an ancestor would stop the pop-up's own glass from seeing the app behind it. */}
       <div aria-hidden="true" className="glass-scrim pointer-events-none absolute inset-0" />
       <div
         ref={dialogRef}
@@ -168,8 +144,7 @@ export function VoiceSetupDialog({
           )}
         </div>
 
-        {/* Mounted before it has anything to say, so the line is announced
-            the moment the voice is ready. */}
+        {/* Mounted before it has anything to say: a live region announces only changes made after it exists. */}
         <div role="status" aria-live="polite">
           {ready && (
             <div className="mx-6 mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-success/30 bg-success/10 px-4 py-3 sm:mx-7">

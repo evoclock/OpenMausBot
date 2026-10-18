@@ -33,8 +33,6 @@ function harness(options) {
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-// The one way a download starts: a check finds an update. `manual`: the
-// person's own check (Check for updates, Try again); otherwise the hourly one.
 async function found(h, { manual = false, version = "2.0.0" } = {}) {
   h.updater.checkForUpdates = async () => {
     h.updater.emit("checking-for-update");
@@ -43,7 +41,6 @@ async function found(h, { manual = false, version = "2.0.0" } = {}) {
   await h.coordinator.check(manual);
 }
 
-// Drives a successful download so install() has staged paths to hand off.
 async function downloadInto(h, files = ["/tmp/OpenMausBot-2.0.0-amd64.deb"]) {
   h.updater.downloadUpdate = () => {
     h.updater.emit("update-downloaded", { version: "2.0.0" });
@@ -158,11 +155,11 @@ test("download reports downloading before the first progress event", async () =>
   updater.downloadUpdate = () => pending.promise;
 
   await found({ updater, coordinator });
-  assert.deepEqual(getState(), { status: "downloading", version: "2.0.0", percent: undefined, message: undefined });
+  assert.deepEqual(getState(), { status: "downloading", version: "2.0.0", releaseNotes: undefined, percent: undefined, message: undefined });
   assert.equal(states.find((entry) => entry.status !== "checking").status, "downloading");
 
   updater.emit("download-progress", { percent: 12 });
-  assert.deepEqual(getState(), { status: "downloading", version: "2.0.0", percent: 12, message: undefined });
+  assert.deepEqual(getState(), { status: "downloading", version: "2.0.0", releaseNotes: undefined, percent: 12, message: undefined });
 
   pending.resolve();
   await settle();
@@ -219,7 +216,6 @@ test("on a Mac, checking while an update downloads by itself makes its failure t
 
   await found(h);
   assert.equal(h.getState().status, "downloading");
-  // A Mac download cannot be overlapped by a check, but asking still counts.
   h.updater.checkForUpdates = () => assert.fail("a check cannot overlap a Mac download");
   await h.coordinator.check(true);
   transfer.reject(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }));
@@ -282,7 +278,7 @@ test("an active download state survives a later background check failure", async
     return downloadPending.promise;
   };
   await found(h);
-  const downloading = { status: "downloading", version: "2.0.0", percent: 42, message: undefined };
+  const downloading = { status: "downloading", version: "2.0.0", releaseNotes: undefined, percent: 42, message: undefined };
   assert.deepEqual(h.getState(), downloading);
 
   h.updater.checkForUpdates = () => {
@@ -315,7 +311,7 @@ test("a download error remains authoritative after a later background failure", 
   const downloadError = new Error("download failed first");
   downloadPending.reject(downloadError);
   await settle();
-  const failed = { status: "error", version: "2.0.0", percent: 75, message: "download failed first" };
+  const failed = { status: "error", version: "2.0.0", releaseNotes: undefined, percent: 75, message: "download failed first" };
   assert.deepEqual(h.getState(), failed);
 
   h.updater.emit("checking-for-update");
@@ -331,8 +327,6 @@ test("a background failure stays silent before a later download failure only the
   const h = harness();
   const downloadPending = deferred();
   const checkPending = deferred();
-  // The hourly check finds an update, which starts downloading, and then the
-  // check itself fails.
   h.updater.checkForUpdates = () => {
     h.updater.emit("checking-for-update");
     h.updater.emit("update-available", { version: "2.1.0" });
@@ -347,7 +341,7 @@ test("a background failure stays silent before a later download failure only the
   const background = h.coordinator.check();
   checkPending.reject(new Error("background check failed first"));
   await background;
-  assert.deepEqual(h.getState(), { status: "downloading", version: "2.1.0", percent: 18, message: undefined });
+  assert.deepEqual(h.getState(), { status: "downloading", version: "2.1.0", releaseNotes: undefined, percent: 18, message: undefined });
   assert.equal(errorStates(h.states).length, 0);
 
   downloadPending.reject(Object.assign(new Error("write failed"), { code: "ENOSPC" }));
@@ -358,7 +352,6 @@ test("a background failure stays silent before a later download failure only the
 });
 
 test("an update a check finds downloads without a click; only the restart waits for the person", async () => {
-  // The hourly check and "Check for updates" alike: there is no Download step.
   for (const manual of [false, true]) {
     const found = harness();
     let downloads = 0;
@@ -380,12 +373,12 @@ test("an update a check finds downloads without a click; only the restart waits 
 
     await found.coordinator.check(manual);
     assert.equal(downloads, 1, "the check itself started the download");
-    assert.deepEqual(found.getState(), { status: "downloading", version: "2.0.0", percent: 42, message: undefined });
+    assert.deepEqual(found.getState(), { status: "downloading", version: "2.0.0", releaseNotes: undefined, percent: 42, message: undefined });
     assert.equal(found.states.some((entry) => entry.status === "available"), false, "no state waits for a Download click");
 
     transfer.resolve();
     await settle();
-    assert.deepEqual(found.getState(), { status: "downloaded", version: "2.0.0", percent: 42, message: undefined });
+    assert.deepEqual(found.getState(), { status: "downloaded", version: "2.0.0", releaseNotes: undefined, percent: 42, message: undefined });
   }
 
   const notAvailable = harness();
@@ -411,8 +404,7 @@ test("a download the hourly check started fails quietly, and the next check trie
     transfer = deferred();
     return transfer.promise;
   };
-  // The transfer breaks after the check has finished: electron-updater emits
-  // "error", then rejects the download.
+  // electron-updater emits "error" for a broken transfer, then rejects the download.
   const breakTransfer = async () => {
     const error = new Error("ECONNRESET");
     h.updater.emit("error", error);
@@ -430,7 +422,6 @@ test("a download the hourly check started fails quietly, and the next check trie
   await breakTransfer();
   assert.equal(downloads, 2, "a quiet failure leaves the next check free to download again");
 
-  // A rejection with no "error" event of its own is just as quiet.
   await h.coordinator.check();
   transfer.reject(new Error("ETIMEDOUT"));
   await settle();
@@ -459,13 +450,11 @@ test("a failure only the person can fix is shown, and the hourly check stops dow
     assert.equal(h.getState().status, "error", failure.code);
     assert.match(h.getState().message, message);
 
-    // The next hourly check would fail the same way: it leaves the message up.
     await found(h);
     await settle();
     assert.equal(downloads, 1, `${failure.code}: no second download until the person tries again`);
     assert.equal(h.getState().status, "error");
 
-    // Try again is the person's own check: it downloads once more.
     await found(h, { manual: true });
     await settle();
     assert.equal(downloads, 2);
@@ -537,7 +526,6 @@ test("the hand-off install opens the staged package instead of quitting", async 
   const h = harness({
     handOffInstall: (files) => {
       received.push(files);
-      // what the user still has to do travels back with the state
       return Promise.resolve({ command: "sudo apt-get install -y '/tmp/x.deb'", terminalOpened: true });
     },
   });
@@ -551,7 +539,6 @@ test("the hand-off install opens the staged package instead of quitting", async 
 
   assert.deepEqual(received, [["/tmp/OpenMausBot-2.0.0-amd64.deb"]]);
   assert.equal(h.getState().status, "handed-off");
-  // the user watched something happen between the click and the result
   assert.ok(h.states.some((entry) => entry.status === "installing"));
   assert.equal(h.getState().command, "sudo apt-get install -y '/tmp/x.deb'");
   assert.equal(h.getState().terminalOpened, true);
@@ -564,7 +551,6 @@ test("a failed hand-off is reported instead of leaving the card spinning", async
   h.coordinator.install();
   await new Promise((resolve) => setImmediate(resolve));
 
-  // version survives the merge from the download — assert what the card reads
   assert.equal(h.getState().status, "error");
   assert.equal(h.getState().message, "no handler for .deb");
 });
@@ -613,7 +599,6 @@ test("a staged update survives hourly checks until the user explicitly checks ag
   assert.equal(checks, 0);
   assert.deepEqual(h.getState(), staged);
 
-  // Checking again finds the newer one, and it downloads by itself.
   h.updater.downloadUpdate = async () => {
     h.updater.emit("update-downloaded", { version: "2.1.0" });
     return ["/tmp/OpenMausBot-2.1.0-amd64.deb"];
@@ -628,7 +613,6 @@ test("a staged update survives hourly checks until the user explicitly checks ag
 test("a superseded check error event cannot invalidate a completed download", async () => {
   const h = harness();
   const pending = deferred();
-  // The check finds the update, which downloads, while the check itself hangs.
   h.updater.checkForUpdates = () => {
     h.updater.emit("update-available", { version: "2.0.0" });
     return pending.promise;
@@ -701,4 +685,25 @@ test("failed download and hand-off actions survive automatic checks but remain r
     assert.equal(checks, 1);
     assert.equal(h.getState().status, "downloaded");
   }
+});
+
+test("carries the release notes with the version, as one capped string", async () => {
+  const { releaseNotesText } = await import("./updater-coordinator.mjs");
+  assert.equal(releaseNotesText("<ul><li>One</li></ul>"), "<ul><li>One</li></ul>");
+  assert.equal(releaseNotesText([{ version: "2", note: "Two" }, { version: "1", note: "One" }]), "Two\nOne");
+  assert.equal(releaseNotesText("   "), undefined);
+  assert.equal(releaseNotesText(null), undefined);
+  assert.equal(releaseNotesText("x".repeat(9000)).length, 8000);
+
+  const h = harness();
+  h.updater.downloadUpdate = () => new Promise(() => {});
+  h.updater.checkForUpdates = async () => {
+    h.updater.emit("checking-for-update");
+    h.updater.emit("update-available", { version: "2.0.0", releaseNotes: "- **Faster start.** Opens at once." });
+  };
+  await h.coordinator.check();
+  await settle();
+  assert.equal(h.getState().status, "downloading");
+  assert.equal(h.getState().version, "2.0.0");
+  assert.equal(h.getState().releaseNotes, "- **Faster start.** Opens at once.");
 });

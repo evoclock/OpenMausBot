@@ -1,9 +1,6 @@
-// A Windows PC on a network Windows calls Public drops every phone's
-// connection at its firewall, however right the QR's address is. The sidecar
-// finds that network so the Wi-Fi pairing panel can say what to change.
 import { describe, expect, it, vi } from "vitest";
 
-// The Oct 3 PC: WSL's virtual switch listed first, the real Wi-Fi second.
+// WSL's virtual switch listed first, the real Wi-Fi second.
 vi.mock("node:os", async (original) => ({
   ...await original<typeof import("node:os")>(),
   networkInterfaces: () => ({

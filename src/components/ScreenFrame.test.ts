@@ -26,11 +26,9 @@ describe("screen frame preview", () => {
     expect(html).toContain("aria-label=\"Preview Bot&#x27;s screen\"");
     expect(html).toContain("src=\"/api/threads/t1/messages/shot%201/image\"");
     expect(html).toContain("alt=\"Bot&#x27;s screen\"");
-    // the zoom badge shows on hover and keyboard focus only
     expect(html).toContain("group-hover/image:opacity-100");
     expect(html).toContain("group-focus-within/image:opacity-100");
-    // the frame keeps its transcript sizing
-    expect(html).toContain("max-w-[min(42rem,78%)]");
+    expect(html).toContain("max-w-[min(var(--chat-bubble-max),var(--chat-bubble-pct))]");
     expect(html).not.toContain("role=\"dialog\"");
   });
 

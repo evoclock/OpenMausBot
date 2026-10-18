@@ -2,24 +2,17 @@ import { retryDelay, unreadableRecord } from "./managed-desktop.mjs";
 
 const DAY = 24 * 60 * 60_000;
 const RETRY = 60 * 60_000;
-// After the company connection returns, an overdue backup waits this long so
-// the person can see (and turn off) the schedule before anything uploads.
 const RESUME_DELAY = 15 * 60_000;
 const validTime = value => Number.isSafeInteger(value) && value >= 0;
 const usableSchedule = saved => Boolean(saved) && [1, 2].includes(saved.version) && typeof saved.scope === "string" && saved.scope.length <= 8192 &&
   validTime(saved.nextBackupAt) && (saved.lastAttemptAt === undefined || validTime(saved.lastAttemptAt)) && (saved.lastBackupAt === undefined || validTime(saved.lastBackupAt));
 const sameScope = (left, right) => Boolean(left && right && left.key === right.key && left.generation === right.generation);
-/** A schedule saved under an older key form for this same authority. */
 const legacyScope = (record, authority) => Boolean(record && authority && record.scope !== authority.key && authority.adopts?.(record.scope));
 
-/** One opt-in schedule for this desktop workspace. The encrypted store and
- * transfer are injected so this never owns a second credential or upload path. */
 export function createCompanyBackupSchedule({ store, scope, run, onState = () => {}, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout }) {
   let record = null, revision = 0, timer = null, closed = false, started = false;
   let controller = null, operation = null, status = "off", message, needsClear = false, awaitingAuthority = false;
-  // Reading a schedule that may only be locked again; never the backup timer, which any connection change re-arms.
-  // While it waits for that read the schedule still counts as on, so the switch offers Off, and Off removes it without the keychain.
   let restoreTimer = null, restoreFailures = 0, restorePending = false;
   const snapshot = () => ({ enabled: Boolean(record) || needsClear || restorePending, status, ...(record ? {
     nextBackupAt: record.nextBackupAt,
@@ -33,7 +26,6 @@ export function createCompanyBackupSchedule({ store, scope, run, onState = () =>
   const arm = () => {
     stopTimer();
     if (!closed && started && record && !operation) {
-      // ponytail: one hourly retry, no missed-day queue or background OS job.
       const authority = scope();
       let delay = authority ? Math.max(1000, Math.min(DAY, record.nextBackupAt - now())) : RETRY;
       if (authority && awaitingAuthority) { awaitingAuthority = false; delay = Math.max(delay, RESUME_DELAY); }
@@ -56,7 +48,6 @@ export function createCompanyBackupSchedule({ store, scope, run, onState = () =>
     }
     return snapshot();
   }
-  /** Rewrites a legacy key in place; never turns the schedule off. */
   async function adopt(authority) {
     const stamp = revision, adopted = { ...record, scope: authority.key };
     await store.write(adopted);
@@ -68,7 +59,6 @@ export function createCompanyBackupSchedule({ store, scope, run, onState = () =>
     if (legacyScope(record, authority)) { try { await adopt(authority); } catch { publish("error", "Daily backups could not be updated. Unlock your system keychain; they will retry in an hour."); arm(); return; } }
     if (authority && authority.key !== record.scope) { await forget(); return; }
     if (!authority) { awaitingAuthority = true; publish("paused", "Daily backups will resume when this installation and the company connection are available."); arm(); return; }
-    // Once the connection or a locked schedule is back, an overdue backup still waits RESUME_DELAY (arm()).
     if (record.nextBackupAt > now() || awaitingAuthority) { publish("waiting"); arm(); return; }
     const stamp = revision, abort = new AbortController();
     controller = abort;
@@ -105,15 +95,12 @@ export function createCompanyBackupSchedule({ store, scope, run, onState = () =>
     }
   }
   const RESTORE_WAITING = "The saved daily backup schedule can't be read right now. OpenMausBot tries again every minute.";
-  /** Reads the saved schedule. One that can never be read is removed and the
-   * schedule is off, saying so. One that may only be locked (the keychain) is
-   * kept, never removed, and read again shortly. */
+  /** A schedule that may only be locked in the keychain is kept, never removed, and read again shortly. */
   async function restore() {
     const stamp = revision;
     let saved, failed = false, unreadable = false;
     try { saved = await store.read(); } catch (error) { failed = true; unreadable = unreadableRecord(error); }
     if (!current(stamp)) return snapshot();
-    // Read, but not a schedule this app can use: as unreadable as a record the key no longer opens.
     if (!failed && saved !== null && !usableSchedule(saved)) failed = unreadable = true;
     if (unreadable) {
       const removed = await store.write(null).then(() => true, () => false);
@@ -128,7 +115,7 @@ export function createCompanyBackupSchedule({ store, scope, run, onState = () =>
       restoreTimer?.unref?.();
       return snapshot();
     }
-    // A schedule that was waiting for the keychain shows first; nothing uploads the moment it opens.
+    // Nothing uploads the moment a locked schedule opens.
     if (restorePending && saved !== null) awaitingAuthority = true;
     restoreFailures = 0; restorePending = false;
     try {

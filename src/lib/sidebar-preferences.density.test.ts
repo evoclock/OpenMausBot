@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The sidebar header and Settings → Appearance share one density store; these
-// tests pin that a change from either side reaches every mounted consumer.
 const hook = vi.hoisted(() => ({
   subscribe: undefined as undefined | ((listener: () => void) => () => void),
   snapshot: undefined as undefined | (() => string),

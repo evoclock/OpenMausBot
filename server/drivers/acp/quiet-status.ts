@@ -1,23 +1,13 @@
-// What an ACP agent is doing while it sends nothing.
-//
-// ACP has no "still working" message, and agents go quiet for minutes in
-// normal work: Qwen Code 0.24 says nothing over the wire while it waits out
-// a rate limit, while its SDK retries a request, or while one slow model
-// call runs. Silence alone cannot tell that from a wedged process, so a
-// quiet turn is probed from outside: the agent's own debug log where it
-// keeps one, and the process tree's open connections and CPU time. The
-// result becomes a plain-words notice in the chat, so the person is never
-// left watching a spinner without knowing why.
+// What a quiet ACP agent is doing. ACP has no "still working" message, and agents go silent for minutes
+// (Qwen Code 0.24 while it waits out a rate limit, retries, or runs a slow call), so a quiet turn is
+// probed from the agent's debug log and its process tree's connections and CPU.
 
 import { execFile } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
-/** One fact an agent's debug log states about what it is doing. */
 export type LogSignal =
   | { kind: "retry"; status: number | null; delayMs: number | null; attempt: number | null }
   | { kind: "compressing" }
-  /** history size against the auto-compression threshold, from the
-   * cheap gate's NOOP line: a near-full history is likely compressed next */
   | { kind: "context"; tokens: number; threshold: number };
 
 export type QuietState =
@@ -25,8 +15,7 @@ export type QuietState =
   | { kind: "compressing" }
   | { kind: "waiting-model"; nearFullContext: boolean }
   | { kind: "busy" }
-  /** no connection, no CPU, briefly: an SDK sleeping between retries
-   * looks exactly like this, so it is not called stuck yet */
+  /** no connection, no CPU, briefly: an SDK sleeping between retries looks like this */
   | { kind: "between-requests" }
   | { kind: "no-signs" }
   | { kind: "unknown" };
@@ -39,9 +28,7 @@ export interface ProcessSample {
 }
 
 /** Qwen Code's debug log (QWEN_DEBUG_LOG_FILE=1), lines like
- *  `2026-10-02T02:50:41.757Z [WARN] [RETRY] Attempt 1 failed with status 429. Retrying after explicit delay of 20000ms...`.
- *  Only the facts worth telling a person are parsed; every other line still
- *  counts as proof the process is alive. */
+ *  `2026-10-02T02:50:41.757Z [WARN] [RETRY] Attempt 1 failed with status 429. Retrying after explicit delay of 20000ms...`. */
 export function parseQwenLogLine(line: string): LogSignal | null {
   if (line.includes("[RETRY]") && /\bAttempt \d+ failed\b/.test(line)) {
     const attempt = /\bAttempt (\d+) failed/.exec(line);
@@ -64,9 +51,6 @@ export function parseQwenLogLine(line: string): LogSignal | null {
   return null;
 }
 
-/** Reads the lines appended to a log file since the last read. A file that
- *  does not exist yet is simply empty; the first read skips what was already
- *  there, so an old conversation's log is not replayed as news. */
 export class LogTail {
   private offset: number | null = null;
   private partial = "";
@@ -91,10 +75,8 @@ export class LogTail {
         this.offset = size;
         return [];
       }
-      // truncated or replaced: start over from its beginning
       if (size < this.offset) { this.offset = 0; this.partial = ""; }
       if (size === this.offset) return [];
-      // a burst bigger than the cap keeps only its tail
       const start = Math.max(this.offset, size - this.maxBytes);
       if (start > this.offset) this.partial = "";
       const buf = Buffer.alloc(size - start);
@@ -129,7 +111,6 @@ function psTimeMs(raw: string): number | null {
   return ((Number(d ?? 0) * 24 + Number(h ?? 0)) * 60 + Number(min)) * 60_000 + Number(s) * 1000;
 }
 
-/** The root and every descendant, from a `pid ppid ...` table. */
 export function treePids(rows: Array<{ pid: number; ppid: number }>, root: number): number[] {
   const kids = new Map<number, number[]>();
   for (const r of rows) {
@@ -186,24 +167,18 @@ async function sampleWindows(root: number): Promise<ProcessSample> {
   };
 }
 
-/** CPU time and open connections of a process and its children. Best
- *  effort: a missing tool or a refused query reads as null (unknown), never
- *  as "idle". */
+/** A missing tool or a refused query reads as null (unknown), never as idle. */
 export function sampleProcessTree(pid: number): Promise<ProcessSample> {
   return (process.platform === "win32" ? sampleWindows(pid) : samplePosix(pid))
     .catch(() => ({ cpuMs: null, connections: null }));
 }
 
-/** CPU a process tree can burn on bookkeeping while doing no real work. */
 const BUSY_CPU_MS_PER_MIN = 3_000;
 
 export function classifyQuiet(input: {
-  /** the latest retry/compress fact logged since the agent went quiet */
   logged: LogSignal | null;
-  /** the most recent history-size reading, at any time */
   context: { tokens: number; threshold: number } | null;
   sample: ProcessSample;
-  /** the previous sample in this quiet spell, for the CPU delta */
   previous: ProcessSample | null;
   sinceMs: number;
 }): QuietState {
@@ -219,8 +194,6 @@ export function classifyQuiet(input: {
   return { kind: "unknown" };
 }
 
-/** Two states read the same to a person when this matches; a notice is
- *  sent only when it changes. */
 export function quietKey(state: QuietState): string {
   if (state.kind === "retrying") return `retrying:${state.attempt ?? "?"}:${state.status ?? "?"}`;
   if (state.kind === "waiting-model") return `waiting-model:${state.nearFullContext}`;
@@ -232,7 +205,6 @@ const minutes = (ms: number): string => {
   return `${Math.round(ms / 60_000)} min`;
 };
 
-/** The chat notice for a quiet state. */
 export function describeQuiet(name: string, state: QuietState, quietMs: number, stopAfterMs: number): string {
   const quiet = minutes(quietMs);
   switch (state.kind) {
@@ -264,7 +236,6 @@ export function describeQuiet(name: string, state: QuietState, quietMs: number, 
   }
 }
 
-/** A short phrase for the final stuck error: what the agent looked like last. */
 export function lastSeenPhrase(state: QuietState): string {
   switch (state.kind) {
     case "retrying": return "retrying a failed model request";

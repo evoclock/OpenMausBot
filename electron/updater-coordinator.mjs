@@ -1,33 +1,31 @@
-// `handOffInstall` swaps the terminal step: instead of quitting and letting
-// electron-updater run the installer, the downloaded file is handed to the
-// user. Ubuntu system packages use it — see electron/updater.mjs for why a
-// chat app must not run dpkg itself. Everything before the install is shared.
-// It receives the staged paths and resolves with an optional state patch
-// describing what is left to do, which the card renders.
 import { updateErrorMessage, updateErrorNeedsPerson } from "./update-errors.mjs";
+
+/** electron-updater's GitHub provider gives the release body (HTML); a multi-release feed gives [{ version, note }]. */
+export function releaseNotesText(notes) {
+  const text = typeof notes === "string"
+    ? notes
+    : Array.isArray(notes)
+      ? notes.map((entry) => (typeof entry?.note === "string" ? entry.note : "")).filter(Boolean).join("\n")
+      : "";
+  const trimmed = text.trim();
+  return trimmed ? trimmed.slice(0, 8000) : undefined;
+}
 
 export function createUpdaterCoordinator(updater, setState, { handOffInstall = null, nativeStaging = false } = {}) {
   let checkOperation = null;
-  // Set from downloadUpdate's resolution: the paths electron-updater staged.
-  // Only the hand-off needs them; quitAndInstall reads its own copy.
   let downloadedFiles = null;
   let downloadOperation = null;
   let installOperation = null;
   let nativeStagingStarted = false;
   let nativeReady = false;
-  // Squirrel has no cancellation or attempt ID. After a staging failure a
-  // second attempt could consume the first attempt's late ready event.
+  // Squirrel has no cancellation or attempt ID: a retry could consume a failed attempt's late ready event.
   let recoveryRequired = false;
-  // A staged update, install hand-off, or failed user action remains useful
-  // until the user acts again. Hourly checks must not replace its controls.
+  // A staged update, hand-off or failed action stays until the person acts; hourly checks must not replace it.
   let actionOwnsState = false;
   const routedErrors = new WeakSet();
 
   const routeError = (manual, error) => {
     if (recoveryRequired) return;
-    // Nobody asked, and it may pass by itself (offline, a server hiccup): stay
-    // quiet and let the next check try again. A failure only the person can
-    // fix is shown, and waits for them instead of downloading every hour.
     const shown = manual || updateErrorNeedsPerson(error);
     actionOwnsState = shown;
     if (error instanceof Error) routedErrors.add(error);
@@ -70,24 +68,22 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
   updater.on("checking-for-update", () => {
     if (checkOwnsState()) setState({ status: "checking" });
   });
-  // Updates download by themselves; only the restart waits for the person.
-  // This is the one place a download starts. Its failure is shown when the
-  // person asked for this check, or when only they can fix it (routeError).
   updater.on("update-available", (info) => {
     if (checkOwnsState()) {
-      download(Boolean(checkOperation?.manual), { version: info?.version, percent: undefined, message: undefined });
+      download(Boolean(checkOperation?.manual), {
+        version: info?.version,
+        releaseNotes: releaseNotesText(info?.releaseNotes),
+        percent: undefined,
+        message: undefined,
+      });
     }
   });
   updater.on("update-not-available", () => {
     if (checkOwnsState()) setState({ status: "idle" });
   });
-  // downloadUpdate/checkForUpdates reject after most updater errors, but the
-  // macOS native staging pass used by quitAndInstall is event-only. Without
-  // this listener a Squirrel.Mac failure leaves the renderer on "Restarting"
-  // forever because quitAndInstall itself returns void.
+  // macOS native staging (quitAndInstall) reports failure only through this event; quitAndInstall returns void.
   updater.on("error", (error) => {
-    // Shared error events do not identify their operation. If a download
-    // overtook a check, let their individual promises route failures instead.
+    // Shared error events do not identify their operation.
     if (checkOperation?.supersededByDownload && !installOperation) return;
     const manual = Boolean(installOperation || downloadOperation?.manual || checkOperation?.manual || nativeStagingStarted);
     routeError(manual, error);
@@ -98,9 +94,7 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
   });
   updater.on("update-downloaded", (info) => {
     if (recoveryRequired || installOperation) return;
-    // On macOS electron-updater emits this before Squirrel.Mac has finished
-    // staging the ZIP. Our vendor patch resolves downloadUpdate only on the
-    // native ready event, not merely when the local ZIP transfer finishes.
+      // On macOS electron-updater emits this before Squirrel.Mac finishes staging; the vendor patch resolves downloadUpdate on the native ready event.
     if (downloadOperation) {
       downloadOperation.downloadedInfo = info;
       if (nativeStaging && !nativeStagingStarted) {
@@ -114,18 +108,15 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
       }
       return;
     }
-    // No native attempt may become actionable from an uncorrelated late event.
     if (nativeStaging) return;
     actionOwnsState = true;
     setState({ status: "downloaded", version: info?.version });
   });
 
   function check(manual = false) {
-    // Asking while an update downloads makes its outcome the person's to see.
     if (manual && downloadOperation) downloadOperation.manual = true;
     if (recoveryRequired || installOperation || (nativeStaging && (downloadOperation || nativeStagingStarted)) || (!manual && actionOwnsState)) return Promise.resolve();
     if (checkOperation) {
-      // A manual caller upgrades the shared operation; a timer never downgrades it.
       if (manual) checkOperation.manual = true;
       return checkOperation.promise;
     }
@@ -149,19 +140,13 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
     return operation.promise;
   }
 
-  // Only an update a check found starts here (checkOwnsState: nothing else
-  // downloads, installs or awaits recovery). `manual`: the person asked
-  // (their check), so a failure is theirs to see. `starting`: what the check
-  // found, shown from the first "downloading".
   function download(manual, starting) {
     if (recoveryRequired || installOperation || nativeStagingStarted) return;
     if (checkOperation) checkOperation.supersededByDownload = true;
 
     const operation = { downloadedInfo: null, failed: false, manual, timer: null };
     downloadOperation = operation;
-    // Own the state before the request goes out: the first "download-progress"
-    // can be seconds away (connection setup, redirects). No percent yet — the
-    // UI reads a missing percent as "starting".
+      // Own the state before the request: the first progress event can be seconds away, and no percent reads as "starting".
     setState({ status: "downloading", ...starting });
     try {
       void Promise.resolve(updater.downloadUpdate())
@@ -202,8 +187,7 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
       routeError(true, error);
       return;
     }
-    // quitAndInstall is void and cannot be canceled. A slow handoff must stay
-    // busy: exposing Retry here used to arm another native quit callback.
+      // quitAndInstall is void and cannot be canceled: a Retry here would arm another native quit callback.
     if (installOperation === operation) {
       operation.timer = setTimeout(() => {
         if (installOperation !== operation) return;
@@ -214,9 +198,6 @@ export function createUpdaterCoordinator(updater, setState, { handOffInstall = n
     }
   }
 
-  // The platform owns the install from here: a terminal opens with the
-  // command on the clipboard and the user finishes there. No quit — the
-  // running app stays usable, and the new version is picked up next launch.
   function handOff() {
     const operation = { failed: false, timer: null };
     installOperation = operation;

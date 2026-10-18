@@ -241,6 +241,64 @@ describe("connector MCP bridge", () => {
     expect(JSON.stringify(reply)).not.toContain("upstream-secret");
   });
 
+  it("tells the bot to reconnect an app whose sign-in ended, and leaves successful results alone", async () => {
+    const answers = [
+      {
+        content: [{ type: "text", text: JSON.stringify({
+          successful: false,
+          data: { results: [{ tool_slug: "GMAIL_FETCH_EMAILS", response: { successful: false, error: "USER_NOT_LOGGED_IN: connect the account" } }] },
+        }) }],
+        isError: true,
+      },
+      { content: [{ type: "text", text: JSON.stringify({ successful: true, data: { subject: "HTTP 401 explained" } }) }] },
+    ];
+    const upstream = await listen((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        const { id } = JSON.parse(body);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ jsonrpc: "2.0", id, result: answers.shift() }));
+      });
+    });
+    const lines = start({ OMB_CONNECTOR_UPSTREAM_URL: upstream });
+    const call = (id: number) => child!.stdin.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "COMPOSIO_MULTI_EXECUTE_TOOL", arguments: { tools: [{ tool_slug: "GMAIL_FETCH_EMAILS", arguments: {} }] } },
+    })}\n`);
+    call(31);
+    const signedOut = await nextJson(lines);
+    expect(signedOut.result.content).toHaveLength(2);
+    expect(signedOut.result.content[1].text).toMatch(/gmail is signed out/);
+    expect(signedOut.result.content[1].text).toContain('Call COMPOSIO_MANAGE_CONNECTIONS with toolkits ["gmail"]');
+    call(32);
+    const fine = await nextJson(lines);
+    expect(fine.result.content).toHaveLength(1);
+  });
+
+  it("asks for tools/list once more before giving up, so one failed listing does not empty the session", async () => {
+    let listings = 0;
+    const upstream = await listen((request, response) => {
+      request.resume();
+      request.on("end", () => {
+        listings += 1;
+        if (listings === 1) {
+          response.writeHead(503, { "content-type": "application/json" });
+          return response.end(JSON.stringify({ error: "connected apps are busy" }));
+        }
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: 41, result: { tools: [{ name: "COMPOSIO_MANAGE_CONNECTIONS" }] } }));
+      });
+    });
+    const lines = start({ OMB_CONNECTOR_UPSTREAM_URL: upstream, OMB_CONNECTOR_ALLOWED_TOOLS: "{}" });
+    child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 41, method: "tools/list", params: {} })}\n`);
+    const reply = await nextJson(lines);
+    expect(listings).toBe(2);
+    expect(reply.result.tools).toEqual([{ name: "COMPOSIO_MANAGE_CONNECTIONS" }]);
+  });
+
   it("returns a JSON-RPC error, not a tools result, when a non-call relay fails", async () => {
     const lines = start({});
     child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} })}\n`);

@@ -41,7 +41,6 @@ describe("provider presets table", () => {
       if (preset.catalogId) expect(catalog[preset.catalogId], preset.id).toBeDefined();
       else expect(preset.env, preset.id).toMatch(/^[A-Z][A-Z0-9_]*$/);
     }
-    // Cline's credits plan is not in models.dev; its ClinePass plan is.
     expect(providerPreset("cline-credits")?.catalogId).toBeUndefined();
     expect(catalog["cline-credits"]).toBeUndefined();
   });
@@ -57,7 +56,6 @@ describe("provider presets table", () => {
       minimax: "https://api.minimax.io/anthropic",
       opencode: "https://opencode.ai/zen",
     });
-    // Bearer is fixed only where the provider documents it.
     expect(providerPreset("openrouter")?.anthropic?.auth).toBe("bearer");
     expect(providerPreset("deepseek")?.anthropic?.auth).toBeUndefined();
   });
@@ -91,7 +89,6 @@ describe("Codex rules", () => {
     expect(codexVerdict({ preset: groq, responses: "works", experimental: false })).toEqual({ use: "no", reason: "experimental-off" });
     expect(codexVerdict({ preset: groq, responses: "works", experimental: true })).toEqual({ use: "experimental" });
     expect(codexVerdict({ preset: groq, responses: "missing", experimental: true })).toEqual({ use: "no", reason: "route-missing" });
-    // A custom provider has no preset: the same experimental rule applies.
     expect(codexVerdict({ preset: undefined, responses: "works", experimental: true })).toEqual({ use: "experimental" });
     expect(codexVerdict({ preset: undefined, responses: "works", experimental: false })).toEqual({ use: "no", reason: "experimental-off" });
   });
@@ -111,7 +108,6 @@ describe("Codex rules", () => {
     expect(codexVerdict({ preset: fireworks, responses: "works", experimental: false, key: "fw_abc123" })).toEqual({ use: "yes" });
     expect(codexModels(fireworks, ["accounts/fireworks/models/minimax-m2p5", "accounts/fireworks/models/MiniMax-M3", "accounts/fireworks/models/glm-5"]))
       .toEqual(["accounts/fireworks/models/glm-5"]);
-    // The deny rules belong to Fireworks alone.
     expect(codexModels(openrouter, ["minimax/minimax-m2"])).toEqual(["minimax/minimax-m2"]);
     expect(codexVerdict({ preset: openrouter, responses: "works", experimental: false, key: "fpk_abc" })).toEqual({ use: "yes" });
   });

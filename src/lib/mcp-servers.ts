@@ -1,7 +1,3 @@
-// The app-wide MCP server list (Plugins → MCP servers), shared by every
-// place that shows it per bot, such as the Access section's switches.
-// One fetch, cached for the window; `refresh` after
-// the Plugins panel changes the list.
 import { useEffect, useSyncExternalStore } from "react";
 
 import { api } from "@/state/store";
@@ -21,7 +17,6 @@ const subscribe = (listener: () => void) => {
   return () => { listeners.delete(listener); };
 };
 
-/** Publish an authoritative read or mutation result without another request. */
 export function updateMcpServers(servers: McpServerSummary[]): void {
   generation += 1;
   inflight = null;
@@ -51,21 +46,14 @@ export function loadMcpServers(force = false): Promise<McpServerSummary[]> {
   return inflight;
 }
 
-/** The list, or null until the first load settles. Re-renders when any
- * caller refreshes it. */
 export function useMcpServers(): { servers: McpServerSummary[] | null; error: boolean; refresh: () => Promise<McpServerSummary[]> } {
   const current = useSyncExternalStore(subscribe, snapshot, snapshot);
   useEffect(() => {
-    // Keep the instant cached view, but pick up edits from another window
-    // or the config CLI whenever Access is opened again.
     void loadMcpServers(true);
   }, []);
   return { ...current, refresh: () => loadMcpServers(true) };
 }
 
-/** The servers a bot actually mounts: its own list when it has one (names
- * that no longer exist fall away), else every enabled server. Mirrors
- * server/config.ts customMcpServers so the controls and the turn agree. */
 export function mcpServersForBot(all: McpServerSummary[], own: string[] | null | undefined): McpServerSummary[] {
   const enabled = all.filter((server) => server.enabled);
   if (own == null) return enabled;

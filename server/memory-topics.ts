@@ -1,11 +1,6 @@
-// The topic index: one line per memory/<topic>.md, so a bot knows what its
-// longer notes cover without a pointer in MEMORY.md. A topic may begin with
-// YAML frontmatter (`title`, `description`, `aliases`); aliases are the other
-// words someone might search with, which matters because every lookup here
-// is word matching, not meaning. Only the head of each file is read.
+// A memory/<topic>.md may begin with YAML frontmatter: `title`, `description`, `aliases`.
 import { closeSync, openSync, readSync } from "node:fs";
 
-/** How much of a topic file is read to find its frontmatter. */
 const HEAD_BYTES = 2_048;
 export const TOPIC_INDEX_MAX_TOPICS = 40;
 export const TOPIC_INDEX_MAX_CHARS = 2_000;
@@ -22,13 +17,8 @@ function unquote(value: string): string {
   return v;
 }
 
-/** The frontmatter fields the index uses. Anything else, or no frontmatter,
- * reads as an empty header — a hand-written topic is still listed by name. */
 export function parseTopicHeader(text: string): TopicHeader {
   const header: TopicHeader = { aliases: [] };
-  // People write a "# Title" first and the block under it (the panel's own
-  // new-topic text used to), so a heading and blank lines may come before the
-  // block; the heading is the title when the block names none.
   const lead = /^(?:\s*\r?\n|#{1,6}[ \t]+[^\r\n]*\r?\n)*/.exec(text)?.[0] ?? "";
   const heading = /^#{1,6}[ \t]+([^\r\n]+)/m.exec(lead)?.[1]?.trim();
   const m = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text.slice(lead.length));
@@ -45,7 +35,6 @@ export function parseTopicHeader(text: string): TopicHeader {
       if (value.trim()) header[key] = unquote(value).slice(0, 160);
       continue;
     }
-    // aliases (and tags, which people use the same way): [a, b] or a list below
     const items: string[] = [];
     if (value.trim().startsWith("[")) {
       items.push(...value.trim().replace(/^\[|\]$/g, "").split(","));
@@ -63,14 +52,11 @@ export function parseTopicHeader(text: string): TopicHeader {
   return header;
 }
 
-/** The words a topic answers to: its file name, title, description and
- * aliases, lower-cased, for matching a message against without a search. */
 export function topicWords(name: string, header: TopicHeader): string[] {
   const text = [name.replace(/\.md$/i, "").replace(/[-_.]+/g, " "), header.title ?? "", header.description ?? "", ...header.aliases].join(" ");
   return [...new Set(text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 3))];
 }
 
-/** A topic's text without its header block, for a recalled passage. */
 export function topicBody(text: string): string {
   const lead = /^(?:\s*\r?\n|#{1,6}[ \t]+[^\r\n]*\r?\n)*/.exec(text)?.[0] ?? "";
   const rest = text.slice(lead.length).replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
@@ -91,8 +77,6 @@ export function readTopicHead(path: string): string {
   }
 }
 
-/** One line per topic, capped by count and length. The archive is listed
- * last and labelled, so it is not mistaken for current notes. */
 export function renderTopicIndex(topics: ReadonlyArray<{ name: string; header: TopicHeader }>): string {
   if (!topics.length) return "";
   const ordered = [...topics].sort((a, b) => Number(a.name === "archive.md") - Number(b.name === "archive.md") || a.name.localeCompare(b.name));
@@ -127,10 +111,6 @@ function aliasList(aliases: readonly string[]): string {
   return `[${aliases.join(", ")}]`;
 }
 
-/** A topic file with new entry lines appended and new aliases merged into its
- * header — created, header first, when it does not exist yet. The header is
- * what the topic index and recall read, so a topic the bot files for itself
- * is found by the other words it was given. */
 export function mergeTopicText(existing: string | null, input: { title: string; aliases: readonly string[]; lines: readonly string[] }): string {
   const lines = input.lines.join("\n");
   if (existing === null || !existing.trim()) {
@@ -155,7 +135,6 @@ export function mergeTopicText(existing: string | null, input: { title: string; 
       const at = body.findIndex((line) => /^aliases\s*:/.test(line));
       if (at === -1) body.push(`aliases: ${aliasList(merged)}`);
       else {
-        // a multi-line list under aliases: is replaced by the one-line form
         let end = at + 1;
         while (end < body.length && /^\s*-\s+/.test(body[end]!)) end += 1;
         body.splice(at, end - at, `aliases: ${aliasList(merged)}`);

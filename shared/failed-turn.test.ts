@@ -12,8 +12,6 @@ describe("a failed turn's row", () => {
   });
 
   it("keeps a long cause's next action, whichever path wrote it", () => {
-    // the direct path's automatic-recovery wording used to lose the
-    // original error's last sentence at 160 characters, a room's at 140
     const cause = `Automatic recovery unavailable: ${"the backup engine cannot run this thread here. ".repeat(5)}Original error: Your Pro plan includes 2 cloud computers at once. Delete one to start another.`;
     expect(cause.length).toBeGreaterThan(320);
     expect(failedTurnCause(failedTurnTool(cause).name)).toBe(cause);
@@ -32,10 +30,11 @@ describe("a failed turn's row", () => {
   });
 
   it("is the only way the server writes one", () => {
-    // a hand-written row is how one path ended up with its own cut
     const dir = new URL("../server/", import.meta.url);
     const handWritten = readdirSync(dir, { recursive: true, encoding: "utf8" })
-      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.includes("testing"))
+      .map((file) => file.replaceAll("\\", "/"))
+      // server/headless is the openmausbot command line: it prints errors to a terminal and never writes a turn row
+      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.includes("testing") && !file.replaceAll("\\", "/").startsWith("headless/"))
       .flatMap((file) => readFileSync(new URL(file, dir), "utf8").split("\n")
         .filter((line) => /["'`]error: /.test(line))
         .map((line) => `${file}: ${line.trim()}`));

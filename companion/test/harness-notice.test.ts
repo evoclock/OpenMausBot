@@ -1,6 +1,3 @@
-// The companion's notice to the harness that it unpaired a phone. It travels
-// the relay's own authenticated path: loopback, the companion's marker, the
-// device id, and the private relay token when the desktop app holds one.
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";

@@ -1,9 +1,4 @@
-// How the proxy prepares a response body, against a stub harness.
-//
-// proxy.test.ts boots the real harness and is the right place for anything
-// about the seam between the two. This file is the opposite: a harness stub
-// that can be made to return exactly the pathological body a test needs,
-// which is the only way to reach the failure branches below.
+// A stub harness, so a test can get exactly the pathological body it needs.
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -29,7 +24,6 @@ let companionMarker = "";
 let companionDevice = "";
 let companionRange = "";
 let endpointCandidates: CompanionEndpoint[] = [];
-/** What the stub harness answers with next. Set per test. */
 let respond: (res: ServerResponse) => void = (res) => res.end();
 
 const listen = (server: Server): Promise<number> =>
@@ -38,7 +32,6 @@ const listen = (server: Server): Promise<number> =>
 const close = (server: Server | undefined): Promise<void> =>
   new Promise((resolve) => (server ? server.close(() => resolve()) : resolve()));
 
-/** A request as a paired device makes it. */
 const device = async (
   path = "/api/bots",
   method = "GET",
@@ -173,23 +166,15 @@ describe("preparing a harness response for a device", () => {
     expect(joinUrl).toContain("password=vm-secret");
     expect(joinUrl).not.toContain("127.0.0.1:45679");
 
-    // Without a control lease the address never reaches the device.
     const refused = await device("/api/bots/b1/local-computer/join", "POST");
     expect(refused.status).toBe(502);
     expect(refused.text).not.toContain("vm-secret");
   });
 
   it("never forwards a body it could not scrub", async () => {
-    // `scrub` recurses once per level, so a deeply nested body throws
-    // RangeError while JSON.parse handles it without complaint. That gap is
-    // the whole bug: parse-then-scrub under one try/catch treated the throw
-    // as "not JSON after all" and sent the untouched body on to the phone.
-    //
-    // How deep it takes is a property of the runtime's stack, not of this
-    // code, so the assertion is the invariant and not the branch: whatever
-    // comes back is never a success carrying the field the scrubber removes.
-    // On a stack deep enough to scrub this that is a clean 200; on one that
-    // throws it is a 502. The raw body is not among the outcomes.
+    // `scrub` recurses, so deep nesting throws RangeError where JSON.parse does
+    // not. Stack depth belongs to the runtime, so the assertion is the
+    // invariant: never a success carrying the field the scrubber removes.
     respond = (res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(deeplyNested);
@@ -201,9 +186,7 @@ describe("preparing a harness response for a device", () => {
   });
 
   it("answers 502 when scrubbing actually throws", async () => {
-    // The branch above, pinned only on a runtime that reaches it — checked
-    // here rather than assumed, so this reports "not exercised" instead of
-    // failing on a platform with a deeper stack.
+    // Checked rather than assumed, so a deeper stack reports "not exercised".
     let scrubThrows = false;
     try {
       scrub(JSON.parse(deeplyNested));
@@ -223,9 +206,7 @@ describe("preparing a harness response for a device", () => {
   });
 
   it("passes a body through untouched when it was never JSON", async () => {
-    // The tolerant half of the same branch, and the reason it cannot simply
-    // fail closed on everything: a content-type that lies is common enough,
-    // and there is nothing to redact in bytes we cannot read as an object.
+    // A lying content-type is common, and unreadable bytes hold nothing to redact.
     respond = (res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end("this is not JSON at all");
@@ -234,6 +215,18 @@ describe("preparing a harness response for a device", () => {
     const { status, text } = await device();
     expect(status).toBe(200);
     expect(text).toBe("this is not JSON at all");
+  });
+
+  it("passes a Live call's 402 Pro refusal through unchanged", async () => {
+    const refusal = { error: "Live calls from your phone need a Pro plan.", needsPro: true };
+    respond = (res) => {
+      res.writeHead(402, { "content-type": "application/json" });
+      res.end(JSON.stringify(refusal));
+    };
+
+    const { status, text } = await device("/api/live/session", "POST", JSON.stringify({ botId: "b1", sdp: "v=0", client: "ios" }));
+    expect(status).toBe(402);
+    expect(JSON.parse(text)).toEqual(refusal);
   });
 
   it("scrubs a well-formed body and re-frames it", async () => {

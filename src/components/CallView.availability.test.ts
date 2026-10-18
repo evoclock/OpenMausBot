@@ -34,9 +34,6 @@ describe("call capability guidance", () => {
     }), true)).toBeNull();
   });
 
-  // The Mac app on a server's page (My Cloud): taking turns works on This
-  // computer, but the help sends nobody there. Leaving would leave the bot
-  // being called; the call on this page is Live.
   it("says where taking turns works on a server's page in the Mac app, with no trip there", () => {
     const help = callCapabilityHelp(capabilities({
       available: false,
@@ -51,8 +48,6 @@ describe("call capability guidance", () => {
     expect(help).not.toHaveProperty("action");
   });
 
-  // Only a Mac's own window can take turns. Elsewhere This computer can't
-  // either, so the help names no trip there; the Live button is the way on.
   it.each(["win32", "linux"] as const)("sends nobody on %s to This computer, which can't take turns either", (platform) => {
     const help = callCapabilityHelp(capabilities({
       available: false,
@@ -66,8 +61,6 @@ describe("call capability guidance", () => {
     });
   });
 
-  // A browser can make Live calls (the button under this help starts one), so
-  // the help says only what needs the Mac app: taking turns.
   it("tells a browser user only taking turns needs the Mac app", () => {
     const help = callCapabilityHelp(capabilities({
       available: false,
@@ -81,7 +74,6 @@ describe("call capability guidance", () => {
     });
   });
 
-  // Live calls work on Windows and Linux: only taking turns needs the Mac.
   it("says only taking turns needs the Mac app on a non-Mac desktop", () => {
     const help = callCapabilityHelp(capabilities({
       available: false,

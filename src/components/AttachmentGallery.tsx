@@ -1,6 +1,5 @@
-// A compact message-level gallery. Image pixels keep the existing attachment
-// path validation; local files and videos only load after an explicit action
-// through the server's exact-message file authorization.
+// Security: local files and videos load only after an explicit action, through the server's exact-message file
+// authorization.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { ChevronDown, ChevronUp, Download, Film, LoaderCircle, Music, Play, X } from "lucide-react";
@@ -21,7 +20,6 @@ import {
 } from "./AttachmentPreview";
 
 export interface GalleryFile extends TranscriptFileAttachment {
-  /** The file came from a rendered Markdown link rather than a user upload. */
   linked?: boolean;
 }
 
@@ -32,17 +30,13 @@ type MarkdownNode = {
   children?: MarkdownNode[];
 };
 
-function fileIdentity(path: string): string {
-  // This is only presentation deduplication, never an authorization check.
-  // localFilePath has already decoded file:// once, including literal #/?
-  // characters in filenames. Only raw Markdown paths have suffixes to strip.
+export function fileIdentity(path: string): string {
+  // Presentation deduplication only, never an authorization check.
   if (/^file:\/\//i.test(path)) return localFilePath(path) ?? path;
   try { return decodeURIComponent(path.split(/[?#]/, 1)[0]!); }
   catch { return path; }
 }
 
-/** Real Markdown links only: prose, examples, images, and remote URLs don't
- * turn into host file cards. The server independently validates every click. */
 export function collectMessageFiles(text: string, existingPaths: readonly string[] = []): GalleryFile[] {
   const tree: MarkdownNode = fromMarkdown(text, { mdastExtensions: [windowsPathDestinations] });
   const definitions = new Map<string, string>();
@@ -53,7 +47,6 @@ export function collectMessageFiles(text: string, existingPaths: readonly string
     if (node.type === "definition" && node.identifier && node.url && !definitions.has(node.identifier)) {
       definitions.set(node.identifier, node.url);
     } else if (node.type === "link" || node.type === "linkReference") {
-      // Linked images already have a thumbnail in the Markdown renderer.
       if (!node.children?.some((child) => child.type === "image" || child.type === "imageReference")) links.push(node);
     }
     if (node.children) pending.push(...[...node.children].reverse());
@@ -66,8 +59,7 @@ export function collectMessageFiles(text: string, existingPaths: readonly string
     const identity = fileIdentity(href);
     if (seen.has(identity)) return [];
     seen.add(identity);
-    // Send the authored spelling, not the decoded display path: the server
-    // owns the one decode at its authorization/file-opening boundary.
+    // Security: send the authored spelling; the server owns the one decode at its authorization boundary.
     return [{ path: href, name: safeDownloadFilename(attachmentBasename(identity)), linked: true }];
   });
 }
@@ -83,9 +75,6 @@ export function isAudioAttachment(path: string): boolean {
 type MessageAttachmentEntry = { path: string; kind?: string; name?: string };
 const NO_GENERATED_ATTACHMENTS: readonly MessageAttachmentEntry[] = [];
 
-/** A bot message's stored attachments as the gallery wants them: image paths,
- * plus documents, audio and video attached with attach_file as private files
- * (authorized by the message itself, like a user's own upload). */
 export function splitMessageAttachments(attachments: readonly MessageAttachmentEntry[] = NO_GENERATED_ATTACHMENTS): { images: string[]; files: GalleryFile[] } {
   const images: string[] = [];
   const files: GalleryFile[] = [];
@@ -96,8 +85,30 @@ export function splitMessageAttachments(attachments: readonly MessageAttachmentE
   return { images, files };
 }
 
-/** Group/room rows can share the gallery without parsing every old message
- * on unrelated state updates. Preserve the message's original attachment array. */
+export function replyAttachmentGroup(text: string, attachments: readonly MessageAttachmentEntry[] = NO_GENERATED_ATTACHMENTS): {
+  images: string[];
+  files: GalleryFile[];
+  delivered: Record<string, string>;
+} {
+  const attached = splitMessageAttachments(attachments);
+  const links = collectMessageFiles(text);
+  const linkedNames = new Set(links.map((link) => link.name));
+  const delivered: Record<string, string> = {};
+  const files: GalleryFile[] = [];
+  const deliveredNames = new Map<string, number>();
+  for (const file of attached.files) deliveredNames.set(file.name, (deliveredNames.get(file.name) ?? 0) + 1);
+  for (const file of attached.files) {
+    if (linkedNames.has(file.name) && deliveredNames.get(file.name) === 1) delivered[file.name] = file.path;
+    else files.push(file);
+  }
+  const taken = new Set([...attached.images, ...attached.files.map((file) => file.path)].map(fileIdentity));
+  for (const link of links) {
+    if (Object.hasOwn(delivered, link.name) || taken.has(fileIdentity(link.path))) continue;
+    if (isVideoAttachment(link.path) || isAudioAttachment(link.path)) files.push(link);
+  }
+  return { images: attached.images, files, delivered };
+}
+
 export function MessageAttachmentGallery({ text, attachments = NO_GENERATED_ATTACHMENTS, message, eager, className }: {
   text: string;
   attachments?: readonly MessageAttachmentEntry[];
@@ -113,8 +124,7 @@ export function MessageAttachmentGallery({ text, attachments = NO_GENERATED_ATTA
   return <AttachmentGallery images={attached.images} files={files} message={message} eager={eager} className={className} />;
 }
 
-/** A server-provided MIME is required as well as the filename hint. Old
- * servers can still download a video but never turn arbitrary bytes into UI. */
+/** Security: the server's MIME is required as well as the filename, so arbitrary bytes never become UI. */
 export async function loadMessageVideo(
   file: GalleryFile,
   message: MessageAttachmentContext,
@@ -188,7 +198,6 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
     setLoading(false);
     setPreview(null);
     setError("");
-    // The button is hidden while the preview is mounted.
     requestAnimationFrame(() => playButton.current?.focus());
   };
 
@@ -236,8 +245,6 @@ function VideoAttachment({ file, message }: { file: GalleryFile; message: Messag
 
 const AUDIO_MIMES = ["audio/mpeg", "audio/mp4", "audio/x-m4a", "audio/aac", "audio/wav", "audio/x-wav", "audio/wave", "audio/ogg", "audio/opus", "audio/flac", "audio/x-flac"];
 
-/** Same rule as video: the server must say it is audio, and the read is bounded
- * even when a proxy drops Content-Length. */
 export async function loadMessageAudio(
   file: GalleryFile,
   message: MessageAttachmentContext,
@@ -274,7 +281,6 @@ export async function loadMessageAudio(
   return new Blob(chunks, { type: mime });
 }
 
-/** A clip is a name and a play button; the bytes load, and play, on that click. */
 function AudioAttachment({ file, message }: { file: GalleryFile; message: MessageAttachmentContext }) {
   const [src, setSrc] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -325,11 +331,14 @@ type GalleryItem = { key: string } & (
   | { kind: "video" | "audio" | "file"; file: GalleryFile }
 );
 
-export function AttachmentGallery({ images = [], files = [], message, eager = false, className }: {
+const BENEATH_LIMIT = 6;
+
+export function AttachmentGallery({ images = [], files = [], message, eager = false, beneath = false, className }: {
   images?: Array<string | TranscriptImageAttachment>;
   files?: GalleryFile[];
   message?: MessageAttachmentContext;
   eager?: boolean;
+  beneath?: boolean;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -358,13 +367,57 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
     return result;
   }, [images, files, message]);
   if (!items.length) return null;
-  const shown = expanded ? items : items.slice(0, 4);
+  const limit = beneath ? BENEATH_LIMIT : 4;
+  const shown = expanded ? items : items.slice(0, limit);
   const media = shown.filter((item) => item.kind === "image" || item.kind === "video");
   const documents = shown.filter((item) => item.kind === "file" || item.kind === "audio");
   const previews = items.flatMap((item) => item.kind === "image" ? [item.image] : []);
+  const label = items.length === 1 ? t("attach.gallerySingle") : t("attach.galleryCount", { count: items.length });
+  const dialog = selected && previews.some((image) => image.src === selected.src) && (
+    <AttachmentPreviewDialog image={selected} images={previews} initialIndex={previews.findIndex((image) => image.src === selected.src)} onClose={() => setSelected(null)} />
+  );
+
+  if (beneath) {
+    const thumbs = shown.filter((item) => item.kind === "image");
+    const videos = shown.filter((item) => item.kind === "video");
+    const rest = shown.filter((item) => item.kind === "file" || item.kind === "audio");
+    return (
+      <section aria-label={label} className={cn("mt-2.5 flex max-w-full flex-col items-start gap-2 text-start whitespace-normal", className)}>
+        {thumbs.length > 0 && (
+          <div className="flex max-w-full flex-wrap gap-2">
+            {thumbs.map((item) => item.kind === "image" && (
+              <div key={item.key} className="min-w-0" title={item.image.name}>
+                <AttachmentThumbnail key={item.image.src} image={item.image} eager={eager} onPreview={() => setSelected(item.image)} className="h-24 w-auto max-w-48 rounded-2xl border-0" />
+              </div>
+            ))}
+          </div>
+        )}
+        {videos.length > 0 && message && (
+          <div className={cn("grid w-[min(34rem,70vw)] max-w-full gap-2", videos.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
+            {videos.map((item) => item.kind === "video" && (
+              <VideoAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+            ))}
+          </div>
+        )}
+        {(rest.length > 0 || items.length > limit) && (
+          <div className="flex max-w-full flex-wrap items-start gap-1.5">
+            {rest.map((item) => item.kind === "audio" && message
+              ? <AudioAttachment key={`${message.threadId}:${message.messageId}:${item.key}`} file={item.file} message={message} />
+              : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} compact />)}
+            {items.length > limit && (
+              <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} className="inline-flex h-7 items-center rounded-full px-2.5 text-[13px] leading-none text-ink-secondary transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus">
+                {expanded ? t("attach.showLess") : t("attach.moreCount", { count: items.length - limit })}
+              </button>
+            )}
+          </div>
+        )}
+        {dialog}
+      </section>
+    );
+  }
 
   return (
-    <section aria-label={items.length === 1 ? t("attach.gallerySingle") : t("attach.galleryCount", { count: items.length })} className={cn("mb-1.5 w-[min(34rem,70vw)] max-w-full space-y-1.5 text-left whitespace-normal", className)}>
+    <section aria-label={label} className={cn("mb-1.5 w-[min(34rem,70vw)] max-w-full space-y-1.5 text-left whitespace-normal", className)}>
       {media.length > 0 && (
         <div className={cn("grid gap-2", media.length === 1 ? "grid-cols-1" : "grid-cols-2")}>
           {media.map((item) => item.kind === "image" ? (
@@ -383,15 +436,13 @@ export function AttachmentGallery({ images = [], files = [], message, eager = fa
             : item.kind === "file" && <AttachedFileChip key={item.key} file={item.file} linked={item.file.linked} message={message} className="max-w-none rounded-xl border-hairline/25 bg-transparent" />)}
         </div>
       )}
-      {items.length > 4 && (
+      {items.length > limit && (
         <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} className="flex min-h-8 items-center gap-1 rounded-lg px-1 py-1 text-[11px] text-ink-secondary transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
           {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-          {expanded ? t("attach.showLess") : t("attach.showMore", { count: items.length - 4 })}
+          {expanded ? t("attach.showLess") : t("attach.showMore", { count: items.length - limit })}
         </button>
       )}
-      {selected && previews.some((image) => image.src === selected.src) && (
-        <AttachmentPreviewDialog image={selected} images={previews} initialIndex={previews.findIndex((image) => image.src === selected.src)} onClose={() => setSelected(null)} />
-      )}
+      {dialog}
     </section>
   );
 }

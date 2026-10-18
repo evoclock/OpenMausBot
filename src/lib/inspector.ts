@@ -1,5 +1,3 @@
-// Turning the inspector's two record shapes into one-line summaries. Pure
-// so the panel stays a thin renderer and the labels can be tested.
 import type { RuntimeEvent } from "../../shared/runtime-events";
 import type { InspectorEntry, NativeRecord } from "../../shared/inspector";
 export type { InspectorEntry, InspectorPage, NativeRecord } from "../../shared/inspector";
@@ -10,23 +8,15 @@ interface FoldPreview {
   overflow: boolean;
 }
 
-/** A row in the panel: adjacent content.delta events fold into one so a
- * streamed paragraph is one line, not three hundred. */
 export interface InspectorRow {
   key: string;
   kind: "runtime" | "native";
   at: string;
-  /** short badge — the event type, or in/out for native */
   tag: string;
-  /** what happened, in one line */
   summary: string;
-  /** visual weight: a turn boundary, a failure, or plain */
   tone: "boundary" | "error" | "plain";
-  /** the record(s) behind the row, for the expanded view */
   data: unknown;
-  /** > 1 when deltas were folded */
   count: number;
-  /** bounded, incrementally normalized preview for a folded delta run */
   preview?: FoldPreview;
 }
 
@@ -132,8 +122,7 @@ export function summarizeNative(r: NativeRecord): string {
     return typeof status === "string" ? `${msg.event} · ${status}` : msg.event;
   }
   if (type) {
-    // claude stream-json: surface the role/subtype so a user turn and an
-    // assistant chunk don't both read as "message"
+    // claude stream-json: surface role/subtype so a user turn and an assistant chunk don't both read "message"
     const inner = msg.message as Record<string, unknown> | undefined;
     const role = typeof inner?.role === "string" ? ` · ${inner.role}` : "";
     const subtype = typeof msg.subtype === "string" ? ` · ${msg.subtype}` : "";
@@ -144,7 +133,6 @@ export function summarizeNative(r: NativeRecord): string {
   return clip(oneLine(JSON.stringify(msg)));
 }
 
-/** Entries → rows, folding runs of content.delta on the same stream. */
 export function toRows(entries: InspectorEntry[]): InspectorRow[] {
   const rows: InspectorRow[] = [];
   for (const [i, entry] of entries.entries()) {

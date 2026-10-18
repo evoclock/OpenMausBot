@@ -1,5 +1,3 @@
-// Real server + pairing + agent MCP process + outbound desktop connector.
-// Only the model is fake. Files live in the disposable verification home.
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync, rmSync } from "node:fs";
@@ -31,8 +29,7 @@ const api = async (method: string, path: string, body?: unknown, headers: Record
 };
 const rpc = (method: string, params?: unknown): Promise<any> => new Promise((resolve, reject) => {
   const id = ++sequence;
-  // A shared terminal operation can legitimately run for 30 seconds, before
-  // its result crosses the connector and MCP boundaries (including Windows).
+  // A shared terminal operation can legitimately run 30 seconds before its result crosses the connector and MCP boundaries.
   const timeout = setTimeout(() => { waiting.delete(id); reject(new Error(`MCP ${method} ${JSON.stringify(params)} timed out`)); }, 40_000);
   waiting.set(id, value => { clearTimeout(timeout); resolve(value); });
   proxy.stdin!.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
@@ -54,10 +51,7 @@ const commandAlive = (marker: string) => {
 
 beforeAll(async () => {
   fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "hang" });
-  // Computer sharing ships off (features.sharedComputers, config.ts). Turn it
-  // on for this fixture before anything is paired or dispatched: the routes,
-  // the advertised capability and the agent tools all read the same gate, and
-  // the agent process is handed its copy when its turn starts.
+  // Computer sharing ships off: turn it on before anything is paired, since routes, capability and agent tools read one gate.
   expect((await api("PATCH", "/api/config", { features: { sharedComputers: true } })).status).toBe(200);
   env = { id: "hosted-fixture", name: "Hosted fixture", origin: fixture.info.url };
   const local = join(fixture.info.dataDir, "shared-folder"); mkdirSync(local);
@@ -74,23 +68,18 @@ beforeAll(async () => {
     fetch: (url: string, init: RequestInit) => fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${pairing.token}` } }),
   });
   bot = (await api("POST", "/api/bots", { name: "Shared desktop tester" })).body.bot;
-  // The person who lends the desktop asks, from that same paired session:
-  // only a conversation that person started may use their computer.
   proxy = await agentProxyFor(bot.id, pairing.token, "Inspect the folder shared by my desktop; do not use files on the server.");
   createInterface({ input: proxy.stdout! }).on("line", line => { const msg = JSON.parse(line); waiting.get(msg.id)?.(msg); waiting.delete(msg.id); });
   await rpc("initialize", { protocolVersion: "2024-11-05" });
 }, 30_000);
 
-/** Start a turn on this bot from this paired session and return the agents
- * MCP proxy that turn was handed (the fake model hangs, so the turn and its
- * capability stay live). */
+/** The fake model hangs, so the turn and its agents capability stay live. */
 async function agentProxyFor(botId: string, token: string, text: string): Promise<ChildProcess> {
   return proxyForTurn(async () => {
     expect((await api("POST", `/api/bots/${botId}/messages`, { text }, { authorization: `Bearer ${token}` })).status).toBe(202);
   });
 }
 
-/** A second MCP client for an already running proxy, with its own ids. */
 function mcpClient(child: ChildProcess) {
   const replies = new Map<number, (value: any) => void>();
   createInterface({ input: child.stdout! }).on("line", line => { const msg = JSON.parse(line); replies.get(msg.id)?.(msg); replies.delete(msg.id); });
@@ -173,7 +162,6 @@ it("explicit edits and terminal work; old credentials and other sessions cannot 
 }, 60_000);
 
 it("another person's conversation can neither see nor use the lent desktop", async () => {
-  // A second person paired to the same server (client scope is enough to chat).
   const opened = await api("POST", "/api/auth/pairing", { label: "Another person", scopes: ["client"] });
   const intruder = (await api("POST", "/api/auth/pair", { code: opened.body.code })).body;
   const theirs = (await api("POST", "/api/bots", { name: "Their bot" })).body.bot;
@@ -181,14 +169,11 @@ it("another person's conversation can neither see nor use the lent desktop", asy
   const { initialize, call } = mcpClient(other);
   try {
     await initialize();
-    // The owner's own conversation still sees it.
     expect(await computers()).toHaveLength(1);
     expect(JSON.parse((await call("list_shared_computers")).content[0].text).computers).toEqual([]);
     const refused = await call("shared_computer", { computer_id: storedGrant().id, folder_id: folder.id, action: "read_file", path: "brief.txt" });
     expect(refused.isError).toBe(true);
     expect(JSON.stringify(refused)).not.toContain("Reviewed");
-    // Not a Cloud home: another person's conversation still keeps the bot's
-    // notes as before (the Cloud-only memory rules do not apply here).
     const noted = await call("memory_update", { action: "append", text: "A note from another person's chat." });
     expect(noted.isError, JSON.stringify(noted)).toBeFalsy();
   } finally { other.kill(); }
@@ -226,7 +211,6 @@ it("a bot whose computer is off cannot drive the lent screen, even when screen c
     const refused = await operation("computer_tools");
     expect(refused.isError).toBe(true);
     expect(refused.content[0].text).toContain("This bot has no computer");
-    // Folder work is unaffected by the bot's screen setting.
     expect(data(await operation("list_files")).entries.length).toBeGreaterThan(0);
   } finally {
     expect((await api("PATCH", `/api/bots/${bot.id}`, { computer: null })).status).toBe(200);

@@ -40,8 +40,7 @@ const initialized = {
   authMethods: [{ id: "oauth-personal" }],
 };
 
-/** Like the real runtime, the fake exits by itself once its input ends,
- * unless `exitsOnEof` is false: a runtime that has to be stopped by force. */
+/** Exits by itself once its input ends, like the real runtime, unless `exitsOnEof` is false. */
 function fakeChild(reply: object | null = { result: initialized }, { exitsOnEof = true } = {}) {
   const child = Object.assign(new EventEmitter(), {
     stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
@@ -58,8 +57,7 @@ function fakeChild(reply: object | null = { result: initialized }, { exitsOnEof 
   return child;
 }
 
-/** A closed client waits five seconds for the runtime to exit by itself
- * before stopping it by force. Let that grace run out. */
+/** A closed client gives the runtime five seconds to exit before forcing it; let that grace run out. */
 async function afterExitGrace(child: ReturnType<typeof fakeChild>) {
   if (!child.stdin.writableFinished) await new Promise((resolve) => child.stdin.once("finish", resolve));
   await vi.advanceTimersByTimeAsync(5_000);
@@ -158,13 +156,11 @@ describe("Antigravity validation shutdown", () => {
   it("unpacks the Windows verification run into one shared, swept folder and clears it after close", async () => {
     fakeChild();
     const shared = antigravityTempDir(DATA_DIR, VERIFICATION_TEMP_KEY);
-    // Left by an earlier verification whose runtime would not stop, and
-    // since gone (an ID no process can have); and one still running.
+    // One left by a verification whose runtime would not stop and is now gone, and one still running.
     const abandoned = join(shared, "_MEI7ffffff02");
     const running = join(shared, `_MEI${process.pid.toString(16).padStart(8, "0")}2`);
     for (const folder of [abandoned, running]) mkdirSync(join(folder, "google3"), { recursive: true });
-    // Nothing is spawned here (spawnCli is a fake), so the Windows branch can
-    // run on every OS.
+    // Nothing is spawned (spawnCli is a fake), so the Windows branch runs on every OS.
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { ...platform, value: "win32" });
     try {
@@ -173,8 +169,6 @@ describe("Antigravity validation shutdown", () => {
       Object.defineProperty(process, "platform", platform);
     }
     const environment = vi.mocked(spawnCli).mock.calls[0][2].env!;
-    // One fixed folder for every verification, so nothing a run leaves is
-    // orphaned under a name no later sweep looks at.
     expect(environment.TEMP).toBe(shared);
     expect(environment.TMP).toBe(shared);
     expect(environment.GEMINI_HOME).toBe(scratch[0]);
@@ -203,7 +197,6 @@ describe("Antigravity validation shutdown", () => {
     const acp = client();
     await acp.initialize();
     await expect(acp.closeAndWait(100)).resolves.toBe(true);
-    // Still asked to reap any helper left in the process group.
     expect(killCliTree).toHaveBeenCalledWith(child);
   });
 

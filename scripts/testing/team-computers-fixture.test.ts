@@ -19,7 +19,7 @@ it.each([false, true])("adds a Boat account only for an opted-in Boat fixture, a
   const provider = createServer((request, response) => {
     calls.push(`${request.method} ${request.url}`);
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true, boxes: [] }));
+    response.end(JSON.stringify({ ok: true, sandboxes: [] }));
   });
   let fixture: VerificationServer | undefined;
   try {

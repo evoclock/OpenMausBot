@@ -15,6 +15,18 @@ The Connected tab lists every account separately. **Disconnect** revokes only th
 
 The desktop app validates the key before saving it. The key is encrypted using Electron's operating-system-backed `safeStorage`; the local JSON configuration stores only the non-secret Composio user and Session identifiers.
 
+## MausBot Cloud
+
+A MausBot Cloud plan includes connected apps: there is no key to add. At every start a Cloud home's server makes sure it has its own installation on OpenMausBot's managed connection service, the same one the packaged desktop app registers with (`server/cloud-connected-apps.ts`, sharing `electron/managed-composio.mjs` with the app):
+
+- The first start registers the installation (`POST /v1/installations`) and keeps its token in `connected-apps-installation.json` in the data folder (`/data/.openmausbot`), owner-only (0600). The token is never written to `config.json`, sent to a client or logged.
+- Every later start serves that token at once and checks it with `GET /v1/me`. Only a refusal (401) registers a new installation; an outage or a rate limit keeps the token, so the Cloud's connected accounts are never stranded.
+- While the Cloud has no token (the service is down or refuses new registrations), the server keeps booting and serving, Connected apps says the service is temporarily unavailable, and it tries again after 30 seconds, then 1, 2, 5, 10 and every 30 minutes, with some jitter.
+- The file never goes into a backup or a move to another computer, and a restore keeps the Cloud's own (`server/workspace-backup-policy.ts`): its connected accounts belong to that installation.
+- A Composio project key the owner saves under **Self-host connected apps** still wins; clearing it returns to the included service.
+
+The built image uses the default service; `OMB_COMPOSIO_BROKER_URL` names another (a staging service, or a closed port in CI). The server run from source registers only with an explicitly named service, so development and tests never create installations on the real one.
+
 ## Scoped key permissions
 
 A default project API key works without additional configuration. For a least-privilege scoped key, grant:
@@ -64,7 +76,7 @@ To grant the permission:
 
 OpenMausBot uses your project's own auth config for an app automatically, in place of the Composio-managed one. If there are several for the same app, it uses the most recently updated, and it skips disabled ones and ones turned off for Tool Router. Google may require your OAuth app to list the added permissions on its consent screen, and to be verified before people outside your organization can grant them.
 
-On the OpenMausBot Cloud plan, connected apps run through OpenMausBot's managed connection service rather than your own Composio project, so you cannot add permissions yourself; ask OpenMausBot support instead.
+On a MausBot Cloud plan, connected apps run through OpenMausBot's managed connection service rather than your own Composio project, so you cannot add permissions yourself; ask OpenMausBot support instead.
 
 ## Browser authorization recovery
 
@@ -75,13 +87,26 @@ pending link instead of creating another account. Links stay in UI memory only;
 after ten minutes, retry requests a fresh link, as required by
 [Composio's connection lifecycle](https://docs.composio.dev/kb/guide/platform-connected-accounts).
 
-If all existing accounts for that app are `INITIALIZING`, `INITIATED`, or
-`EXPIRED`, an alias-less retry gets a unique `omb-retry-…` alias. It never deletes
-or replaces an account: `EXPIRED` can also describe a formerly active grant.
-Active or unknown states still require an explicit unique label, and the
-five-usable-account limit remains. At that limit, inspect the account rows and
-disconnect only an account you intend to revoke. Managed installations need
-the updated broker as well as the updated app; this is not a client-side bypass.
+A label is required only when the app already has an `ACTIVE` account (or one
+whose status Composio did not report). While no account works, an alias-less
+retry gets a unique `omb-retry-…` alias and leaves the other accounts alone.
+Asking again for a label held only by an account that is not active (for
+example an `INITIATED` sign-in that was abandoned, or a `FAILED` or `EXPIRED`
+one) revokes and deletes that account, then links a new one under the same
+label; a label an active account holds is still refused with 409. The
+five-usable-account limit remains; the account being replaced does not count
+toward it. Managed installations need the updated broker as well as the
+updated app; this is not a client-side bypass.
+
+In **Connected apps**, only an `ACTIVE` account shows the app as connected. An
+app whose accounts all stopped working shows **Reconnect**, which removes the
+newest stopped account and signs in again under its label; each stopped account
+beside a working one has its own **Reconnect**. When a connected-app call fails
+because the account is signed out (Composio's `USER_NOT_LOGGED_IN`, a 401, or no
+connected account), OpenMausBot adds a note telling the bot to call
+`COMPOSIO_MANAGE_CONNECTIONS`, which shows the person a reconnect card. That
+tool stays available to a bot with no app grants, and a failed `tools/list` is
+retried once and then answered with the last list the connection service gave.
 
 ## Renderer-neutral connection inventory
 

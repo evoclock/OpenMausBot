@@ -1,9 +1,4 @@
-// Find where a URL MCP server wants its users to sign in. MCP servers that
-// require OAuth answer 401 and point at their protected-resource metadata
-// (RFC 9728), which names an authorization server whose own metadata
-// (RFC 8414, or OpenID discovery) lists the endpoints a client needs.
-// Nothing here follows a redirect or accepts a plain-http endpoint off
-// this machine: a token endpoint is where a sign-in code is spent.
+// Never follows a redirect or accepts a plain-http endpoint off this machine: a token endpoint is where a sign-in code is spent.
 
 export interface McpAuthMetadata {
   issuer: string;
@@ -12,8 +7,7 @@ export interface McpAuthMetadata {
   registrationEndpoint?: string;
   revocationEndpoint?: string;
   scopes?: string[];
-  /** RFC 8414 `token_endpoint_auth_methods_supported`; absent means
-   * client_secret_basic for a client that has a secret. */
+  /** RFC 8414 `token_endpoint_auth_methods_supported`; absent means client_secret_basic. */
   tokenEndpointAuthMethods?: string[];
   /** The MCP URL, sent as the RFC 8707 `resource` so tokens are audience-bound. */
   resource: string;
@@ -23,7 +17,6 @@ const FETCH_TIMEOUT_MS = 5_000;
 const MAX_METADATA_BYTES = 65_536;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
-/** https anywhere; http only to this machine (local test servers). */
 export function isAllowedAuthUrl(value: string): boolean {
   let url: URL;
   try {
@@ -36,7 +29,6 @@ export function isAllowedAuthUrl(value: string): boolean {
   return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
 }
 
-/** The `resource_metadata` parameter of a `WWW-Authenticate: Bearer …` challenge. */
 export function resourceMetadataUrl(wwwAuthenticate: string | null): string | null {
   if (!wwwAuthenticate) return null;
   const match = /resource_metadata\s*=\s*(?:"([^"]*)"|([^\s,]+))/i.exec(wwwAuthenticate);
@@ -102,9 +94,6 @@ async function authorizationServer(issuer: string, options: DiscoverOptions) {
   return null;
 }
 
-/** The sign-in endpoints for an MCP server, or null when it does not
- * describe a usable OAuth sign-in (no metadata, no PKCE S256, or an
- * endpoint that is not https). */
 export async function discoverMcpAuth(
   mcpUrl: string,
   wwwAuthenticate: string | null,
@@ -138,7 +127,8 @@ export async function discoverMcpAuth(
   const tokenEndpointAuthMethods = stringList(metadata.token_endpoint_auth_methods_supported);
   target.hash = "";
   return {
-    issuer,
+    // RFC 9207: compared with a callback's iss, which may differ from the listed issuer by a trailing slash (Google).
+    issuer: typeof metadata.issuer === "string" ? metadata.issuer : issuer,
     authorizationEndpoint,
     tokenEndpoint,
     ...(registrationEndpoint ? { registrationEndpoint } : {}),

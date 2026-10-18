@@ -1,7 +1,6 @@
 import type { GroupDefaultResponder } from "./store.ts";
 
-// Odd by design: coordinator/worker alternation must always leave the final
-// bounded turn to the coordinator for an honest completion decision.
+// Odd so the final bounded turn always falls to the coordinator for the completion decision.
 export const GROUP_GOAL_MAX_TURNS = 13;
 export const GROUP_GOAL_CONTROL_OPEN = "<openmaus-goal>";
 export const GROUP_GOAL_CONTROL_CLOSE = "</openmaus-goal>";
@@ -22,9 +21,6 @@ export interface ParsedGroupGoalDecision {
   decision: GroupGoalDecision | null;
 }
 
-/** Turn-scoped events normally identify themselves. A coordinator completion
- * can omit that field after its guard was already bound by turn.started; keep
- * the bound identity so its public transcript message still settles cleanly. */
 export function groupGoalCompletionTurnId(
   eventTurnId: string | undefined,
   boundTurnId: string | undefined,
@@ -47,16 +43,13 @@ function visibleCoordinatorText(text: string): string {
     }
     visible = `${visible.slice(0, openAt)}${visible.slice(closeAt + GROUP_GOAL_CONTROL_CLOSE.length)}`;
   }
-  // A truncated final envelope is private protocol too. Keep the prose that
-  // preceded it, but never expose a half-written marker or JSON fragment.
+  // Never expose a half-written control marker or JSON fragment.
   const danglingOpen = visible.indexOf(GROUP_GOAL_CONTROL_OPEN);
   if (danglingOpen >= 0) visible = visible.slice(0, danglingOpen);
   return visible.replaceAll(GROUP_GOAL_CONTROL_CLOSE, "").trim();
 }
 
-/** Keep the orchestration envelope out of the human transcript while still
- * accepting ordinary prose before it. The last complete envelope wins: a
- * quoted example earlier in the reply cannot accidentally steer the run. */
+/** The last complete envelope wins, so a quoted example earlier in the reply cannot steer the run. */
 export function parseGroupGoalDecision(text: string): ParsedGroupGoalDecision {
   const closeAt = text.lastIndexOf(GROUP_GOAL_CONTROL_CLOSE);
   const openAt = closeAt < 0 ? -1 : text.lastIndexOf(GROUP_GOAL_CONTROL_OPEN, closeAt);
@@ -82,15 +75,11 @@ export function parseGroupGoalDecision(text: string): ParsedGroupGoalDecision {
       return { visibleText, decision: { status, detail } };
     }
   } catch {
-    // A malformed control envelope is a safe pause, never permission to keep
-    // an autonomous loop running on a guess.
   }
   return { visibleText, decision: null };
 }
 
-/** Explicit room lead (or an Auto room's fallback) wins. Otherwise prefer
- * an in-room Chief, then the first active member. A goal run never recruits
- * somebody outside the room. */
+/** A goal run never recruits somebody outside the room. */
 export function selectGroupGoalCoordinator<Member extends GoalRunMember>(
   members: Member[],
   responder: GroupDefaultResponder,
@@ -104,8 +93,6 @@ export function selectGroupGoalCoordinator<Member extends GoalRunMember>(
   return active.find((member) => member.chiefOfStaff) ?? active[0] ?? null;
 }
 
-/** Resolve a model-selected teammate without letting fuzzy or duplicate
- * names choose the wrong person. IDs always work; names work only if unique. */
 export function resolveGroupGoalMember(reference: string, members: GoalRunMember[]): GoalRunMember | null {
   const wanted = reference.trim().replace(/^@/, "").toLocaleLowerCase();
   if (!wanted) return null;
@@ -122,9 +109,6 @@ export function groupGoalCoordinatorInstructions(args: {
   turn: number;
   maxTurns: number;
   remainingTurns: number;
-  /** A harness observation the coordinator must act on this turn — e.g. a
-   * teammate stayed busy past the wait cap. Returned as data rather than
-   * ending the run, so the lead can reassign or report blocked itself. */
   note?: string;
 }): string {
   const roster = args.members

@@ -91,9 +91,7 @@ export const MistralDriver: ProviderDriver<MistralConfig> = {
           }
         }
         if (options.length) catalog = withConfiguredModel(options);
-      } catch {
-        // A failed refresh keeps the last usable catalog, including custom models.
-      }
+      } catch {}
     };
     if (apiKey) void refreshModels();
     return createOpenAIChatRuntime({

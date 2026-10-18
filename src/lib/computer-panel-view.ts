@@ -1,5 +1,16 @@
-// "files" is a Simple-mode tab; Advanced mode reads it back as "computer".
-export type ComputerPanelView = "computer" | "android" | "browser" | "routines" | "files";
+export type ComputerPanelView = "computer" | "android" | "browser" | "routines" | "files" | "data";
+
+type PanelTabsContext = { advanced: boolean; androidConnected: boolean };
+
+export function computerPanelTabs({ advanced, androidConnected }: PanelTabsContext): ComputerPanelView[] {
+  return advanced
+    ? ["computer", "routines", ...(androidConnected ? (["android"] as const) : []), "browser", "data"]
+    : ["computer", "browser", "data", "files"];
+}
+
+export function resolveComputerPanelView(view: ComputerPanelView, context: PanelTabsContext): ComputerPanelView {
+  return computerPanelTabs(context).includes(view) ? view : "computer";
+}
 
 const STORAGE_PREFIX = "omb-computer-panel-view";
 
@@ -13,9 +24,8 @@ export function readComputerPanelView(
 ): ComputerPanelView {
   try {
     const value = storage.getItem(storageKey(botId));
-    if (value === "android" || value === "browser" || value === "routines" || value === "files") return value;
+    if (value === "android" || value === "browser" || value === "routines" || value === "files" || value === "data") return value;
   } catch {
-    // Storage can be unavailable in hardened or private renderer sessions.
   }
   return "computer";
 }
@@ -28,6 +38,5 @@ export function writeComputerPanelView(
   try {
     storage.setItem(storageKey(botId), view);
   } catch {
-    // The in-memory React state still preserves the choice for this mount.
   }
 }

@@ -11,7 +11,6 @@ const registration = (scopes: Partial<{ folders: { id: string; name: string; wri
 const alice = { session: "owner", person: "p_alice" };
 const bob = { session: "intruder", person: "p_bob" };
 afterEach(() => vi.useRealTimers());
-/** The desktop's next long poll, run to its end: null means no job waited. */
 const nothingQueued = async (broker: SharedComputers, id: string) => {
   vi.useFakeTimers();
   const poll = broker.poll(id, alice.session, secret);
@@ -87,12 +86,9 @@ describe("owner partition (audit H1, H2)", () => {
     broker.register(computer, alice, secret);
     expect(broker.list(alice.person)).toHaveLength(1);
     expect(broker.list(bob.person)).toEqual([]);
-    // A turn that acts for nobody provable (routine, webhook, room, peer) sees nothing.
     expect(broker.list(null)).toEqual([]);
-    // Knowing the id is not enough: another person's computer answers like one that does not exist.
     await expect(broker.request({ computer_id: computer.id, action: "run_command", command: "id" }, bob.person, () => true)).rejects.toThrow(/offline/);
     await expect(broker.request({ computer_id: computer.id, action: "run_command", command: "id" }, null, () => true)).rejects.toMatchObject({ status: 403 });
-    // Nothing was queued for the desktop.
     await expect(nothingQueued(broker, computer.id)).resolves.toBeNull();
     broker.close();
   });
@@ -101,12 +97,10 @@ describe("owner partition (audit H1, H2)", () => {
     const broker = new SharedComputers(() => true);
     const computer = registration({ folders: [{ id: randomUUID(), name: "Docs", write: true }] });
     broker.register(computer, alice, secret);
-    await vi.advanceTimersByTimeAsync(40_001); // Alice's laptop is asleep
-    broker.register(computer, bob, other); // Bob registers a fake desktop under Alice's id
-    // Alice's bots never reach Bob's fake desktop: their operations stay unqueued.
+    await vi.advanceTimersByTimeAsync(40_001);
+    broker.register(computer, bob, other);
     await expect(broker.request({ computer_id: computer.id, action: "write_file", folder_id: computer.folders[0]!.id, path: "a.txt", content: "secret" }, alice.person, () => true)).rejects.toThrow(/offline/);
     expect(broker.list(alice.person)).toEqual([]);
-    // Alice's desktop comes back with its own key and is not locked out.
     broker.register(computer, alice, secret);
     expect(broker.list(alice.person)).toHaveLength(1);
     await expect(broker.poll(computer.id, bob.session, secret)).rejects.toMatchObject({ status: 403 });
@@ -160,10 +154,10 @@ describe("status for the next step's placement", () => {
     expect(broker.status(alice.person)).toEqual([{ id: mac.id, name: "Desktop", online: true, busy: false, lastSeenAt: expect.any(Number), scopes: { folders: [docs], terminal: false, screen: true } }]);
     expect(broker.status(null)).toEqual([]);
     expect(JSON.stringify(broker.status(alice.person))).not.toContain(secret);
-    await vi.advanceTimersByTimeAsync(40_001); // the Mac went to sleep
+    await vi.advanceTimersByTimeAsync(40_001);
     expect(broker.status(alice.person)).toMatchObject([{ id: mac.id, online: false }]);
     expect(broker.list(alice.person)).toEqual([]);
-    live = false; // the Mac's session was revoked on the Cloud
+    live = false;
     expect(broker.status(alice.person)).toEqual([]);
     broker.close();
   });

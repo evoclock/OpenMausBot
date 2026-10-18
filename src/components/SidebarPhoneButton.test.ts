@@ -166,7 +166,7 @@ describe("SidebarPhoneStatusButton", () => {
     });
 
     expect(markup).toContain('data-sidebar-density="compact"');
-    expect(markup).toContain("size-10");
+    expect(markup).toContain("size-[46px]");
     expect(markup).toContain("shrink-0");
   });
 });

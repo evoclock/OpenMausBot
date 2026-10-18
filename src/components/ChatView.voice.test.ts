@@ -43,7 +43,6 @@ describe("voice notes in the chat transcript", () => {
     expect(markup).toContain('aria-label="Play voice note"');
     expect(markup).toContain('src="/api/attachments/123e4567-e89b-12d3-a456-426614174000.mp3"');
     expect(markup).toContain("Standup summary inside");
-    // the bubble sits above the transcript, which stays selectable text
     expect(markup.indexOf("data-test-voice-note")).toBeLessThan(markup.indexOf("Standup summary inside"));
   });
 

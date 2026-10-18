@@ -23,30 +23,7 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-// The model provider catalog: load it, keep it fresh, merge in the presets.
-//
-// Kept from OpenCode's models-dev.ts: a cache file refreshed from
-// models.dev/api.json with a 10 s timeout, written through a temp file and a
-// rename; a corrupt cache is deleted; a snapshot bundled with the app; a
-// forced refresh skips the freshness check; failures are logged and never
-// surface; one switch turns fetching off.
-//
-// Changed for OpenMausBot:
-// - plain Node instead of Effect; one server process owns DATA_DIR, so a
-//   single in-flight promise stands in for OpenCode's cross-process flock;
-// - data counts as fresh for 24 hours, and a refresh runs only when asked
-//   (Settings or the model picker opening), not on a timer;
-// - If-None-Match with the stored ETag, a 20 MB cap, redirects refused;
-// - every source is trimmed and brace-filtered (trim.ts) before use;
-// - the source is the newest of: our cache, OpenCode's own cache
-//   (~/.cache/opencode/models.json, read only), the bundled snapshot. On a tie
-//   that order decides, so a newer snapshot beats an older cache;
-// - switched off by OMB_DISABLE_MODEL_CATALOG_FETCH=1, and by the caller on
-//   managed or hosted installs.
-//
-// This list is never the last word on what a key can use: the provider's own
-// /models, called with the key, is. The catalog supplies names, key variable
-// names, base URLs and the capability flags used to pick recommended models.
+
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -84,13 +61,11 @@ export type CatalogRefreshResult = "disabled" | "fresh" | "updated" | "not-modif
 export interface ModelCatalogOptions {
   dataDir: string;
   env?: NodeJS.ProcessEnv;
-  /** True on managed and hosted installs: never fetch. */
   fetchDisabled?: boolean;
   fetch?: typeof fetch;
   now?: () => number;
-  /** The bundled snapshot's text. Defaults to the file shipped beside this module. */
   readSnapshot?: () => string | undefined;
-  /** OpenCode's catalog cache. Defaults to its XDG cache path; null skips it. */
+  /** Defaults to OpenCode's XDG cache path; null skips it. */
   openCodeCachePath?: string | null;
   timeoutMs?: number;
   maxBytes?: number;
@@ -107,8 +82,7 @@ export function openCodeCatalogCachePath(env: NodeJS.ProcessEnv = process.env): 
   return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "opencode", "models.json");
 }
 
-/** The snapshot sits beside this module in a checkout, and under
- * model-catalog/ beside the bundled server (scripts/bundle-server.mjs). */
+/** Beside this module in a checkout; under model-catalog/ beside the bundled server. */
 function readBundledSnapshot(): string | undefined {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const path of [join(here, SNAPSHOT_FILE), join(here, "model-catalog", SNAPSHOT_FILE)]) {
@@ -134,7 +108,6 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 interface Candidate {
   origin: Exclude<CatalogOrigin, "empty">;
   updatedAt: number;
-  /** Raw providers, trimmed only if this candidate is chosen. */
   providers: () => unknown;
 }
 
@@ -183,8 +156,7 @@ export class ModelCatalogStore {
     return this.memo;
   }
 
-  /** Refresh from models.dev unless the cache is under 24 hours old (or
-   * `force`). Concurrent calls share one request. Never throws. */
+  /** Skipped while the cache is under 24 hours old, unless `force`. Concurrent calls share one request. Never throws. */
   refresh(options: { force?: boolean } = {}): Promise<CatalogRefreshResult> {
     if (this.fetchDisabled) return Promise.resolve("disabled");
     this.inflight ??= this.fetchAndStore(Boolean(options.force)).finally(() => {
@@ -202,9 +174,8 @@ export class ModelCatalogStore {
       if (doc?.schema !== MODEL_CATALOG_SCHEMA || updatedAt === undefined || !doc.providers) throw new Error("unrecognised format");
       return { doc, updatedAt };
     } catch (error) {
-      // As OpenCode does, drop a cache we cannot read; the next refresh rewrites it.
       this.log(`removed an unreadable catalog cache (${message(error)})`);
-      try { rmSync(this.cachePath, { force: true }); } catch { /* best effort */ }
+      try { rmSync(this.cachePath, { force: true }); } catch { }
       return undefined;
     }
   }
@@ -222,7 +193,6 @@ export class ModelCatalogStore {
     try {
       const stat = statSync(path);
       if (!stat.isFile() || stat.size > (this.options.maxBytes ?? CATALOG_MAX_BYTES)) return undefined;
-      // Read only if chosen: it is models.dev's full 5 MB catalog.
       return { origin: "opencode", updatedAt: stat.mtimeMs, providers: () => {
         try { return JSON.parse(readFileSync(path, "utf8")); } catch { return undefined; }
       } };
@@ -251,7 +221,6 @@ export class ModelCatalogStore {
   private async fetchAndStore(force: boolean): Promise<CatalogRefreshResult> {
     const cached = this.readDocument();
     const age = cached ? this.now - cached.updatedAt : Infinity;
-    // A cache stamped in the future (clock moved back) counts as stale.
     if (!force && age >= 0 && age < CATALOG_MAX_AGE_MS) return "fresh";
     try {
       const etag = cached ? safeEtag(cached.doc.source?.etag) : undefined;
@@ -266,7 +235,6 @@ export class ModelCatalogStore {
       try { raw = JSON.parse(response.text); } catch { throw new Error("models.dev returned invalid JSON"); }
       let drops = 0;
       const providers = trimModelsDevCatalog(raw, { onDrop: () => { drops += 1; } });
-      // Never replace a good cache with an empty one.
       if (!Object.keys(providers).length) throw new Error("models.dev returned no usable providers");
       this.write({
         schema: MODEL_CATALOG_SCHEMA,
@@ -297,7 +265,7 @@ export class ModelCatalogStore {
     try {
       const response = await (this.options.fetch ?? fetch)(MODELS_DEV_URL, {
         headers: { accept: "application/json", "user-agent": "OpenMausBot", ...(etag ? { "if-none-match": etag } : {}) },
-        // Nothing secret is sent, but the catalog comes from models.dev only.
+        // The catalog comes from models.dev only.
         redirect: "error",
         signal: controller.signal,
       });
@@ -314,7 +282,6 @@ export class ModelCatalogStore {
         void response.body?.cancel().catch(() => {});
         throw new Error(`models.dev sent more than ${maxBytes} bytes`);
       }
-      // The timer also covers reading the body.
       const text = await readCapped(response, maxBytes);
       return { status: 200, text, etag: safeEtag(response.headers.get("etag")) };
     } catch (error) {
@@ -345,16 +312,12 @@ async function readCapped(response: Response, maxBytes: number): Promise<string>
   return text + decoder.decode();
 }
 
-/** One row of the "Add a provider" list: a models.dev provider, a preset, or both. */
 export interface CatalogEntry {
-  /** The preset id, else the models.dev id. */
   id: string;
-  /** The models.dev provider, when the catalog has it. */
   catalogId?: string;
   label: string;
   env: string[];
-  /** The AI SDK package that speaks to `api`. For a preset it can differ from
-   * models.dev's `npm`, so OpenCode's block must set it along with baseURL. */
+  /** For a preset it can differ from models.dev's `npm`, so OpenCode's block must set it along with baseURL. */
   npm?: string;
   /** OpenAI-compatible base URL. A preset's pinned URL wins over models.dev's. */
   api?: string;
@@ -365,19 +328,12 @@ export interface CatalogEntry {
   preset?: ProviderPreset;
 }
 
-/** The SDK package for a preset's pinned `api`. models.dev's `npm` describes
- * models.dev's `api` (or, when it lists none, the SDK's own default address,
- * which the preset pins too), so it is kept only when that is the address the
- * preset pins. Otherwise the pinned address is OpenAI-compatible by definition. */
 function presetNpm(preset: ProviderPreset, provider: CatalogProviders[string] | undefined): string | undefined {
   if (preset.npm) return preset.npm;
   if (!provider?.npm) return undefined;
   return provider.api === undefined || provider.api === preset.api ? provider.npm : OPENAI_COMPATIBLE_NPM;
 }
 
-/** The catalog merged with the presets: recommended rows first, in their
- * order, then every other provider by name. Presets whose provider the
- * catalog lacks (or dropped) are still listed. */
 export function catalogEntries(catalog: ModelCatalog, presets: readonly ProviderPreset[] = PROVIDER_PRESETS): CatalogEntry[] {
   const entries: CatalogEntry[] = [];
   const covered = new Set<string>();

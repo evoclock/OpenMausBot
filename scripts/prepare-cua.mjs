@@ -1,8 +1,7 @@
-// Stage the macOS CUA executable and native SDK outside ASAR. The npm SDK
-// deliberately does not ship the `cua-driver` CLI, so packaging must fail
-// loudly instead of producing an app whose "This computer" option can never
-// work. CUA_DRIVER_PATH is the CI/release override; otherwise an exact-version
-// installed binary or the checksummed official release asset is used.
+// Stage the macOS CUA executable and native SDK outside ASAR. The npm SDK does
+// not ship the `cua-driver` CLI, so packaging fails loudly without one.
+// CUA_DRIVER_PATH is the CI/release override; otherwise an exact-version
+// installed binary or the checksummed official release asset.
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readFile, rm, stat, chmod, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
@@ -102,14 +101,9 @@ if (!details.isFile() || (details.mode & 0o111) === 0) {
   throw new Error(`cua-driver is not an executable file: ${binary}`);
 }
 
-// The mac app ships for two architectures, each with its own staging dir that
-// electron-builder selects via ${arch} in extraResources. The driver
-// executable is the official universal binary (asserted universal below so a
-// future non-universal pin fails loudly here, not on a user's Intel Mac). The
-// SDK's dylib/.node come from the two darwin native packages that pnpm
-// installs because of supportedArchitectures in pnpm-workspace.yaml, but both
-// packages ship the same universal files. Each staging dir gets only its own
-// arch's slice of all three: a single-arch app can never run the other one.
+// Each mac arch's staging dir (picked via ${arch} in extraResources) gets only
+// its own slice of the universal driver and SDK files. The driver is asserted
+// universal, so a non-universal pin fails here rather than on an Intel Mac.
 const MAC_ARCHES = resolveCuaMacArches(process.env);
 
 const { stdout: archList } = await run("/usr/bin/lipo", ["-archs", binary]);
@@ -126,10 +120,8 @@ for (const arch of MAC_ARCHES) {
   await mkdir(archStage, { recursive: true });
   await writeThinMachO(binary, join(archStage, "cua-driver"), LIPO_ARCH[arch]);
   await chmod(join(archStage, "cua-driver"), 0o755);
-  // A binary copied out of CuaDriver.app retains a bundle-relative signature
-  // whose Info.plist no longer exists at the new path. Give the staged file a
-  // valid temporary signature; electron-builder replaces it with the enclosing
-  // app's identity during its nested-code signing pass.
+  // A binary copied out of CuaDriver.app keeps a bundle-relative signature whose
+  // Info.plist is gone; electron-builder replaces this temporary one.
   await run("/usr/bin/codesign", ["--force", "--sign", "-", "--options", "runtime", join(archStage, "cua-driver")]);
 
   const nativeDir = join(archStage, "cua-sdk", "native");
@@ -144,11 +136,8 @@ for (const arch of MAC_ARCHES) {
     writeThinMachO(join(realpathSync(nativePackage), name), join(nativeDir, name), LIPO_ARCH[arch])));
 }
 
-// Bundle the JS side into one ESM file so electron-builder's intentional
-// node_modules exclusion cannot drop it. The SDK resolves its native library
-// through @ubjs at runtime; redirect those generated lookups to the native
-// files staged beside the bundle. The bundle is pure JS — built once, shipped
-// in both arch dirs.
+// One ESM file, so electron-builder's node_modules exclusion cannot drop it. The
+// SDK's @ubjs native lookups are redirected to the files staged beside it.
 const bundle = join(stage, MAC_ARCHES[0], "cua-sdk", "cua-sdk.mjs");
 await build({
   stdin: {

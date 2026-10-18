@@ -56,8 +56,6 @@ describe("app language preference", () => {
   });
 
   it("saves the choice on this device without asking the server", async () => {
-    // MOCA-262: the picker used to PATCH the shared server config, which a
-    // chat-only person may not change. Nothing here reaches the network.
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     let preference = await import("./language-preference");

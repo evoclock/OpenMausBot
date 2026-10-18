@@ -1,14 +1,11 @@
 // Fake-engine server + synthetic Local VM + companion sidecar, in disposable
-// homes, for checking the iOS computer view against a Local VM by hand.
+// homes, for checking the iOS computer view against a Local VM by hand:
 //
 //   node --experimental-strip-types scripts/verify-ios-local-vm.ts
 //
-// Prints the sidecar address and a pairing code for the Simulator, then stays
-// up until Ctrl-C. The synthetic `docker` answers only inspection and the two
-// screenshot execs; each capture returns the captured desktop with another
-// character typed at its prompt, so a refresh is visible on the phone. It never reaches a real container runtime,
-// VM, or the user's OpenMausBot data.
+// Prints the sidecar address and a pairing code, then stays up until Ctrl-C.
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -95,11 +92,11 @@ async function freePort(): Promise<number> {
   });
 }
 
-async function waitFor(url: string, child: ChildProcess): Promise<void> {
+async function waitFor(url: string, child: ChildProcess, headers: Record<string, string> = {}): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (child.exitCode !== null) throw new Error(`${url}: process exited (${child.exitCode})`);
     try {
-      if ((await fetch(url)).ok) return;
+      if ((await fetch(url, { headers })).ok) return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
@@ -191,6 +188,8 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
   const harnessPort = new URL(fixture.info.url).port;
   const companionPort = await freePort();
   const controlPort = await freePort();
+  const controlToken = randomBytes(32).toString("base64url");
+  const controlHeaders = { "x-openmausbot-control-token": controlToken };
   const companionHome = join(scratch, "companion-home");
   mkdirSync(companionHome);
   sidecar = spawn(process.execPath, ["--experimental-strip-types", join(root, "companion", "src", "index.ts")], {
@@ -201,12 +200,13 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
       OMB_PORT: harnessPort,
       OMB_COMPANION_PORT: String(companionPort),
       OMB_CONTROL_PORT: String(controlPort),
+      OMB_CONTROL_TOKEN: controlToken,
       OMB_COMPANION_DIR: join(companionHome, "companion"),
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
-  await waitFor(`http://127.0.0.1:${controlPort}/state`, sidecar);
-  const { code } = await (await fetch(`http://127.0.0.1:${controlPort}/pairing`, { method: "POST" })).json() as { code: string };
+  await waitFor(`http://127.0.0.1:${controlPort}/state`, sidecar, controlHeaders);
+  const { code } = await (await fetch(`http://127.0.0.1:${controlPort}/pairing`, { method: "POST", headers: controlHeaders })).json() as { code: string };
 
   console.log(JSON.stringify({
     harness: fixture.info.url,
@@ -217,7 +217,7 @@ process.stdout.write(typeof result === 'string' ? result : JSON.stringify(result
     log: fixture.info.logPath,
   }, null, 2));
   console.log("Pair the Simulator with the address and code above. Allow computer view with:");
-  console.log(`  curl -X POST http://127.0.0.1:${controlPort}/devices/<device-id>/cloud-desktop`);
+  console.log(`  curl -X POST -H "x-openmausbot-control-token: ${controlToken}" http://127.0.0.1:${controlPort}/devices/<device-id>/cloud-desktop`);
   // What the phone has done to the desktop, and who holds the computer.
   const eventsPort = await freePort();
   createHttpServer(async (_req, res) => {

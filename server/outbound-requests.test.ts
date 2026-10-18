@@ -1,7 +1,3 @@
-// A held outbound call: the relay waits on a card, the respond route
-// answers it. The service is the meeting point, and its contract is the
-// same one the other card services keep — claim exactly once, say what
-// happened, never leave a waiter hanging.
 import { describe, expect, it } from "vitest";
 
 import { OutboundRequestService } from "./outbound-requests.ts";

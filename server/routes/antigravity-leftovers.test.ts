@@ -1,4 +1,3 @@
-// "Free up space" over HTTP: who may use it, and what it answers.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,7 +59,6 @@ describe("Free up space routes", () => {
     let removals = 0;
     const base = await serve({ remove: async () => { removals++; return { removed: 1, freedBytes: 2_000, remaining: 0 }; } });
     expect((await post(`${base}/api/instances/antigravity/leftover-files/remove`, "text/plain")).status).toBe(415);
-    // A GET to the delete path is not this route's.
     expect(await (await fetch(`${base}/api/instances/antigravity/leftover-files/remove`)).json()).toEqual({ from: "inline routes" });
     expect(removals).toBe(0);
     const response = await post(`${base}/api/instances/antigravity/leftover-files/remove`);

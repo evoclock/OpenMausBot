@@ -10,8 +10,7 @@ const DEFAULT_MAX_OUTPUT_BYTES = 512 * 1024;
 const GETENT_BINARY = "/usr/bin/getent";
 const GETENT_TIMEOUT_MS = 1_500;
 const GETENT_MAX_OUTPUT_BYTES = 256 * 1024;
-// Keep this exact field set synchronized with DRIVER_FILE_IDENTITY_KEYS in
-// server/local-computer.ts; Electron publishes it and the server revalidates it.
+// Keep in sync with DRIVER_FILE_IDENTITY_KEYS in server/local-computer.ts, which revalidates what Electron publishes.
 const DRIVER_FILE_IDENTITY_KEYS = Object.freeze([
   "dev",
   "ino",
@@ -65,9 +64,7 @@ function desktopCommandEnvironment(source = process.env, additions = {}) {
     if (SESSION_ENV_KEYS.has(key) || key.startsWith("LC_")) env[key] = String(value);
   }
   env.PATH = sanitizePath(source.PATH);
-  // Keep every Cua child owned by OpenMausBot deterministic and local-only.
-  // Bundled native code must not independently update itself or opt users into
-  // upstream telemetry. This does not change the user's persisted preferences.
+  // Bundled native code must not update itself or opt users into upstream telemetry.
   env.CUA_DRIVER_RS_UPDATE_CHECK = "false";
   env.CUA_DRIVER_RS_TELEMETRY_ENABLED = "false";
   for (const [key, value] of Object.entries(additions)) {
@@ -305,7 +302,6 @@ function driverIdentity({ currentUid, currentGid, currentUsername } = {}) {
   try {
     info = os.userInfo();
   } catch {
-    // Group-writable paths will fail closed when identity cannot be proven.
   }
   return {
     uid: currentUid ?? process.getuid?.() ?? info.uid,
@@ -398,9 +394,7 @@ function validateDriverCandidate(candidate, {
   try {
     linkStat = fs.lstatSync(candidate);
     canonicalPath = fs.realpathSync(candidate);
-    // This single stat is the authority for type, owner, mode, and the
-    // identity later pinned by the runtime. A second stat at the end proves
-    // the file did not change while parent permissions were being checked.
+    // This stat is the authority for type, owner, mode and pinned identity; a second stat at the end proves nothing changed meanwhile.
     targetStat = fs.statSync(canonicalPath, { bigint: true });
     fileIdentity = driverFileIdentityFromStat(targetStat);
   } catch (error) {
@@ -481,10 +475,7 @@ function discoverLinuxCuaDriver({
     return result.status === "found" ? { ...result, source: "environment" } : result;
   }
 
-  // A packaged build has one reviewed driver paired with the app release.
-  // Never fall through to ambient user/PATH code when that bundle is missing
-  // or unsafe: a damaged package must fail closed. CUA_DRIVER_PATH above is
-  // the sole intentional override for development and incident response.
+  // A packaged build never falls through to ambient user/PATH code: a damaged bundle fails closed (CUA_DRIVER_PATH is the one override).
   if (bundledDriverPath) {
     const result = validateDriverCandidate(bundledDriverPath, validationOptions);
     return result.status === "found" ? { ...result, source: "bundled" } : result;

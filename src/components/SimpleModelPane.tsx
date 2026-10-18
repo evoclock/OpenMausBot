@@ -1,11 +1,3 @@
-// The model picker as Simple mode shows it: every provider the picker knows in
-// a narrow column on the left (one on an API key carries a small key on its
-// mark, one an organisation blocks is dimmed), that provider's models by name
-// on the right, and along the bottom how hard the bot thinks and whether new
-// chats follow. A sign-in with several accounts switches account above its
-// models. A long model list opens in place with "Show all" (and a search box
-// when it is very long), so no model needs the full picker; only setup goes
-// there.
 import type { ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, KeyRound, Loader2 } from "lucide-react";
 import type { InstanceInfo } from "@/state/store";
@@ -18,8 +10,6 @@ import { t } from "@/lib/i18n";
 
 type ModelOption = InstanceInfo["models"]["options"][number];
 
-/** Names more than one of a provider's models carry (pi lists one model under
- * several routes). Those rows add their route so they read apart. */
 export function repeatedModelLabels(options: readonly ModelOption[]): Set<string> {
   const seen = new Set<string>();
   const repeated = new Set<string>();
@@ -27,8 +17,6 @@ export function repeatedModelLabels(options: readonly ModelOption[]): Set<string
   return repeated;
 }
 
-/** An API-key row carries the key on its mark, so "(API key)" in its name
- * says it twice and costs the narrow column most of the name. */
 function providerName(provider: RailProvider): string {
   if (provider.target.access !== "api") return provider.label;
   return provider.label.replace(/\s*\((?:API key|API)\)$/i, "") || provider.label;
@@ -50,6 +38,7 @@ export function SimpleModelPane({
   onRefresh,
   refreshing = false,
   currentModelId,
+  botModelId,
   onPick,
   effort,
   variantsRow,
@@ -57,34 +46,22 @@ export function SimpleModelPane({
 }: {
   providers: RailProvider[];
   onProvider: (instance: InstanceInfo) => void;
-  /** A sign-in with several accounts: the switch between them. */
   account?: ReactNode;
-  /** The organisation whose policy keeps bots off the browsed provider. */
   managedBy?: string | null;
-  /** The browsed provider cannot list models yet (setup or sign-in). */
   needsSetup?: { name: string } | null;
-  /** The browsed provider lists only its local models until it is signed in. */
   signIn?: { name: string } | null;
-  /** Opens the full picker on the browsed provider's setup. */
   onSetUp: () => void;
-  /** The rows to show now: suggested, every model, or search results. */
   models: ModelOption[];
-  /** Names more than one of the provider's models carry. */
   repeatedLabels?: ReadonlySet<string>;
-  /** The search the rows are filtered by, if any. */
   query?: string;
-  /** The provider has more models than the suggested rows: one button opens
-   * them all in place and folds them back. */
   showAll?: { count: number; open: boolean; onToggle: () => void } | null;
-  /** A search box over the opened list, when it is long. */
   search?: ReactNode;
-  /** Asks the browsed provider for its models again, when it has none. */
   onRefresh?: (() => void) | null;
   refreshing?: boolean;
   currentModelId?: string;
+  botModelId?: string;
   onPick: (modelId: string) => void;
   effort?: { levels: EffortLevel[]; current?: EffortLevel; onPick: (level: EffortLevel) => void } | null;
-  /** Engines that name their reasoning modes keep their own control. */
   variantsRow?: ReactNode;
   onManage: () => void;
 }) {
@@ -93,7 +70,6 @@ export function SimpleModelPane({
   return (
     <div data-simple-model-pane className="flex min-h-0 w-full flex-col">
       <div className="flex min-h-0 flex-1">
-        {/* Providers: every one the picker knows, in a quiet column. */}
         <div
           data-simple-providers
           role="group"
@@ -101,8 +77,6 @@ export function SimpleModelPane({
           className="flex w-32 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-hairline/40 bg-panel p-1.5"
         >
           {providers.map((provider) => {
-            // The same vendor can sit here twice (a sign-in and a pasted
-            // key): the key on its mark says which is which, as on the rail.
             const apiKey = provider.target.access === "api";
             const name = providerName(provider);
             const policy = provider.target.policy
@@ -139,7 +113,6 @@ export function SimpleModelPane({
           })}
         </div>
 
-        {/* Models for the chosen provider, or what it needs first. */}
         <div data-simple-models className="flex min-h-0 min-w-0 flex-1 flex-col">
           {account && <div data-simple-account className="shrink-0 px-2">{account}</div>}
           {search && <div data-simple-model-search className="shrink-0 pt-2">{search}</div>}
@@ -147,7 +120,6 @@ export function SimpleModelPane({
             {providers.length === 0 ? (
               <p className={note}>{t("model.noProviders")}</p>
             ) : managedBy ? (
-              // The organisation does not allow this provider: shown, never pickable.
               <div data-simple-policy className={cn(note, "leading-relaxed")}>
                 <p className="font-medium text-ink">{t("policy.managedBy", { organization: managedBy })}</p>
                 <p className="mt-1">{t("policy.modelBlocked", { organization: managedBy })}</p>
@@ -184,9 +156,6 @@ export function SimpleModelPane({
                 <div className="flex flex-col gap-0.5" role="group" aria-label={t("model.simple.model")}>
                   {models.map((option) => {
                     const current = option.id === currentModelId;
-                    // Names only; a blurb is a hover hint, never a second
-                    // line. A name the list repeats shows its route too, and
-                    // the hint and spoken name always carry it.
                     const blurb = modelBlurb(option);
                     const route = option.provider && repeatedLabels?.has(option.label) ? option.provider : undefined;
                     return (
@@ -202,6 +171,9 @@ export function SimpleModelPane({
                         <span className="min-w-0 flex-1 truncate">{option.label}</span>
                         {route && (
                           <span data-simple-route className="max-w-[45%] shrink-0 truncate text-[11.5px] font-normal text-ink-secondary">{route}</span>
+                        )}
+                        {option.id === botModelId && (
+                          <span data-bot-model className="shrink-0 text-[11.5px] font-normal text-ink-secondary">{t("model.botModelTag")}</span>
                         )}
                         {current && <Check size={14} className="shrink-0 text-accent-text" aria-hidden="true" />}
                       </button>
@@ -239,7 +211,6 @@ export function SimpleModelPane({
         </div>
       </div>
 
-      {/* Effort and scope along the bottom, spanning both columns. */}
       <div data-simple-effort-band className="flex shrink-0 flex-col gap-2.5 border-t border-hairline/40 px-3 py-2.5">
         {variantsRow ?? (effort && effort.levels.length > 0 && (
           <div

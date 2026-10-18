@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   beatWidth,
   beatsFor,
+  cloudBeatPossible,
+  cloudBeatWanted,
   cloudSignInDue,
   flowDotsShown,
   companyModelCount,
@@ -14,8 +16,12 @@ import {
   hintSeenPatch,
   LOCAL_VIEWER,
   nextBeat,
+  onboardingCloudOffered,
+  ONBOARDING_CLOUD_HINT,
   organisationSignIn,
   previousBeat,
+  showWelcome,
+  welcomeOnScreen,
   welcomeDue,
   welcomeViewer,
   WELCOME_VERSION,
@@ -48,21 +54,17 @@ describe("welcomeDue", () => {
 
   it("honours the old localStorage gate for one release", () => {
     expect(welcomeDue({}, { remoteClient: false, legacyDone: true })).toBe(false);
-    // but a server record, once present, wins over the browser
     expect(welcomeDue({ onboarding: { ...done, version: 0 } }, { remoteClient: false, legacyDone: true })).toBe(true);
   });
 
   it("decides who gets the tour on a fresh workspace", () => {
     const fresh = { onboarding: EMPTY_ONBOARDING };
     const cases = [
-      // the desktop app's own window: exactly as before
       { who: "local desktop", options: { remoteClient: false, legacyDone: false, ...LOCAL_VIEWER }, due: true },
       { who: "remote client", options: { remoteClient: true, legacyDone: false, ...LOCAL_VIEWER }, due: false },
       { who: "hosted admin", options: { remoteClient: false, legacyDone: false, hosted: true, canSave: true }, due: true },
-      // PUT /api/config is admin-only: a member could never finish it
       { who: "hosted member", options: { remoteClient: false, legacyDone: false, hosted: true, canSave: false }, due: false },
       { who: "member of a self-hosted server", options: { remoteClient: false, legacyDone: false, hosted: false, canSave: false }, due: false },
-      // a hosted session that has not proved it may save waits
       { who: "hosted, scope unknown", options: { remoteClient: false, legacyDone: false, hosted: true }, due: false },
     ];
     for (const { who, options, due } of cases) expect(welcomeDue(fresh, options), who).toBe(due);
@@ -75,13 +77,10 @@ describe("welcomeViewer", () => {
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], hosted: true })).toEqual({ hosted: true, canSave: true });
     expect(welcomeViewer({ kind: "session", scopes: ["client"], hosted: true })).toEqual({ hosted: true, canSave: false });
     expect(welcomeViewer({ kind: "session", scopes: ["client"] })).toEqual({ hosted: false, canSave: false });
-    // a shared server's local service trust (no admin scope) cannot save either
     expect(welcomeViewer({ kind: "loopback", scopes: ["client"], trust: "service" })).toEqual({ hosted: false, canSave: false });
-    // an answer without scopes is today's owner; only a literal true is hosted
     expect(welcomeViewer({})).toEqual(LOCAL_VIEWER);
     expect(welcomeViewer(null)).toEqual(LOCAL_VIEWER);
     expect(welcomeViewer({ scopes: ["admin"], hosted: "yes" })).toEqual({ hosted: false, canSave: true });
-    // an OMB Cloud home says so; only a literal true counts
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], cloudHome: true })).toEqual({ hosted: false, canSave: true, cloudHome: true });
     expect(welcomeViewer({ kind: "session", scopes: ["admin", "client"], cloudHome: "yes" })).toEqual({ hosted: false, canSave: true });
   });
@@ -89,11 +88,9 @@ describe("welcomeViewer", () => {
   it("calls only a hosted session without admin scope a hosted member", () => {
     expect(hostedMember({ hosted: true, canSave: false })).toBe(true);
     expect(hostedMember({ hosted: true, canSave: true })).toBe(false);
-    // the owner's own paired browser on a personal server is not a team member
     expect(hostedMember({ hosted: false, canSave: false })).toBe(false);
     expect(hostedMember(LOCAL_VIEWER)).toBe(false);
     expect(hostedMember(null)).toBe(false);
-    // spotlights wait for the answer, then stay as before except for hosted members
     expect(spotlightsQuiet(null)).toBe(true);
     expect(spotlightsQuiet({ hosted: true, canSave: false })).toBe(true);
     expect(spotlightsQuiet({ hosted: false, canSave: false })).toBe(false);
@@ -102,8 +99,6 @@ describe("welcomeViewer", () => {
 });
 
 describe("first run on an OMB Cloud home", () => {
-  // What the machine's /api/auth/session answers the desktop app once
-  // "Connect to my Cloud" has paired it (server/index.ts, cloud-home.ts).
   const connected = welcomeViewer({ kind: "session", scopes: ["admin", "client"], via: "cookie", cloudHome: true });
   const engine = (id: string, authenticated: boolean | undefined, state = "available") => ({ id, state, authenticated });
   const ready = (instance: ReturnType<typeof engine>) => instance.state === "available" && instance.authenticated !== false;
@@ -124,7 +119,6 @@ describe("first run on an OMB Cloud home", () => {
     expect(cloudSignInDue(connected, { connected: false, instances: signedOut }, ready)).toBe(false);
     expect(cloudSignInDue(connected, { connected: true, instances: [] }, ready)).toBe(false);
     expect(cloudSignInDue(null, { connected: true, instances: signedOut }, ready)).toBe(false);
-    // a paired phone without admin scope cannot sign engines in
     expect(cloudSignInDue({ ...connected, canSave: false }, { connected: true, instances: signedOut }, ready)).toBe(false);
     for (const viewer of [LOCAL_VIEWER, { hosted: true, canSave: true }, welcomeViewer({ kind: "session", scopes: ["admin", "client"] })]) {
       expect(cloudSignInDue(viewer, { connected: true, instances: signedOut }, ready)).toBe(false);
@@ -167,7 +161,6 @@ describe("engineSummary", () => {
     const summary = engineSummary(rows, ok, { company: true });
     expect(summary.allReady).toBe(true);
     expect(summary.company).toBe(1);
-    // personal rows stay listed, below, as before
     expect(summary.ready.map((row) => row.id)).toEqual([]);
     expect(summary.setup.map((row) => row.id)).toEqual(["claude", "codex"]);
   });
@@ -231,6 +224,23 @@ describe("beat machine", () => {
     expect(beatsFor({ dictation: true, reel: true, hosted: false })).toEqual(["hello", "reel", "engines", "permissions", "phone", "bot"]);
   });
 
+  it("puts the import step right after the engines, only when this computer has something to bring in", () => {
+    expect(beatsFor({ dictation: true, reel: false, setupImport: true })).toEqual(["hello", "engines", "import", "permissions", "phone", "bot"]);
+    expect(beatsFor({ dictation: false, reel: true, setupImport: true })).toEqual(["hello", "reel", "engines", "import", "phone", "bot"]);
+    expect(beatsFor({ dictation: true, reel: false, setupImport: false })).toEqual(beatsFor({ dictation: true, reel: false }));
+    expect(beatsFor({ dictation: true, reel: true, hosted: true, setupImport: true })).toEqual(["hello", "bot"]);
+    expect(nextBeat(beatsFor({ dictation: true, reel: false, setupImport: true }), "engines")).toBe("import");
+    expect(flowDotsShown("import")).toBe(true);
+    expect(beatWidth("import")).toBeGreaterThan(beatWidth("hello"));
+  });
+
+  it("with both, the import step follows the engines and the Cloud step comes just before the first bot", () => {
+    expect(beatsFor({ dictation: true, reel: true, setupImport: true, cloud: true }))
+      .toEqual(["hello", "reel", "engines", "import", "permissions", "phone", "cloud", "bot"]);
+    expect(beatsFor({ dictation: false, reel: false, setupImport: true, cloud: true })).toEqual(["hello", "engines", "import", "phone", "cloud", "bot"]);
+    expect(beatsFor({ dictation: true, reel: true, hosted: true, setupImport: true, cloud: true })).toEqual(["hello", "bot"]);
+  });
+
   it("walks forward and back and stops at the ends", () => {
     const beats = beatsFor({ dictation: true, reel: false });
     expect(nextBeat(beats, "hello")).toBe("engines");
@@ -250,5 +260,54 @@ describe("beat machine", () => {
     for (const beat of beatsFor({ dictation: true, reel: true }).filter((id) => id !== "reel")) {
       expect(flowDotsShown(beat)).toBe(true);
     }
+  });
+});
+
+describe("the welcome's MausBot Cloud beat", () => {
+  it("comes after the phone and before the first bot, only when the Cloud can be bought here", () => {
+    expect(beatsFor({ dictation: true, reel: true, cloud: true })).toEqual(["hello", "reel", "engines", "permissions", "phone", "cloud", "bot"]);
+    expect(beatsFor({ dictation: false, reel: false, cloud: true })).toEqual(["hello", "engines", "phone", "cloud", "bot"]);
+    expect(beatsFor({ dictation: true, reel: true, cloud: false })).not.toContain("cloud");
+    expect(beatsFor({ dictation: true, reel: true })).not.toContain("cloud");
+    expect(beatsFor({ dictation: true, reel: true, hosted: true, cloud: true }), "never to a hosted workspace").toEqual(["hello", "bot"]);
+    for (const dictation of [true, false]) for (const reel of [true, false]) expect(beatsFor({ dictation, reel, cloud: true }).at(-1)).toBe("bot");
+    const beats = beatsFor({ dictation: false, reel: false, cloud: true });
+    expect([nextBeat(beats, "phone"), nextBeat(beats, "cloud"), previousBeat(beats, "bot")]).toEqual(["cloud", "bot", "cloud"]);
+    expect(beatWidth("cloud")).toBeGreaterThan(beatWidth("hello")); expect(flowDotsShown("cloud")).toBe(true);
+  });
+
+  it("is wanted only on this computer's own page with the Cloud bridge, unbranded, for an account that may buy, with the Admin's offer loaded", () => {
+    const here = { bridge: true, branded: false, hosted: false, remote: false };
+    expect(cloudBeatPossible(here)).toBe(true);
+    expect(cloudBeatWanted({ ...here, mayBuy: true, offer: { plans: [] } })).toBe(true);
+    for (const [why, place] of [["no Cloud bridge (not packaged, or a remote page)", { bridge: false }], ["a branded build", { branded: true }],
+      ["a hosted workspace", { hosted: true }], ["a remote viewer", { remote: true }]] as const) {
+      expect(cloudBeatPossible({ ...here, ...place }), why).toBe(false);
+      expect(cloudBeatWanted({ ...here, ...place, mayBuy: true, offer: { plans: [] } }), why).toBe(false);
+    }
+    for (const [why, extra] of [["an account with a plan, or one that may not buy", { mayBuy: false }], ["the account not known yet", { mayBuy: null }],
+      ["no offer from the Admin", { offer: null }], ["the offer still loading", { offer: undefined }]] as const) {
+      const input: Parameters<typeof cloudBeatWanted>[0] = { ...here, mayBuy: true, offer: { plans: [] } };
+      expect(cloudBeatWanted(Object.assign(input, extra)), why).toBe(false);
+    }
+  });
+
+  it("is recorded once in the onboarding record, so a later Cloud pitch can tell it was offered", () => {
+    expect(ONBOARDING_CLOUD_HINT).toBe("onboarding-cloud-v1");
+    expect(onboardingCloudOffered(undefined)).toBe(false);
+    expect(onboardingCloudOffered({ ...done, hintsSeen: ["tour-switcher"] })).toBe(false);
+    const patch = hintSeenPatch({ ...done, hintsSeen: ["tour-switcher"] }, ONBOARDING_CLOUD_HINT)!;
+    expect(patch).toEqual({ onboarding: { hintsSeen: ["tour-switcher", "onboarding-cloud-v1"] } });
+    expect(onboardingCloudOffered({ ...done, hintsSeen: patch.onboarding.hintsSeen })).toBe(true);
+  });
+
+  it("knows while the welcome is on screen, however often it mounts and unmounts", () => {
+    expect(welcomeOnScreen()).toBe(false);
+    const first = showWelcome(), second = showWelcome();
+    expect(welcomeOnScreen()).toBe(true);
+    first(); first();
+    expect(welcomeOnScreen(), "a second hide of the same mount changes nothing").toBe(true);
+    second();
+    expect(welcomeOnScreen()).toBe(false);
   });
 });

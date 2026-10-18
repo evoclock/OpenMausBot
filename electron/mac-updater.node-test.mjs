@@ -1,6 +1,4 @@
-// Exercise the shipped MacUpdater's real authenticated loopback ZIP proxy and
-// coordinator together. Only Electron's native updater is fake: no installed
-// app, signing identity, account, or live data is touched.
+// The shipped MacUpdater's real authenticated loopback ZIP proxy; only Electron's native updater is fake.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -44,7 +42,6 @@ function harness(t, { fetchZip = true } = {}) {
     nativeCalled.resolve();
     if (!fetchZip) return;
     void (async () => {
-      // The real proxy still requires its random per-attempt credentials.
       assert.equal((await readHttp(feed.url)).status, 401);
       const metadata = await readHttp(feed.url, feed.headers);
       assert.equal(metadata.status, 200);
@@ -85,7 +82,6 @@ function harness(t, { fetchZip = true } = {}) {
     );
     return transfer;
   };
-  // Counts only the checks made once the update is downloading.
   updater.checkForUpdates = async () => { checks += 1; };
   let state = { status: "idle" };
   const states = [];
@@ -108,14 +104,11 @@ function harness(t, { fetchZip = true } = {}) {
     }
     originalClear(timer);
   });
-  /** The hourly check finds 2.0.0, and it downloads by itself: the only way
-   * a download starts. */
   const found = async () => {
     const counting = updater.checkForUpdates;
     updater.checkForUpdates = async () => { updater.emit("update-available", { version: "2.0.0" }); };
     try { await coordinator.check(); } finally { updater.checkForUpdates = counting; }
   };
-  /** The download has settled, and the coordinator has heard how. */
   const downloadSettled = async () => {
     await transfer?.catch(() => {});
     await new Promise((resolve) => setImmediate(resolve));

@@ -6,9 +6,10 @@ ends; “unauthorized” after that boundary must not be repaired by giving a
 worker permanent browser credentials.
 
 The Claude driver keeps native background tasks disabled. Native subagents
-can still work within the active turn; asynchronous work across bots uses
-OpenMausBot's `delegate_bot` path, which owns each recipient's turn, approvals,
-and completion receipt. Long-running native Bash commands can no longer
+can still work within the active turn; asynchronous work across bots is a
+`coordinate_bots` assignment on OpenMausBot's job runtime
+(docs/runtime-contract.md), which owns each recipient's turn, approvals,
+and the report that resumes the requester. Long-running native Bash commands can no longer
 auto-background past the owning turn. This does not change approval modes or
 disable sandbox protections.
 
@@ -75,10 +76,11 @@ waiting on stdin, so 0 decides nothing). On an older CLI nothing says whether
 a steer was folded in, so every steer since the previous hold holds the
 result, and a folded one costs the grace below. A held result stands as the
 turn's if no `init` follows within 2 s (the words were folded after all), or
-if the continuation's `init` is followed by 30 s of silence. Peer asides and
-the queue-steer
-buttons go through the same `steer()`, so an aside landing in the last
-model call extends the turn into its continuation the same way. The CLI's
+if the continuation's `init` is followed by 30 s of silence. The queue-steer
+buttons go through the same `steer()`, so a steer landing in the last
+model call extends the turn into its continuation the same way. (A teammate's
+question no longer lands in a running turn: it is a `coordinate_bots`
+consultation on the job runtime, answered in a work thread of its own.) The CLI's
 `total_cost_usd` is a running total, so the turn's cost is the latest
 figure; per-turn token usage adds up.
 

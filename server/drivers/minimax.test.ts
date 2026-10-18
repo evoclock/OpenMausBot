@@ -189,7 +189,6 @@ describe("MinimaxDriver", () => {
   });
 });
 
-
 it("minimax preserves an explicit tools-off connection and rejects ambiguous flags", () => {
   expect(MinimaxDriver.decodeConfig({})).not.toHaveProperty("tools");
   expect(MinimaxDriver.decodeConfig({ tools: false })).toMatchObject({ tools: false });

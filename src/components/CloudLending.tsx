@@ -16,7 +16,6 @@ const PROBLEMS: Partial<Record<string, LocaleKey>> = {
   "machine-changed": "lending.status.machineChanged",
 };
 
-/** One line saying where lending stands. Pure, for the card and its tests. */
 export function lendingStatusKey(snapshot: CloudLendingSnapshot | null, switchedOn: boolean): LocaleKey | null {
   const state = snapshot?.state;
   if (state?.enabled) {
@@ -25,14 +24,10 @@ export function lendingStatusKey(snapshot: CloudLendingSnapshot | null, switched
     return PROBLEMS[state.problem ?? ""] ?? "lending.status.starting";
   }
   if (switchedOn) return "lending.status.chooseSomething";
-  // Off by an event the person should know about (signed out, another account).
   return state?.problem && state.problem !== "paused" ? PROBLEMS[state.problem] ?? null : null;
 }
 
-/** "Let my Cloud use this Mac": a switch, the scopes it lends, and this Mac's
- * own log. Every change applies at once; there is no confirmation, because
- * the switch and the chosen scopes are the consent. Main decides which Cloud
- * from the verified sign-in; nothing here names a server. */
+/** Security: main picks the Cloud from the verified sign-in; nothing here names a server. */
 export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
   const [snapshot, setSnapshot] = useState<CloudLendingSnapshot | null>(null);
   const [draftOn, setDraftOn] = useState(false);
@@ -44,8 +39,6 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
   const accept = (next: CloudLendingSnapshot) => {
     if (!mounted.current) return;
     setSnapshot(next);
-    // The saved grant is the truth for what is lent (it keeps its folders
-    // while off, so turning it back on lends the same things again).
     if (!pending.current && next.state) { setFolders(next.state.folders); setScreen(next.state.screen); }
   };
   useEffect(() => {
@@ -62,7 +55,6 @@ export function CloudLending({ bridge }: { bridge: CloudLendingBridge }) {
     catch { if (mounted.current) setFailed(true); }
     finally { pending.current = false; if (mounted.current) setWorking(false); }
   };
-  /** Lend exactly this selection now; an empty one lends nothing. */
   const lend = (nextFolders: SharedFolder[], nextScreen: boolean) => {
     setFolders(nextFolders); setScreen(nextScreen);
     void perform(() => nextFolders.length || nextScreen ? bridge.save({ folders: nextFolders, screen: nextScreen }) : bridge.stop());

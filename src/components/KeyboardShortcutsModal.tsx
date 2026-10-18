@@ -4,22 +4,17 @@ import { Keyboard, Search, X } from "lucide-react";
 import {
   filterShortcutGroups,
   isMacPlatform,
-  SHORTCUT_GROUPS,
+  shortcutGroupsFor,
   shortcutKeysForPlatform,
   type ShortcutItem,
 } from "@/lib/keyboard-shortcuts";
+import { useSendKey } from "@/lib/send-key";
 
-/** Props for the KeyboardShortcutsModal component. */
 export interface KeyboardShortcutsModalProps {
-  /** Whether the dialog is currently visible. */
   open: boolean;
-  /** Callback fired when the user requests closing the dialog. */
   onClose: () => void;
 }
 
-/**
- * Single shortcut row displaying its description and styled keycaps.
- */
 function ShortcutRow({ item, isMac }: { item: ShortcutItem; isMac: boolean }) {
   const keys = shortcutKeysForPlatform(item, isMac);
 
@@ -40,15 +35,12 @@ function ShortcutRow({ item, isMac }: { item: ShortcutItem; isMac: boolean }) {
   );
 }
 
-/**
- * A modal cheat sheet displaying all available keyboard shortcuts categorized
- * into Navigation, Chat & Composer, and Workspace Management.
- */
 export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModalProps) {
   const [query, setQuery] = useState("");
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const isMac = isMacPlatform();
+  const sendKey = useSendKey();
 
   useLayoutEffect(() => {
     const dialog = dialogRef.current;
@@ -62,7 +54,7 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
 
   if (!open) return null;
 
-  const groups = filterShortcutGroups(SHORTCUT_GROUPS, query, isMac);
+  const groups = filterShortcutGroups(shortcutGroupsFor(sendKey), query, isMac);
 
   return (
     <dialog
@@ -76,7 +68,6 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
       <div
         className="flex max-h-[85vh] flex-col"
       >
-        {/* Modal Header */}
         <div className="flex items-center justify-between border-b border-hairline/40 px-5 py-4">
           <div className="flex items-center gap-2.5">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
@@ -101,7 +92,6 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
           </button>
         </div>
 
-        {/* Search Input */}
         <div className="border-b border-hairline/30 px-5 py-2.5">
           <div className="flex items-center gap-2 rounded-xl border border-hairline/40 bg-inset px-3 py-1.5 focus-within:border-focus">
             <Search size={14} className="shrink-0 text-ink-secondary" />
@@ -116,7 +106,6 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
           </div>
         </div>
 
-        {/* Shortcuts List */}
         <div className="flex-1 overflow-y-auto px-5 py-3 space-y-4">
           {groups.length === 0 ? (
             <div className="py-8 text-center text-[13px] text-ink-secondary">
@@ -138,7 +127,6 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
           )}
         </div>
 
-        {/* Modal Footer */}
         <div className="flex items-center justify-between border-t border-hairline/40 bg-card/30 px-5 py-2.5 text-[11.5px] text-ink-secondary">
           <span>
             Press <kbd className="rounded bg-control px-1 py-0.5 font-mono text-[10.5px]">?</kbd> when not typing to open
@@ -146,7 +134,7 @@ export function KeyboardShortcutsModal({ open, onClose }: KeyboardShortcutsModal
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg bg-raised px-3 py-1 font-medium text-ink hover:brightness-110"
+            className="ui-button ui-button-md"
           >
             Done
           </button>

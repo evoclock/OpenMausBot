@@ -1,7 +1,3 @@
-// The exit beat: the seeded bot gets a name, a color, and one standing
-// instruction. This is the first touch of bot settings, so every field is
-// optional with a sensible default and Finish always works, even when the
-// save fails (the bot can be edited later from its settings).
 import { useEffect, useState } from "react";
 import { MausAvatar } from "@/components/Avatar";
 import { cn } from "@/lib/cn";
@@ -12,8 +8,6 @@ import { inputClass, PrimaryButton, QuietButton, staggerIndex, type BeatProps } 
 
 const SOUL_LINE_LIMIT = 200;
 
-/** The instruction line joins whatever SOUL the bot already has rather than
- * replacing it; a bot imported from a team keeps its playbook. */
 function soulWithLine(existing: string | undefined, line: string): string | undefined {
   const trimmed = line.trim();
   if (!trimmed) return undefined;
@@ -78,7 +72,6 @@ export function MeetYourBotBeat({
       </p>
 
       <div className="animate-rise mt-5 flex items-center gap-4" style={staggerIndex(1)}>
-        {/* the bot itself, in its chosen color, next to the guide */}
         <MausAvatar color={color} state="happy" size={64} label={name || bot?.name} />
         <div className="min-w-0 flex-1">
           <label className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary" htmlFor="welcome-bot-name">

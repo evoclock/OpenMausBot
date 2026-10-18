@@ -1,11 +1,4 @@
-// checkpoints.ts cost contract: the shadow index stays incremental (a
-// case-only rename rebuilds it once, found from folder listings read without
-// blocking the event loop), GC is throttled and runs behind the turn's settled
-// diff (or, when a turn settled without one, ahead of the next snapshot), and
-// a git timeout switches only that bot+folder off (one log line, later turns
-// skip without spawning git). Real git does the work; execFile is wrapped
-// only to record calls and to inject a timeout or object counts, readdirSync
-// only to record calls.
+// Real git does the work; execFile is wrapped only to record calls and inject a timeout or object counts, readdirSync only to record calls.
 import { createHash } from "node:crypto";
 import { execFile as realExecFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
@@ -17,6 +10,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 // disposable test home before any test module imports config.ts.
 import { CHECKPOINTS_DIR, diffWorkingTree, release, snapshot } from "./checkpoints.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { hostTimeout } from "./testing/host-timeout.ts";
 
 type Injected = { error: Error; stdout?: string; stderr?: string } | { stdout: string };
 const hooks = vi.hoisted(() => ({
@@ -76,7 +70,6 @@ function shadowGit(bot: string, cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: { ...process.env, GIT_DIR: join(shadow, ".git") } });
 }
 
-/** The shadow repo's snapshot hashes, newest first, without the empty base marker. */
 function snapshotHashes(bot: string, cwd: string): string[] {
   const hashes = shadowGit(bot, cwd, "log", "--format=%H").split("\n").filter(Boolean);
   hashes.pop(); // the root of the log is always the empty base marker
@@ -92,8 +85,7 @@ function commitExists(bot: string, cwd: string, hash: string): boolean {
   }
 }
 
-/** Wait for every operation queued on the folder's shadow repo (release()
- * queues behind them; releasing a pin never taken is a no-op). */
+/** release() queues behind the folder's operations, and releasing a pin never taken is a no-op. */
 async function drain(bot: string, cwd: string): Promise<void> {
   await release(bot, cwd, "test-drain");
 }
@@ -135,15 +127,28 @@ describe("incremental shadow index", () => {
     expect(subcommands()).not.toContain("gc");
     expect(subcommands()).not.toContain("reflog");
     expect(subcommands().filter(command => command === "add")).toHaveLength(1);
-    // the settled-diff path is incremental too
     hooks.calls = [];
     expect(await diffWorkingTree(bot, cwd, first!)).toEqual({ changed: [], added: [], deleted: [] });
     expect(subcommands()).not.toContain("read-tree");
-    // The assertions are about which git subcommands run, not how fast.
-    // Writing and first-indexing 3,000 files takes ~2 s on macOS but runs
-    // past vitest's 20 s default on CI's Windows runners, so give the
-    // fixture room rather than shrink the tree it is about.
-  }, 120_000);
+    // 3,000 files take ~2 s on macOS but run past vitest's 20 s default on CI's Windows runners; hostTimeout doubles it there.
+  }, hostTimeout(120_000));
+
+  it("takes a turn's snapshot in a handful of git calls, moving HEAD and the turn's pin in one", async () => {
+    const { bot, cwd } = workspace();
+    writeFileSync(join(cwd, "a.txt"), "one");
+    await snapshot(bot, cwd, "first");
+    writeFileSync(join(cwd, "a.txt"), "two");
+    hooks.calls = [];
+    const changed = await snapshot(bot, cwd, "changed", undefined, { pin: "dispatch-1" });
+    expect(changed).toMatch(/^[0-9a-f]{40}$/);
+    expect(subcommands()).toEqual(["ls-files", "log", "ls-files", "ls-files", "add", "write-tree", "commit-tree", "update-ref", "count-objects"]);
+    expect(shadowGit(bot, cwd, "rev-parse", "HEAD").trim()).toBe(changed);
+    expect(shadowGit(bot, cwd, "for-each-ref", "--format=%(objectname)", "refs/omb-live/").trim()).toBe(changed);
+    hooks.calls = [];
+    expect(await snapshot(bot, cwd, "unchanged")).toBe(changed);
+    expect(subcommands()).toEqual(["ls-files", "log", "ls-files", "ls-files", "add", "write-tree"]);
+    await release(bot, cwd, "dispatch-1");
+  });
 
   it("falls back to a full rebuild when the index cannot be listed", async () => {
     const { bot, cwd } = workspace();
@@ -158,7 +163,6 @@ describe("incremental shadow index", () => {
     expect(second).toMatch(/^[0-9a-f]{40}$/);
     expect(second).not.toBe(first);
     expect(subcommands()).toContain("read-tree");
-    // not a failure: the bot keeps snapshotting
     hooks.inject = null;
     writeFileSync(join(cwd, "a.txt"), "three");
     expect(await snapshot(bot, cwd, "third")).toMatch(/^[0-9a-f]{40}$/);
@@ -250,7 +254,6 @@ describe("incremental shadow index", () => {
     const collected = subcommands().indexOf("gc");
     expect(collected).toBeGreaterThanOrEqual(0);
     expect(subcommands().indexOf("reflog")).toBeLessThan(collected);
-    // ahead of the snapshot's own staging, not behind it
     expect(subcommands().indexOf("add")).toBeGreaterThan(collected);
     writeFileSync(join(cwd, "b.txt"), "made by the turn");
     expect(await diffWorkingTree(bot, cwd, next!)).toEqual({ changed: [], added: ["b.txt"], deleted: [] });
@@ -272,14 +275,11 @@ describe("incremental shadow index", () => {
     hooks.calls = [];
     const hashB = await snapshot(bot, cwd, "turn B", undefined, { pin: "dispatch-B" });
     hooks.inject = null;
-    // A ends first: its diff still finds its pre-turn commit, and the
-    // collection queued behind that diff keeps it
     expect(await diffWorkingTree(bot, cwd, hashA!)).toEqual({ changed: ["a.txt"], added: [], deleted: [] });
     await release(bot, cwd, "dispatch-A");
     await drain(bot, cwd);
     expect(subcommands()).toContain("gc");
     expect(commitExists(bot, cwd, hashA!)).toBe(true); // not HEAD: only the pin kept it
-    // B ends; the next collection reclaims both
     await release(bot, cwd, "dispatch-B");
     writeFileSync(join(cwd, "a.txt"), "turn C");
     collectionDue();
@@ -326,7 +326,7 @@ describe.runIf((process.platform === "darwin" || process.platform === "win32") &
     expect(await diffWorkingTree(bot, cwd, first!)).toEqual({ changed: [], added: ["dir3/sub/file.txt"], deleted: ["Dir3/sub/file.txt"] });
     const renamed = await snapshot(bot, cwd, "renamed");
     expect(renamed).not.toBe(first);
-    expect(subcommands()).toContain("read-tree"); // the rename was found
+    expect(subcommands()).toContain("read-tree");
     expect(hooks.readdirSync.filter(path => path.startsWith(cwd) || path.startsWith(realpathSync(cwd)))).toEqual([]);
   });
 });
@@ -361,7 +361,6 @@ describe("git timeout", () => {
     expect(hooks.calls).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
 
-    // the bot's other folders keep working
     hooks.inject = null;
     expect(await snapshot(bot, other, "turn 3")).toMatch(/^[0-9a-f]{40}$/);
     expect(warn).toHaveBeenCalledTimes(1);
@@ -375,7 +374,6 @@ describe("git timeout", () => {
     expect(await snapshot(bot, cwd, "turn 1")).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toContain(`for bot ${bot} in ${realpathSync(cwd)}`);
-    // folder-scoped, not bot-wide
     const other = workspace().cwd;
     hooks.inject = null;
     expect(await snapshot(bot, other, "turn 2")).toMatch(/^[0-9a-f]{40}$/);

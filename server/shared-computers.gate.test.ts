@@ -1,12 +1,3 @@
-// The opt-in computer-sharing feature ships OFF (features.sharedComputers,
-// server/config.ts). This file proves what "off" means on the wire: every
-// route of the family answers exactly the way a route this build never had
-// answers, so a probe cannot tell a disabled feature from an absent one —
-// and that turning the flag on brings the same routes back.
-//
-// Same harness as the other shared-computer tests: a real server on a
-// throwaway home, a scripted fake CLI, and the test-only capability mint the
-// bot-facing /api/internal routes need.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,7 +32,6 @@ const api = async (method: string, path: string, body?: unknown): Promise<ApiRes
   return { status: res.status, body: (parsed ?? {}) as Record<string, unknown> };
 };
 
-/** A bot's own agent process, spoken for by the test-only capability mint. */
 const internal = async (method: string, path: string, body?: unknown): Promise<ApiResult> => {
   const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
     method: "POST",
@@ -61,8 +51,6 @@ const internal = async (method: string, path: string, body?: unknown): Promise<A
 const descriptorCapabilities = async (): Promise<Record<string, unknown>> =>
   ((await api("GET", "/.well-known/openmausbot/environment")).body.capabilities ?? {}) as Record<string, unknown>;
 
-/** Every public route of the family, plus a path this build genuinely has no
- * handler for — the control the disabled routes must be identical to. */
 const PUBLIC_ROUTES = [
   "/api/shared-computers/connect",
   "/api/shared-computers/11111111-1111-4111-8111-111111111111/poll",
@@ -99,7 +87,7 @@ beforeAll(async () => {
   child.stderr?.on("data", (chunk) => (stderr += String(chunk)));
   const deadline = Date.now() + 20_000;
   for (;;) {
-    try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch { /* not up yet */ }
+    try { if ((await fetch(`${BASE}/api/health`)).ok) break; } catch {}
     if (Date.now() > deadline) throw new Error(`server never came up. stderr:\n${stderr}`);
     await new Promise((wake) => setTimeout(wake, 150));
   }
@@ -120,11 +108,8 @@ it("answers every shared-computer route the way a route this build never had ans
   for (const path of PUBLIC_ROUTES) {
     const gated = await api("POST", path, {});
     expect(gated.status, path).toBe(404);
-    // Byte-identical, down to the echoed method and path: nothing here says
-    // "disabled", "not enabled", or "pair this desktop first".
     expect(gated.body, path).toEqual({ error: `no route: POST ${path}` });
   }
-  // The owner-scoped status read, too.
   expect(await api("GET", "/api/shared-computers")).toEqual({ status: 404, body: { error: "no route: GET /api/shared-computers" } });
 });
 
@@ -150,8 +135,6 @@ it("brings the whole surface back when features.sharedComputers is turned on", a
   expect((await api("PATCH", "/api/config", { features: { sharedComputers: true } })).status).toBe(200);
   expect((await api("GET", "/api/config")).body.features).toMatchObject({ sharedComputers: true });
 
-  // The route exists again: loopback is not a paired desktop session, so it
-  // is refused on authority — a different answer from "no such route".
   const connect = await api("POST", "/api/shared-computers/connect", {});
   expect(connect.status).toBe(403);
   expect(connect.body).toEqual({ error: "Pair this desktop first" });
@@ -159,7 +142,6 @@ it("brings the whole surface back when features.sharedComputers is turned on", a
   const listed = await internal("GET", "/api/internal/shared-computers");
   expect(listed.status).toBe(200);
   expect(listed.body).toEqual({ computers: [] });
-  // Loopback lends nothing and is nobody's computer here.
   expect(await api("GET", "/api/shared-computers")).toEqual({ status: 200, body: { computers: [] } });
 
   expect(await descriptorCapabilities()).toMatchObject({ sharedComputers: true });

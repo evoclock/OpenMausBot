@@ -1,18 +1,4 @@
-// The speaker — one voice for the whole window.
-//
-// Deliberately a singleton: two bots talking over each other is never what
-// anyone wants, so starting a new utterance cancels whatever was speaking.
-// That single rule is also what makes interrupting work — call mode just
-// calls stop().
-//
-// Audio comes from the harness (POST /api/tts/speak), which holds the
-// cloud voice keys. The renderer never sees them, and never talks to a
-// hosted voice provider directly.
-//
-// Text is split into utterances by the harness too, next to the transform
-// that produced it — it is the piece most likely to be tuned against real
-// transcripts, and keeping it in one place is the same reasoning as the
-// server-computed approval key.
+// Audio comes from the harness, which holds the voice keys: the renderer never sees them or calls a voice provider.
 
 import { localSystemVoiceActive, remoteSystemVoice, resolveLocalSystemVoice } from "@/lib/local-voice";
 
@@ -20,10 +6,8 @@ export type SpeechStatus = "idle" | "preparing" | "speaking";
 
 export interface SpeechSnapshot {
   status: SpeechStatus;
-  /** what is being spoken, so the UI can show a stop button in the right place */
   botId?: string;
   messageId?: string;
-  /** the utterance currently audible — call mode shows it as a caption */
   caption?: string;
   error?: string;
 }
@@ -42,7 +26,6 @@ const IDLE: SpeechSnapshot = { status: "idle" };
 export class Speaker {
   private snapshot: SpeechSnapshot = IDLE;
   private watchers = new Set<(s: SpeechSnapshot) => void>();
-  /** bumped on every speak()/stop(); async work whose token is stale exits */
   private token = 0;
   private audio: HTMLAudioElement | null = null;
   private objectUrl: string | null = null;
@@ -50,11 +33,7 @@ export class Speaker {
   private request: AbortController | null = null;
   private localUtterance: SpeechSynthesisUtterance | null = null;
   private settleLocalSpeech: ((finished: boolean) => void) | null = null;
-  /** The non-TTS audio source currently holding the voice (a voice-note
-   * bubble). Identity is the claim object, not the pause callback, so a
-   * caller reusing one callback cannot let an older release clear a newer
-   * claim. Cleared by stop() before it runs, and by the holder's own
-   * release, so a stale element is never paused twice. */
+  /** Identity is the claim object, not the callback, so an older release cannot clear a newer claim. */
   private externalClaim: { pause: () => void } | null = null;
 
   subscribe(fn: (s: SpeechSnapshot) => void): () => void {
@@ -72,7 +51,6 @@ export class Speaker {
     for (const watcher of Array.from(this.watchers)) watcher(next);
   }
 
-  /** True while this exact message is the one being spoken. */
   isSpeaking(messageId?: string): boolean {
     if (this.snapshot.status === "idle") return false;
     return messageId ? this.snapshot.messageId === messageId : true;
@@ -89,19 +67,12 @@ export class Speaker {
     this.settleLocalSpeech = null;
     this.localUtterance = null;
     if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-    // Pausing/removing an <audio> source does not reliably fire `ended` or
-    // `error`. Resolve the play promise ourselves so every interrupted
-    // speak() settles and call mode cannot leak a forever-pending task.
+    // Pausing or removing an <audio> source does not reliably fire `ended` or `error`.
     if (this.settlePlayback) this.settlePlayback(false);
     else this.teardownAudio();
     if (this.snapshot.status !== "idle" || this.snapshot.error) this.set(IDLE);
   }
 
-  /** Take the window's single voice for non-TTS playback — a voice-note
-   * bubble pressing play. Stops any utterance and pauses the previous
-   * external holder, the same one-voice rule speak() enforces on itself;
-   * starting TTS later pauses this holder through stop(). Returns a release
-   * function the holder calls when it stops or unmounts for its own reasons. */
   claimExternalVoice(pause: () => void): () => void {
     this.stop();
     const claim = { pause };
@@ -126,11 +97,6 @@ export class Speaker {
     }
   }
 
-  /**
-   * Speak a message. Resolves when it finishes, is interrupted, or fails —
-   * never rejects, because a voice failing is a thing to show, not a thing
-   * that should take a caller's turn down with it.
-   */
   async speak(text: string, opts: SpeakOptions = {}): Promise<void> {
     this.stop();
     const mine = this.token;
@@ -159,9 +125,6 @@ export class Speaker {
       return;
     }
 
-    // Prefetch: request utterance n+1 while n is audible. This is what buys
-    // responsiveness without holding a streaming socket open for the whole
-    // turn — the only gap the listener hears is the first.
     type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
     const render = (utterance: string): Promise<Rendered> =>
       this.render(utterance, opts.voiceId, controller.signal).then(
@@ -280,7 +243,6 @@ export class Speaker {
     return res.blob();
   }
 
-  /** Resolves true when the clip finished, false when it was interrupted. */
   private play(blob: Blob, live: () => boolean): Promise<boolean> {
     return new Promise((resolve) => {
       if (!live()) return resolve(false);
@@ -301,7 +263,6 @@ export class Speaker {
       };
       this.settlePlayback = done;
       audio.onended = () => done(true);
-      // a clip that cannot decode should not strand the whole message
       audio.onerror = () => done(false);
       audio.play().catch(() => done(false));
     });

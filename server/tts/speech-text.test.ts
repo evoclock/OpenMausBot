@@ -1,7 +1,3 @@
-// The spoken register is the half of voice that decides whether it is
-// pleasant, and it is the piece most likely to be tuned against real
-// transcripts — so its behaviour is pinned here rather than discovered in
-// the kitchen at 8am.
 import { describe, expect, it } from "vitest";
 
 import { narrateTool, speakable, toUtterances } from "./speech-text.ts";
@@ -89,7 +85,6 @@ describe("toUtterances", () => {
   });
 
   it("glues a fragment onto its neighbour", () => {
-    // two words handed to a synthesizer produce two words of flat prosody
     const out = toUtterances("Yes. The whole suite is green and nothing else changed.");
     expect(out).toHaveLength(1);
     expect(out[0]).toContain("Yes.");
@@ -100,7 +95,6 @@ describe("toUtterances", () => {
     const out = toUtterances(long, { maxChars: 120 });
     expect(out.length).toBeGreaterThan(1);
     for (const piece of out) expect(piece.length).toBeLessThanOrEqual(140);
-    // nothing lost, nothing cut in half
     expect(out.join(" ")).toContain("item 39");
   });
 

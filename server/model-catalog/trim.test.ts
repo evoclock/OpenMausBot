@@ -197,8 +197,6 @@ describe("trimModelsDevCatalog shape", () => {
     const models = providers.p!.models;
     expect(Object.keys(models)).toEqual(["ok"]);
     expect(drops).toEqual([{ provider: "p", model: "__proto__", reason: "invalid" }]);
-    // The `__proto__` entry did not become the map's prototype, and names
-    // inherited from Object.prototype are not catalog hits either.
     for (const id of ["name", "reasoning", "constructor", "toString", "hasOwnProperty"]) {
       expect(models[id], id).toBeUndefined();
       expect(providers[id], id).toBeUndefined();

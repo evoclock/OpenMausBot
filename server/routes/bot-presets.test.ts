@@ -1,6 +1,3 @@
-// The preset routes are exercised the way a request reaches them: through
-// the table, on a real HTTP server, with a stand-in for index.ts's inline
-// routes behind it, over a real preset store in a throwaway folder.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";

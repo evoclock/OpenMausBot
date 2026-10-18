@@ -57,7 +57,6 @@ describe("Live credential config authorization", () => {
       expect((await api("PATCH", "/api/config", { live: { voice: "alloy", idleMinutes: 7 } })).status).toBe(200);
       expect((await api("PATCH", "/api/live/settings", { voice: "ash", idleMinutes: 9 }, admin)).status).toBe(200);
       expect(persistedLive()).toMatchObject({ key: "fixture-live-admin", voice: "ash", idleMinutes: 9 });
-      // The separate phone-safe settings route cannot smuggle a key either.
       expect((await api("PATCH", "/api/live/settings", { key: "fixture-live-client" }, admin)).status).toBe(400);
       expect(persistedLive()?.key).toBe("fixture-live-admin");
 

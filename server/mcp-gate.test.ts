@@ -1,6 +1,3 @@
-// The gate as a real process, with a scripted upstream MCP server on the far
-// side: frames must survive the round trip untouched except for an oversized
-// tool result, which must come back trimmed with its full text on disk.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,8 +12,7 @@ import { removeTempDir } from "./testing/cleanup.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GATE = join(HERE, "mcp-gate.ts");
 
-/** An upstream that answers tools/call with whatever its script says, and
- * echoes anything else back so the test can prove pass-through. */
+/** Answers tools/call with whatever its script says and echoes anything else, to prove pass-through. */
 const UPSTREAM = `
 const { createInterface } = require("node:readline");
 const { readFileSync } = require("node:fs");
@@ -162,17 +158,15 @@ describe("mcp-gate", () => {
     const answer = await call("search_products");
     const text = answer.result.content[0].text;
     expect(text.length).toBeLessThan(full.length / 10);
-    expect(text).toContain("OpenMausBot trimmed this tool result");
+    expect(text.startsWith("⚠️ TRUNCATED by OpenMausBot:")).toBe(true);
 
     const spillDir = join(scratch, "spill");
     const [file] = readdirSync(spillDir);
     expect(file).toContain("search_products");
     expect(readFileSync(join(spillDir, file), "utf8")).toBe(full);
-    // …but the model is not pointed at it: reading it back costs more than
-    // never trimming. It is there for the person and the harness.
     expect(text).not.toContain(join(spillDir, file));
 
-    const kept = JSON.parse(text.slice(0, text.indexOf("\n\n[OpenMausBot")));
+    const kept = JSON.parse(text.slice(text.indexOf("\n\n") + 2, text.lastIndexOf("\n\n⚠️ TRUNCATED")));
     expect(kept.products[0]).toEqual(products[0]);
     expect(kept.nextOffset).toBe("1");
   });
@@ -187,6 +181,23 @@ describe("mcp-gate", () => {
     const answer = await call("search_products");
     expect(answer.result.structuredContent.products.length).toBeLessThan(300);
     expect(answer.result.structuredContent.products[0]).toEqual(products[0]);
+    // the same records as the text, so the two copies never disagree
+    const text: string = answer.result.content[0].text;
+    const kept = JSON.parse(text.slice(text.indexOf("\n\n") + 2, text.lastIndexOf("\n\n⚠️ TRUNCATED")));
+    expect(answer.result.structuredContent).toEqual(kept);
+  });
+
+  it("matches structuredContent to the text whatever its key order", async () => {
+    const products = Array.from({ length: 300 }, (_, i) => ({ id: `p${i}`, blurb: "x".repeat(300) }));
+    start({
+      content: [{ type: "text", text: JSON.stringify({ products, meta: "x" }) }],
+      structuredContent: { meta: "x", products },
+    });
+
+    const answer = await call("search_products");
+    const text: string = answer.result.content[0].text;
+    const kept = JSON.parse(text.slice(text.indexOf("\n\n") + 2, text.lastIndexOf("\n\n⚠️ TRUNCATED")));
+    expect(answer.result.structuredContent).toEqual(kept);
   });
 
   it("honours a budget the harness sets", async () => {
@@ -200,16 +211,12 @@ describe("mcp-gate", () => {
     start({ content: [{ type: "text", text: "ok" }] });
     send({ jsonrpc: "2.0", id: 3, method: "peek" });
     await nextLine();
-    // proven by the upstream having started at all: it reads SCRIPT from the
-    // env the gate passed through. Gate-only keys must not reach it.
+    // The upstream started at all, so it read SCRIPT from the env the gate passed through.
     expect(JSON.parse(JSON.stringify(process.env.OMB_GATE_UPSTREAM ?? null))).toBe(null);
   });
 
   it("spawns an upstream named as a bare command on PATH", async () => {
-    // The CLI spawned these servers itself on every platform, so the gate has
-    // to as well: `npx -y mcp-remote ...` is an npm shim on Windows, which
-    // CreateProcess cannot exec directly. Proven here through the same
-    // resolver the drivers use, on a bare name rather than an absolute path.
+    // `npx -y mcp-remote ...` is an npm shim on Windows, which CreateProcess cannot exec directly.
     const script = join(scratch, "reply.json");
     writeFileSync(script, JSON.stringify({ content: [{ type: "text", text: "ok" }] }));
     const upstreamJs = join(scratch, "upstream.cjs");
@@ -232,8 +239,6 @@ describe("mcp-gate", () => {
   });
 
   it("relays a result whole when it is a shape the trimmer cannot cut", async () => {
-    // no content array at all: nothing to trim, and dropping it would lose the
-    // tool's answer
     start({ someOtherShape: "z".repeat(40_000) });
     const answer = await call("weird_tool");
     expect(answer.result.someOtherShape.length).toBe(40_000);
@@ -305,6 +310,50 @@ describe("mcp-gate", () => {
     gate!.stdin.write("not-json\n");
     expect(JSON.parse(await nextLine()).error).toMatchObject({ code: -32700 });
     expect(existsSync(join(scratch, "reply.json.calls"))).toBe(false);
+  });
+
+  // Lists the directory's three names beside a plain tool and answers every call with a long text, recording what it ran.
+  const DIRECTORY_UPSTREAM = `
+const { createInterface } = require("node:readline");
+const { appendFileSync } = require("node:fs");
+const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "tools/list") return send(msg.id, { tools: ["search_tools", "describe_tool", "call_tool", "read"].map((name) => ({ name, inputSchema: { type: "object" } })) });
+  if (msg.method === "tools/call") {
+    appendFileSync(process.env.SCRIPT + ".calls", JSON.stringify(msg.params) + "\\n");
+    return send(msg.id, { content: [{ type: "text", text: "d".repeat(4_000) }] });
+  }
+  send(msg.id, {});
+});
+`;
+  const ran = () => existsSync(join(scratch, "reply.json.calls"))
+    ? readFileSync(join(scratch, "reply.json.calls"), "utf8").trim().split("\n").map((line) => JSON.parse(line).name as string) : [];
+  const callWith = async (name: string, args: unknown, id: number) => {
+    send({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    return JSON.parse(await nextLine());
+  };
+
+  it("checks call_tool against the tool it runs only when its upstream is the tool directory", async () => {
+    const scope = { OMB_GATE_TOOL_SCOPE: JSON.stringify({ allow: ["mcp:shop:read"] }), OMB_GATE_BUDGET: "600" };
+    start({}, { ...scope, OMB_GATE_DIRECTORY: "1" }, DIRECTORY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(JSON.parse(await nextLine()).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["search_tools", "describe_tool", "call_tool", "read"]);
+    expect((await callWith("call_tool", { name: "write", arguments: {} }, 2)).error).toMatchObject({ code: -32602 });
+    expect(ran()).toEqual([]);
+    expect((await callWith("describe_tool", { name: "read" }, 3)).result.content[0].text).toHaveLength(4_000);
+    expect((await callWith("call_tool", { arguments: {} }, 4)).result.content[0].text).toHaveLength(4_000);
+    expect((await callWith("call_tool", { name: "read", arguments: {} }, 5)).result.content[0].text).toContain("TRUNCATED by OpenMausBot");
+    expect(ran()).toEqual(["describe_tool", "call_tool", "call_tool"]);
+  });
+
+  it("treats those names as ordinary tools for any other upstream", async () => {
+    start({}, { OMB_GATE_TOOL_SCOPE: JSON.stringify({ allow: ["mcp:shop:read"] }), OMB_GATE_BUDGET: "600" }, DIRECTORY_UPSTREAM);
+    send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+    expect(JSON.parse(await nextLine()).result.tools.map((tool: { name: string }) => tool.name)).toEqual(["read"]);
+    expect((await callWith("call_tool", { name: "read", arguments: {} }, 2)).error).toMatchObject({ code: -32602 });
+    expect((await callWith("describe_tool", { name: "read" }, 3)).error).toMatchObject({ code: -32602 });
+    expect(ran()).toEqual([]);
   });
 
   it("strips policy from the upstream environment without losing its own configuration", async () => {

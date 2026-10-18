@@ -1,10 +1,7 @@
 // Stage a pinned Cloudflare Tunnel connector for every desktop architecture
-// electron-builder will package on this host. Pass --current for development
-// or self-hosting to stage only the platform and architecture running this
-// script. The release asset is verified before extraction and the executable
-// is verified again on every reuse.
-// Nothing is installed globally and cloudflared's own updater stays disabled;
-// OpenMausBot updates this dependency with an ordinary reviewed app release.
+// electron-builder packages on this host; --current stages only this host's
+// platform and architecture. Verified before extraction and on every reuse.
+// cloudflared's own updater stays disabled.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -113,11 +110,8 @@ export function verifySha256(value, expected, label = "cloudflared asset") {
 
 const executableName = (target) => (target.startsWith("win32-") ? "cloudflared.exe" : "cloudflared");
 
-/** Identify the exact desktop target from the executable header without
- * invoking untrusted bytes. cloudflared's release checksums are verified
- * before this helper is used, but keeping architecture validation separate
- * prevents a correctly checksummed asset from being staged into the wrong
- * electron-builder resource directory. */
+/** Identify the target from the executable header without running it, so a
+ * correctly checksummed asset is never staged into the wrong resource directory. */
 export function executableTarget(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
 

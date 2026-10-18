@@ -1,7 +1,5 @@
-// Shared local-host inject — the sidecar workflow, inside the picker.
-// Probe oMLX / Ollama / EXO / LM Studio / Unsloth, list whatever they
-// serve under Custom on every agent, and decode a pick back into a host
-// + API id the selected driver can inject.
+// Shared local-host inject: probe oMLX / Ollama / EXO / LM Studio / Unsloth, list what they serve
+// under Custom, and decode a pick into a host + API id.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -36,17 +34,11 @@ export interface InjectedModel {
   host: string;
   model: string;
   label: string;
-  /** In VRAM / running on the host right now — Custom pins these first. */
   loaded?: boolean;
-  /** the host's own word on the model's context window (Ollama reports it
-   * for running models in /api/ps) — sizes the model-facing rebuild instead
-   * of guessing from the name */
+  /** the host's context window (Ollama reports it for running models in /api/ps) */
   contextWindow?: number;
 }
 
-/** Ollama's /api/ps lists running models with their context_length; a
- * small model's real window matters more than a big one's — an 8k model
- * guessed at 32k gets a rebuild it cannot hold. */
 export function contextWindowsFromPs(extra: unknown): Map<string, number> {
   const out = new Map<string, number>();
   const rec = extra && typeof extra === "object" ? (extra as { models?: unknown }) : null;
@@ -88,12 +80,8 @@ export function injectedApiModel(id: string | null | undefined): string | null {
   return decodeInjectId(id)?.model ?? null;
 }
 
-/**
- * Map a picker / leftover API id onto a live `host::model` inject id.
- * Claude Code's settings.model is the last slug it used (e.g.
- * `orcarouter/Qwen3.8-27B-Uncensored-GGUF`) and is not host-encoded, so a
- * Custom pick of that leftover would otherwise skip inject and demand /login.
- */
+/** Claude Code's settings.model is its last slug and not host-encoded, so a Custom pick of it maps
+ * here instead of demanding /login. */
 export function resolveInjectId(
   modelId: string | null | undefined,
   extras: readonly InjectedModel[],
@@ -122,11 +110,7 @@ export function hostApiKey(host: LocalHost, env: Record<string, string | undefin
 
 const CODEX_RESERVED_PROVIDERS = new Set(["openai", "ollama", "lmstudio"]);
 
-/**
- * Configure the custom local providers on the Codex app-server without
- * rewriting the user's config.toml. Provider secrets ride in the child
- * environment; argv only contains the corresponding environment key name.
- */
+/** Codex local providers without rewriting config.toml: secrets ride the child env, argv names the key only. */
 export function codexLocalProviderArgs(
   env: Record<string, string | undefined>,
   modelId: string | null | undefined,
@@ -168,10 +152,8 @@ function readUnslothKey(env: Record<string, string | undefined>): string | null 
       api_key?: unknown;
       servers?: unknown;
     };
-    // Older Studio wrote `{ api_key }`. Current Studio writes
+    // Older Studio wrote `{ api_key }`; current Studio writes
     // `{ servers: { "http://127.0.0.1:8888": { minted: ["sk-unsloth-…"] } } }`.
-    // Prefer the localhost minted token so a stale mixed-format file cannot
-    // win; keep the top-level key as fallback.
     if (raw.servers && typeof raw.servers === "object") {
       const servers = raw.servers as Record<string, unknown>;
       for (const url of ["http://127.0.0.1:8888", "http://localhost:8888"]) {
@@ -232,7 +214,6 @@ async function timedJson(
   }
 }
 
-/** Which of this host's models are actually in memory / running. */
 export function loadedIdsFromPayloads(_host: LocalHost, catalog: unknown, extra: unknown): Set<string> {
   const loaded = new Set<string>();
   const catalogIds = new Set(idsFromModelsPayload(catalog));
@@ -255,9 +236,7 @@ export function loadedIdsFromPayloads(_host: LocalHost, catalog: unknown, extra:
       : Array.isArray(rec.data)
         ? rec.data
         : [];
-    // oMLX /v1/models/status lists every model with loaded:true/false.
-    // /health only has default_model, which is the configured default — not
-    // necessarily what is in memory. Prefer explicit flags when present.
+    // oMLX /v1/models/status flags loaded models; /health's default_model is only the configured default.
     const hasLoadedFlags = running.some(
       (row) => row && typeof row === "object" && ("loaded" in row || "state" in row),
     );
@@ -307,7 +286,6 @@ function loadedProbeUrl(host: LocalHost): string | null {
   return null;
 }
 
-/** Live models from the same local hosts the sidecar probed. */
 export async function probeLocalInjects(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
@@ -352,7 +330,6 @@ export async function probeLocalInjects(
   return found;
 }
 
-/** Append live local models as custom rows. Official rows stay first. */
 export async function mergeLocalInject(
   catalog: ModelCatalog,
   env: Record<string, string | undefined> = process.env,
@@ -364,8 +341,6 @@ export async function mergeLocalInject(
   const extras = await probeLocalInjects(env, fetchImpl);
   if (!extras.length) return catalog;
   const liveApiIds = new Set(extras.map((extra) => extra.model));
-  // A settings leftover that is just the API id of a live inject is not a
-  // second model — Custom should only offer the host:: row.
   const options = catalog.options
     .filter((option) => decodeInjectId(option.id) || !option.custom || !liveApiIds.has(option.id))
     .map((option) => ({ ...option }));
@@ -389,7 +364,6 @@ export async function mergeLocalInject(
   return { default: catalog.default, options };
 }
 
-/** Point an OpenAI-compatible CLI at the injected host. */
 export function applyOpenAIInject(
   env: Record<string, string | undefined>,
   modelId: string | null | undefined,
@@ -404,7 +378,6 @@ export function applyOpenAIInject(
   return { model: inject.model, injected: true };
 }
 
-/** Point Claude Code at the injected host instead of Anthropic cloud. */
 export function applyClaudeInject(
   env: Record<string, string | undefined>,
   modelId: string | null | undefined,

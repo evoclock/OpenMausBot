@@ -231,8 +231,7 @@ test("a new parent refuses to pass an orphaned live delegated child", async () =
       child.once("error", reject);
       child.stdout.once("data", (chunk) => chunk.includes("ready") ? resolve() : reject(new Error(String(chunk))));
     });
-    // Simulate hard parent death: the primary record is complete but its pid
-    // is dead, while the subordinate child remains live.
+    // Hard parent death: the primary record is complete but its pid is dead, while the child stays live.
     const primaryPath = path.join(dataDir, LEASE_NAME);
     const stored = JSON.parse(readFileSync(primaryPath, "utf8"));
     stored.pid = await exitedPid();
@@ -246,8 +245,6 @@ test("a new parent refuses to pass an orphaned live delegated child", async () =
   } finally {
     child.kill("SIGKILL");
     await new Promise((resolve) => child.once("close", resolve));
-    // The original handle no longer matches the simulated dead owner. A fresh
-    // claimant safely retires both stale records and performs final cleanup.
     const recovered = acquireDataDirLease(dataDir);
     recovered.release();
   }
@@ -399,10 +396,7 @@ test("process entry API remains compatible with a standalone server", () => {
   assert.equal(lease.release(), true);
 });
 
-/**
- * Read the lease record this build actually writes, so the boot-identity tests
- * assert against the real on-disk shape instead of a hand-copied duplicate.
- */
+/** The record this build actually writes, so the boot-identity tests assert against the real on-disk shape. */
 function recordWrittenByThisProcess(dataDir) {
   const lease = acquireDataDirLease(dataDir);
   const record = JSON.parse(readFileSync(path.join(dataDir, LEASE_NAME), "utf8"));
@@ -420,10 +414,7 @@ function plantOwner(dataDir, overrides) {
 test("a lease left behind by an earlier boot is retired even though its pid is live", (t) => {
   const { dataDir } = temporaryDirectory();
   if (recordWrittenByThisProcess(dataDir).boot === null) return t.skip("no boot identity on this platform");
-  // The reported failure: a restart force-kills the desktop, the pid it
-  // recorded is reused by a root-owned daemon on the next boot, and kill(0)
-  // answers EPERM. Our own live pid reproduces that "owner looks alive" state
-  // exactly, without depending on which daemon holds a recycled pid.
+  // Our own live pid reproduces a pid reused by a root daemon after a reboot: kill(0) answers EPERM and the owner looks alive.
   plantOwner(dataDir, { boot: randomUUID(), pid: process.pid, token: randomUUID() });
 
   const lease = acquireDataDirLease(dataDir);
@@ -471,9 +462,7 @@ test("a delegated child from an earlier boot cannot block a new parent", (t) => 
   assert.equal(parent.release(), true);
 });
 
-// MOCA-270: macOS renames the host when it joins another network. A lease a
-// crash left on one network looked like another machine's on the next, and the
-// desktop refused to start until the person deleted the file by hand.
+// macOS renames the host when it joins another network.
 const renamedHost = (current) => (current.host === "Ryans-MacBook-Pro.local" ? "Ryans-MBP.lan" : "Ryans-MacBook-Pro.local");
 
 test("a lease this computer left under its old hostname is recovered", async (t) => {
@@ -502,9 +491,6 @@ test("a delegated child this computer left under its old hostname cannot block a
   assert.equal(parent.release(), true);
 });
 
-// Another computer's boot, or this computer's earlier boot under another name:
-// the two cannot be told apart, so both still fail closed. The message now says
-// how to recover when no other computer shares the folder.
 test("a lease under another name from another boot still fails closed, and says how to recover", async () => {
   const { dataDir } = temporaryDirectory();
   const current = recordWrittenByThisProcess(dataDir);
@@ -531,9 +517,7 @@ test("a lease under another name from another boot still fails closed, and says 
 
 test("a lease recorded above the machine's current uptime is retired", () => {
   const { dataDir } = temporaryDirectory();
-  // Windows has no boot session id, so a reboot is proven by the only
-  // one-directional signal available: a since-boot clock cannot run backwards
-  // within a single boot.
+  // Windows has no boot session id; a since-boot clock cannot run backwards within one boot.
   plantOwner(dataDir, {
     boot: null,
     uptime: Math.floor(osUptime() * 1000) + 3_600_000,
@@ -562,8 +546,7 @@ test("the contention error names the lease record so a stuck owner is recoverabl
 test("a stale lease whose pid was recycled by a root-owned daemon no longer blocks startup", (t) => {
   const { dataDir } = temporaryDirectory();
   if (recordWrittenByThisProcess(dataDir).boot === null) return t.skip("no boot identity on this platform");
-  // Root/container runners may be allowed to signal PID 1. Only run this
-  // fixture when it reproduces the reported EPERM failure.
+  // Root/container runners may signal PID 1; run only where this reproduces the EPERM failure.
   try {
     process.kill(1, 0);
     return t.skip("this runner can signal PID 1");
@@ -579,10 +562,6 @@ test("a stale lease whose pid was recycled by a root-owned daemon no longer bloc
 
 test("boot identity does not weaken exclusion: only one of many live racers wins", async () => {
   const { dataDir } = temporaryDirectory();
-  // The guarantee this module exists to provide. Boot identity may only ever
-  // prove a record dead, so concurrent live claimants must still serialize to
-  // exactly one owner -- a stale-detection bug that let two in would corrupt
-  // the very state the lease protects.
   const racers = await Promise.all(Array.from({ length: 8 }, (_, index) => runNode(`
     const { existsSync, writeFileSync } = await import("node:fs");
     const { acquireDataDirLease } = await import(${JSON.stringify(MODULE_URL)});
@@ -624,7 +603,6 @@ test("boot identity does not weaken exclusion: only one of many live racers wins
     assert.match(loser.error, /already using this data directory|being recovered/i);
   }
 
-  // And the directory is left usable rather than wedged by the contention.
   const after = acquireDataDirLease(dataDir);
   assert.equal(after.release(), true);
 });
@@ -637,9 +615,7 @@ test("a live but unrelated Windows pid reused within the same boot is treated as
   const siblingPid = sibling.pid;
   assert.ok(siblingPid);
   t.after(() => sibling.kill());
-  // Give the sibling enough time to start so its CreationDate is unambiguously
-  // later than the synthetic lease's createdAt, reproducing the same-boot
-  // PID-reuse case from the issue.
+  // Long enough that the sibling's CreationDate is unambiguously later than the synthetic lease's createdAt.
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const leasePath = path.join(dataDir, LEASE_NAME);

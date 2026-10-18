@@ -1,11 +1,4 @@
-// The full server with Cloud Pro's included decision model, over its real
-// HTTP boundary, against one stub that plays Jev (/jev, the person's own
-// decider.baseUrl) and the Admin's relay (/relay). With no key to paste,
-// rooms start on Auto and ask the relay; an own key wins and goes only to
-// Jev; clearing it falls back; an explicit off wins. The included token goes
-// only to <OMB_CLOUD_DECIDER_URL>/v1/systemone, only with the two requests
-// the relay accepts, and is never saved, shown, logged or handed to a child.
-// Disposable home; no network.
+// One stub plays Jev (/jev, the person's own decider.baseUrl) and the Admin's relay (/relay). Disposable home; no network.
 import { randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -127,7 +120,7 @@ beforeAll(async () => {
   const deadline = Date.now() + 20_000;
   for (;;) {
     if (child.exitCode !== null) throw new Error(`the server exited:\n${log}`);
-    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch { /* starting */ }
+    try { if ((await api("GET", "/api/health")).body?.pid === child.pid) break; } catch {}
     if (Date.now() > deadline) throw new Error(`the server did not start:\n${log}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -146,7 +139,6 @@ async function roomMessages(roomId: string): Promise<{ working: boolean; message
   return { working: Boolean(room?.working), messages: room?.messages ?? [] };
 }
 
-/** Send one message and wait for the round to settle; who spoke first. */
 async function round(roomId: string, text: string): Promise<RoomMessage> {
   const before = new Set((await roomMessages(roomId)).messages.map((message) => message.id));
   expect((await api("POST", `/api/groups/${roomId}/messages`, { text })).status).toBe(202);
@@ -160,7 +152,6 @@ async function round(roomId: string, text: string): Promise<RoomMessage> {
 }
 
 const routed = () => requests.filter((request) => request.type === "choice");
-/** A credential on the side that does not know it. */
 const crossed = () => requests.filter((request) =>
   (request.side === "jev" && request.auth.includes(INCLUDED)) || (request.side === "relay" && !request.auth.includes(INCLUDED)));
 
@@ -230,7 +221,6 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
     expect(routed().length).toBe(asked);
     const another = await api("POST", "/api/groups", { name: "Quiet", memberIds: [bots.Maya!.id, bots.Theo!.id] });
     expect(another.body.group.defaultResponder).not.toEqual({ kind: "auto" });
-    // switching back on needs no key of the person's own
     const on = await api("PUT", "/api/config", { decider: { enabled: true } });
     expect(on.status, on.text).toBe(200);
     expect(on.body.decider).toMatchObject({ included: true, enabled: true });
@@ -238,7 +228,6 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
 
   it("never sends a credential to the other side, nor the relay a request it refuses, and never saves, logs or hands on the included token", async () => {
     expect(crossed()).toEqual([]);
-    // two room decisions and one key check, and nothing else
     expect(requests.filter((request) => request.side === "relay").map((request) => request.type)).toEqual(["choice", "noul", "choice"]);
     expect(requests.filter((request) => request.refused)).toEqual([]);
     expect(readFileSync(join(data, "config.json"), "utf8")).not.toContain(INCLUDED);
@@ -247,7 +236,6 @@ describe("Cloud Pro's included decision model", { timeout: 90_000 }, () => {
     expect(rows).toContain('"seam":"roomRouting"');
     expect(rows).not.toContain(INCLUDED);
     expect(log).not.toContain(INCLUDED);
-    // An engine's environment.
     expect(existsSync(engineDump)).toBe(true);
     const engine = JSON.parse(readFileSync(engineDump, "utf8")).env;
     expect(engine).not.toHaveProperty("OMB_CLOUD_DECIDER_TOKEN");
@@ -264,8 +252,7 @@ console.log("dump-env 1.0.0");
     const probe = await api("POST", "/api/cli-test", { cli });
     expect(probe.body, probe.text).toMatchObject({ ok: true, version: "dump-env 1.0.0" });
     const raw = JSON.parse(readFileSync(dump, "utf8"));
-    // Proves the dump is the server's environment, not an empty one. Every
-    // OMB_CLOUD_* value, the relay URL included, is stripped from a probed CLI.
+    // Proves the dump is the server's environment, not an empty one; every OMB_CLOUD_* value is stripped from a probed CLI.
     expect(raw.HOME).toBe(home);
     expect(raw).not.toHaveProperty("OMB_CLOUD_DECIDER_URL");
     expect(raw).not.toHaveProperty("OMB_CLOUD_DECIDER_TOKEN");

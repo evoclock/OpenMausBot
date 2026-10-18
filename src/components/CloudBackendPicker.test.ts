@@ -1,17 +1,33 @@
-// Boat and a self-hosted VPS follow one rule (shared/cloud-computer.ts): an
-// engine that can use a computer can use either. The Computer engine, which
-// could run only on Boat, is gone, so neither backend is offered or refused
-// on its own, and no copy sends anyone to Boat to get around an engine.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import en from "@/locales/en.json";
-import { CloudBackendPicker } from "./CloudBackendPicker";
 
-describe("the cloud backend picker", () => {
+const fixture = vi.hoisted(() => ({ config: null as unknown }));
+vi.mock("@/state/store", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/state/store")>();
+  return { ...original, useStore: () => ({ state: { ...original.initialState, config: fixture.config }, dispatch: vi.fn() }) };
+});
+
+const { CloudBackendPicker } = await import("./CloudBackendPicker");
+const picker = (value: "box" | "vps" = "box") => renderToStaticMarkup(createElement(CloudBackendPicker, { value, onChange: () => {} }));
+
+describe("CloudBackendPicker", () => {
+  afterEach(() => { fixture.config = null; });
+
+  it("offers Boat or a self-hosted VPS on a desktop or self-hosted server", () => {
+    fixture.config = { cloudHome: false };
+    expect(picker()).toContain("Self-hosted VPS");
+  });
+
+  it("is hidden on My Cloud", () => {
+    fixture.config = { cloudHome: true };
+    expect(picker()).toBe("");
+  });
+
   it.each(["box", "vps"] as const)("offers both backends whichever is chosen (%s)", (value) => {
-    const markup = renderToStaticMarkup(createElement(CloudBackendPicker, { value, onChange: () => {} }));
+    const markup = picker(value);
     expect(markup).toContain("Boat");
     expect(markup).toContain("Self-hosted VPS");
     expect(markup).not.toContain("disabled");

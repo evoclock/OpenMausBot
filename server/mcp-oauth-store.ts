@@ -1,7 +1,4 @@
-// Sign-in state for URL MCP servers, kept apart from config.json so a
-// pasted or exported config never carries a token. One owner-only file:
-// per server, the URL it was signed in for (a token never follows the
-// entry to another address), the client it signed in as, and its tokens.
+// Kept apart from config.json so a pasted or exported config never carries a token; a token never follows its entry to another URL.
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
@@ -20,8 +17,7 @@ const recordSchema = z.object({
   state: z.enum(["needs-sign-in", "signed-in"]),
   issuer: z.string().optional(),
   clientId: z.string().optional(),
-  /** How a pre-registered app with a secret proves itself at the token
-   * endpoint. The secret stays in config.json; it is never kept here. */
+  /** The secret stays in config.json; it is never kept here. */
   tokenAuth: z.enum(["client_secret_post", "client_secret_basic"]).optional(),
   redirectUri: z.string().optional(),
   tokenEndpoint: z.string().optional(),
@@ -44,7 +40,6 @@ export class McpOAuthStore {
     this.file = file;
   }
 
-  /** The record for this server, only while it is still for this URL. */
   get(name: string, url: string): McpOAuthRecord | undefined {
     const record = this.read().servers[name];
     return record && record.url === url ? record : undefined;
@@ -63,14 +58,12 @@ export class McpOAuthStore {
     this.write(data);
   }
 
-  // Read through on every call: the file is small, and another process
-  // (the config CLI, a second window's server) may have changed it.
+  // Read through on every call: another process may have changed the file.
   private read(): StoreFile {
     try {
       const parsed = fileSchema.safeParse(JSON.parse(readFileSync(this.file, "utf8")));
       if (parsed.success) return parsed.data;
     } catch {
-      // missing or unreadable: empty until the next write
     }
     return { servers: {} };
   }

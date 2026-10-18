@@ -61,7 +61,6 @@ describe("Preset bots in the real renderer", () => {
       return true;
     })()`);
 
-    // Settings → Share as preset…: counts from the server, then Save file.
     await expect.poll(snapshot, { timeout: 10_000 }).toContain('button "You"');
     await click("You");
     await click("Settings");
@@ -82,7 +81,6 @@ describe("Preset bots in the real renderer", () => {
     await click("Done");
     await click("Close settings");
 
-    // Templates → Import the file: preset bots for New bot, no team.
     await clickWhenFree("New or share");
     await click("Templates");
     await click("Import");
@@ -106,7 +104,6 @@ describe("Preset bots in the real renderer", () => {
     stored.content[orgRow.installId] = stored.content[stored.presets[0].installId];
     writeFileSync(presetsFile, JSON.stringify(stored));
 
-    // Share team: the defaults preset goes in only when ticked.
     await clickWhenFree("New or share");
     await click("Templates");
     await click("Share");
@@ -121,7 +118,6 @@ describe("Preset bots in the real renderer", () => {
     await click("Cancel");
     await click("Close templates");
 
-    // New bot: organization presets, then imported ones, above the built-in roles.
     const bots = async () => (await api("/api/bots")).bots as Array<{ id: string; name: string; installedPackage?: Record<string, unknown> }>;
     const create = async (value: string, expected: string, shot: string) => {
       const before = await bots();

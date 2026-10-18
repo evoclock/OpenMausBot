@@ -1,4 +1,3 @@
-// One-place setup for the isolated Local VM image and its shared/per-bot policy.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "@/lib/i18n";
 import { waitForLocalVmReady } from "@/lib/local-vm-readiness";
@@ -19,6 +18,7 @@ import {
 } from "lucide-react";
 import { Card, CommandLine } from "./SettingsPrimitives";
 import { MacLocalControl } from "./MacLocalControl";
+import { Select } from "./Select";
 import { cn } from "@/lib/cn";
 import { useStore } from "@/state/store";
 
@@ -134,8 +134,6 @@ const destinationLabelKeys: Record<LocalVmInventoryInstance["destination"], Loca
   off: "vm.dest.off",
 };
 
-/** The badge's colour is decided by the kind, never by the label: a
- * translated label would silently stop matching `=== "Running"`. */
 export type ComputerStateKind =
   | "unmanaged"
   | "in-use"
@@ -184,10 +182,10 @@ export function cloudComputerInventoryStateKind(
 ): ComputerStateKind {
   if (instance.inUse) return "in-use";
   if (instance.state === "removing") return "removing";
-  if (["archived", "stopped"].includes(instance.state)) return "sleeping";
-  if (["archiving", "stopping"].includes(instance.state)) return "going-to-sleep";
+  if (instance.state === "archived") return "sleeping";
+  if (instance.state === "archiving") return "going-to-sleep";
   if (["idle", "ready", "running"].includes(instance.state)) return "running";
-  if (["init", "provisioning", "provisioned", "cloning", "starting"].includes(instance.state)) return "starting";
+  if (["init", "provisioning", "provisioned", "cloning"].includes(instance.state)) return "starting";
   return "attention";
 }
 
@@ -195,10 +193,7 @@ export function cloudComputerInventoryState(instance: CloudComputerInventoryInst
   return computerStateLabel(cloudComputerInventoryStateKind(instance));
 }
 
-/** Boat's account LIST is eventually consistent. Preserve the result of an
- * action the provider accepted instead of letting an older snapshot make a
- * confirmed deletion reappear, a pending deletion disappear, or a sleeping
- * computer look awake. */
+/** Boat's account LIST is eventually consistent: an older snapshot must not undo an action the provider accepted. */
 export function reconcileCloudInventorySnapshot(
   incoming: CloudComputerInventoryInstance[],
   previous: CloudComputerInventoryInstance[],
@@ -211,15 +206,14 @@ export function reconcileCloudInventorySnapshot(
     if (override === "deleted") return [];
     if (override === "deleting") return [{ ...instance, state: "removing" }];
     if (override !== "sleeping") return [instance];
-    if (["archived", "stopped"].includes(instance.state)) {
+    if (instance.state === "archived") {
       delete nextOverrides[instance.boxId];
       return [instance];
     }
     return [{ ...instance, state: "archived" }];
   });
 
-  // A transitioning Boat can briefly disappear from LIST. Keep the last safe
-  // row until LIST returns the terminal sleeping state.
+  // A transitioning Boat can briefly disappear from LIST.
   for (const instance of previous) {
     if (overrides[instance.boxId] !== "sleeping" || incomingIds.has(instance.boxId)) continue;
     instances.push({ ...instance, state: "archived" });
@@ -232,9 +226,7 @@ export function reconcileCloudInventorySnapshot(
   return { instances, overrides: nextOverrides };
 }
 
-/** An empty list proves deletion only when Boat says the inventory read was
- * authoritative. Provider outages and disconnected accounts must not erase
- * the last known row or settle a pending deletion as successful. */
+/** An empty list proves deletion only when Boat says the read was authoritative. */
 export function reconcileCloudInventoryPayload(
   payload: CloudComputerInventoryPayload,
   previous: CloudComputerInventoryInstance[],
@@ -289,8 +281,7 @@ const computerInventoryPaths: Record<ComputerInventoryRequest, string> = {
   vps: "/api/computers/vps",
 };
 
-/** Keep the observation-only Settings reads explicit and independently
- * testable: opening Computers must never provision or wake anything. */
+/** Observation only: opening Computers must never provision or wake anything. */
 export function computerInventoryRequest(
   inventory: ComputerInventoryRequest,
   signal?: AbortSignal,
@@ -821,13 +812,11 @@ function ActionButton({
   );
 }
 
-// Mirrors localVm.idleTimeoutMinutes in server/config.ts; the server is the
-// authority and rejects anything outside these bounds.
+// Mirrors localVm.idleTimeoutMinutes in server/config.ts; the server is the authority.
 const MIN_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 5;
 const MAX_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 1_440;
 const DEFAULT_LOCAL_VM_IDLE_TIMEOUT_MINUTES = 480;
 
-/** A whole number of minutes within the server's bounds, or null. */
 export function parseLocalVmIdleTimeoutMinutes(value: string): number | null {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) return null;
@@ -849,8 +838,6 @@ export function LocalVmIdleTimeoutSetting({
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // The status poll keeps refreshing the confirmed value; never overwrite
-  // what the person is typing.
   useEffect(() => {
     if (!dirty) setValue(String(minutes));
   }, [minutes, dirty]);
@@ -923,8 +910,6 @@ export function LocalVmIdleTimeoutSetting({
 }
 
 export function LocalComputerSection() {
-  // An OMB Cloud home has no Local VM (shared/cloud-home.ts): it neither
-  // checks for one nor explains how to set one up.
   const cloudHome = useStore().state.config?.cloudHome === true;
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
@@ -963,8 +948,6 @@ export function LocalComputerSection() {
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch(...computerInventoryRequest("status", signal));
     const body = await response.json().catch(() => ({}));
-    // The poll loop can be cleaned up mid-flight; a resolved-but-stale read
-    // must never overwrite the state of whoever unmounted us.
     if (signal?.aborted) return;
     if (!response.ok) throw new Error(body.error ?? t("vm.err.status", { code: response.status }));
     setStatus(body as Status);
@@ -1072,9 +1055,6 @@ export function LocalComputerSection() {
     return () => controller.abort();
   }, [inventoryRefreshKey, refreshInventory, status?.mode]);
 
-  // Boat account listing is deliberately not polled. It can be expensive and
-  // Settings must remain an observation-only surface until the person clicks
-  // Sleep or Delete.
   useEffect(() => {
     const controller = new AbortController();
     setCloudLoading(true);
@@ -1090,8 +1070,6 @@ export function LocalComputerSection() {
     return () => controller.abort();
   }, [cloudRefreshKey, refreshCloudInventory]);
 
-  // Docker-over-SSH inventory is also manual/mount-only. A Settings view
-  // must never become a hidden remote poller or wake a stopped container.
   useEffect(() => {
     const controller = new AbortController();
     setVpsLoading(true);
@@ -1266,15 +1244,11 @@ export function LocalComputerSection() {
 
       if (deletionPending) {
         // Boat may accept a background operation before the computer is gone.
-        // Keep the row visible as Removing while we check, then drop the
-        // optimistic state if the provider still lists it so the person can
-        // refresh or retry instead of being shown a false success forever.
         for (const delayMs of PENDING_CLOUD_DELETE_REFRESH_DELAYS_MS) {
           await waitForCloudDeleteRefresh(delayMs);
           try {
             await refreshCloudInventory();
           } catch {
-            // A later bounded attempt can still establish the final state.
           }
           if (cloudOverridesRef.current[instance.boxId] !== "deleting") {
             setAnnouncement(t("vm.announce.cloudDeleted", { subject }));
@@ -1463,22 +1437,20 @@ export function LocalComputerSection() {
             </button>
           ))}
         </div>
-        {/* The cap only applies to per-bot VMs; shared mode runs exactly one. */}
         {perBot && (
           <div className="mt-3 flex items-center justify-between gap-3">
             <div>
               <div className="text-[13px] text-ink">{t("vm.isolation.max")}</div>
               <div className="text-[11.5px] text-ink-secondary">{t("vm.isolation.maxDetail")}</div>
             </div>
-            <select
+            <Select size="sm"
               aria-label={t("vm.isolation.maxAria")}
               value={status?.max_instances ?? 2}
               disabled={!status || policyPending}
               onChange={(event) => void savePolicy(status?.mode ?? "shared", Number(event.target.value))}
-              className="rounded-lg border border-hairline/40 bg-control px-2.5 py-1.5 text-[13px] text-ink disabled:opacity-50"
             >
               {[1, 2, 3, 4, 5, 6, 7, 8].map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>
+            </Select>
           </div>
         )}
         <LocalVmIdleTimeoutSetting

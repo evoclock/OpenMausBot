@@ -1,8 +1,5 @@
-// Settings → Engines → Antigravity → "Free up space". On Windows, Google's
-// Antigravity runtime unpacks a large set of files every time it starts and
-// leaves them behind whenever it is stopped by force. OpenMausBot clears the
-// ones in its own folder by itself; this also finds the ones left in the
-// Windows temporary folder. It always says how much it found before deleting.
+// On Windows, Antigravity's runtime unpacks a large set of files on every start and leaves them behind when stopped by
+// force.
 import { useState } from "react";
 import { HardDrive, Loader2 } from "lucide-react";
 import { api, type InstanceInfo } from "@/state/store";
@@ -26,7 +23,6 @@ export function formatDiskSize(bytes: number): string {
 
 export function AntigravityFreeSpace({ instance, initial = { kind: "idle" } }: {
   instance: InstanceInfo;
-  /** Test seam for the static-markup tests. */
   initial?: Phase;
 }) {
   const [phase, setPhase] = useState<Phase>(initial);

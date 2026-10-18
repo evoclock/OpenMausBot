@@ -1,213 +1,192 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, EllipsisVertical, Globe, Hand, Loader2, Maximize2, Minimize2, Plus, RotateCw, UserRound, X } from "lucide-react";
+import { Globe, Hand, Loader2, LockKeyhole, X } from "lucide-react";
 import { browserUnavailableReason } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
 import { api, useStore, type Bot } from "@/state/store";
 import { BrowserProfilesManager } from "./BrowserProfilesManager";
-import { BrowserViewport, type BrowserFrame } from "./BrowserViewport";
-import { createBrowserInputQueue } from "@/lib/browser-input-queue";
-import { createBrowserControl, type BrowserInteraction, type BrowserTakeStatus } from "@/lib/browser-control";
+import { ChromeRow, type BrowserNav, type BrowserTab } from "./browser/ChromeRow";
+import { MoreMenu } from "./browser/MoreMenu";
+import { StreamSurface, type StreamSurfaceHandle, type SurfaceConnect } from "./browser/StreamSurface";
+import { createBrowserControl, streamTransport, type BrowserControl, type BrowserTakeStatus } from "@/lib/browser-control";
+import { resolveAddressBarInput } from "@/lib/browser-address";
+import { closeBrowserPictureInPicture, openBrowserPictureInPicture, supportsBrowserPictureInPicture, useBrowserPictureInPicture } from "@/lib/browser-pip";
+import { browserStreamAccess, createPreviewStreamClient, type PreviewStreamClient, type PreviewStreamControl, type PreviewStreamInput, type PreviewViewportSetting } from "@/lib/browser-stream-client";
+import { createLiveStreamClient, type LiveResume, type LiveStreamClient } from "@/lib/browser-stream-v1";
+import { BROWSER_HELD_ELSEWHERE } from "../../shared/browser-held";
 
-interface BrowserTab { tabId: string; title: string; url: string; active: boolean }
-type ViewerFrame = BrowserFrame & { viewerId: string; generation: number };
 const button = "rounded-md p-1.5 text-ink-secondary hover:bg-inset hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed";
-const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000];
-const RECONNECT_MESSAGE = "Connection interrupted. Reconnecting the browser view…";
+const NO_NAV: BrowserNav = { url: "", loading: false, canGoBack: false, canGoForward: false };
 
-const NO_CONTROL = { held: false, controlling: false, owned: false };
+export type BrowserSignIn = { url: string; site: string; nonce: number };
 
-/** Closing a panel releases its lease. A new connection never silently
- * restores permission to type, and never replays old browser frames.
- * There is no Take control button: interacting takes the browser from the
- * bot, and a few idle seconds hand it back (see createBrowserControl). */
-export function LiveBrowser({ bot }: { bot: Bot }) {
+function tabsOf(value: unknown): BrowserTab[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((tab) => tab && typeof tab === "object" && typeof tab.tabId === "string"
+    ? [{ tabId: tab.tabId, title: typeof tab.title === "string" ? tab.title : "", url: typeof tab.url === "string" ? tab.url : "", active: tab.active === true }]
+    : []);
+}
+
+/**
+ * A bot's browser: the page fills the panel, streamed over the v2 WebSocket when the new engine runs it, else over the
+ * v1 live view. Security: a new connection never silently restores permission to type and never replays old input.
+ * Only the server returns a hold, and only to this panel's reconnect after its own v1 stream dropped.
+ */
+export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn }) {
   const { state } = useStore();
+  const [fallback, setFallback] = useState(false);
+  const stream = state.config?.browserEngine?.engine === "chrome" && !fallback;
   const [attempt, setAttempt] = useState(0);
-  const [frame, setFrame] = useState<ViewerFrame | null>(null);
-  const [tabs, setTabs] = useState<BrowserTab[]>([]);
-  const [address, setAddress] = useState("");
   const [connected, setConnected] = useState(false);
-  const [control, setControl] = useState({ held: false, controlling: false, owned: false });
-  const [pending, setPending] = useState(false);
+  const [control, setControl] = useState<PreviewStreamControl | null>(null);
+  const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  const [nav, setNav] = useState<BrowserNav>(NO_NAV);
+  const [setting, setSetting] = useState<PreviewViewportSetting>({ mode: "fill" });
+  const [zoom, setZoom] = useState(1);
+  const [takeStatus, setTakeStatus] = useState<BrowserTakeStatus>("");
   const [error, setError] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [gone, setGone] = useState(false);
+  const [kept, setKept] = useState(false);
   const [showProfiles, setShowProfiles] = useState(false);
   const [showTyping, setShowTyping] = useState(false);
-  const [viewport, setViewport] = useState({ width: 1280, height: 720 });
-  const [takeStatus, setTakeStatus] = useState<BrowserTakeStatus>("");
+  const [masked, setMasked] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
-  // The server keeps the view open while the bot's own command holds the browser.
-  const [busy, setBusy] = useState(false);
-  const viewer = useRef("");
-  const generation = useRef(0);
-  const pendingOperation = useRef<number | null>(null);
+  const floating = useBrowserPictureInPicture();
   const panel = useRef<HTMLDivElement>(null);
-  const addressInput = useRef<HTMLInputElement>(null);
+  const address = useRef<HTMLInputElement>(null);
+  const surface = useRef<StreamSurfaceHandle>(null);
   const profilesDialog = useRef<HTMLDialogElement>(null);
   const typingDialog = useRef<HTMLDialogElement>(null);
-  const inputQueue = useRef<ReturnType<typeof createBrowserInputQueue> | null>(null);
-  const browserControl = useRef<ReturnType<typeof createBrowserControl> | null>(null);
-  // The latest server control state, for callbacks that outlive a render.
-  const controlNow = useRef(NO_CONTROL);
-  const haltMessage = useRef("");
-  const urlEditing = useRef(false);
-  const reconnectCount = useRef(0);
-  const connectionProfile = useRef("");
+  const clientRef = useRef<PreviewStreamClient | null>(null);
+  const controlRef = useRef<PreviewStreamControl | null>(null);
+  const controlListeners = useRef(new Set<(control: PreviewStreamControl | null) => void>());
+  const browserControl = useRef<BrowserControl | null>(null);
+  // The v1 view this panel had for this bot and profile when its stream dropped: only its reconnect gets the hold back.
+  const resume = useRef<LiveResume & { key: string }>({ key: "", viewer: "" });
+  const keepNow = useRef(false);
+  const signInHandled = useRef(0);
+  const signInPage = useRef<string | null>(null);
+  const pageNow = useRef<string | null>(null);
+  const latest = useRef({ openSignInPage: () => {}, takeControl: () => {} });
+  const signInOpen = state.computerControl?.[bot.id]?.help?.place === "browser";
+  keepNow.current = kept || signInOpen;
   const profileName = bot.browserProfile === "guest" ? "Temporary browser"
     : state.config?.browserProfiles?.find((profile) => profile.id === bot.browserProfile)?.name ?? `${bot.name}’s own browser`;
   useEffect(() => { if (showProfiles) profilesDialog.current?.showModal(); else profilesDialog.current?.close(); }, [showProfiles]);
   useEffect(() => {
-    // Typed text goes to the field the person picked, so keep control while they write it.
     browserControl.current?.hold(showTyping);
     if (showTyping) typingDialog.current?.showModal(); else typingDialog.current?.close();
   }, [showTyping]);
 
-  const action = useCallback(async (body: Record<string, unknown>, expected = viewer.current) => {
-    if (!expected) throw new Error("Open the browser connection first.");
-    // 120s matches the server's browser requestTimeoutMs: restart replies can
-    // be legitimately slow (see the reconnect note in the stream error
-    // handler), but a wedged request must surface an error instead of
-    // leaving the panel pending forever.
-    return api(`/api/bots/${encodeURIComponent(bot.id)}/browser/action`, { method: "POST", body: JSON.stringify({ ...body, viewerId: expected }), timeoutMs: 120_000 });
-  }, [bot.id]);
-  const interact = useCallback((item: BrowserInteraction) => {
-    // Another window's hold is never contested from here; the server refuses it too.
-    if (controlNow.current.held && !controlNow.current.owned) return;
-    browserControl.current?.interact(item);
-  }, []);
-  const input = useCallback((body: Record<string, unknown>) => interact({ input: body }), [interact]);
-  const command = (body: Record<string, unknown>) => interact({ command: body });
   const reconnect = useCallback(() => {
-    // Invalidate synchronously: an old request may finish before React runs
-    // the effect cleanup for this reconnect.
-    generation.current++;
-    reconnectCount.current = 0;
-    viewer.current = "";
-    inputQueue.current?.clear(); inputQueue.current = null;
-    browserControl.current?.close(); browserControl.current = null;
-    pendingOperation.current = null;
+    setGone(false);
+    setError("");
+    setFallback(false);
     setAttempt((value) => value + 1);
   }, []);
-
+  // Another profile may run on the other engine: it gets the stream again if it has one.
+  useEffect(() => { setFallback(false); }, [bot.id, bot.browserProfile]);
   useEffect(() => {
-    const current = ++generation.current;
-    const ownsConnection = () => generation.current === current;
-    const profile = JSON.stringify([bot.id, bot.browserProfile]);
-    if (connectionProfile.current !== profile) {
-      connectionProfile.current = profile;
-      reconnectCount.current = 0;
-    }
-    let stopped = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    viewer.current = ""; pendingOperation.current = null; haltMessage.current = "";
-    urlEditing.current = false;
-    setFrame(null); setTabs([]); setAddress(""); setConnected(false); setError(""); setBusy(false);
-    setControl({ held: false, controlling: false, owned: false }); setPending(false);
-    controlNow.current = NO_CONTROL; setTakeStatus("");
-    const source = new EventSource(`/api/bots/${encodeURIComponent(bot.id)}/browser/live`);
-    const listen = (name: string, handler: (data: any) => void) => source.addEventListener(name, (event) => {
-      if (stopped || !ownsConnection()) return;
-      try { handler(JSON.parse((event as MessageEvent).data)); } catch { /* Malformed events are not rendered. */ }
-    });
-    listen("waiting", () => { if (!viewer.current) setBusy(true); });
-    listen("ready", (data) => {
-      if (typeof data.viewerId !== "string" || !data.viewerId) return;
-      setBusy(false);
-      const expected = data.viewerId;
-      viewer.current = expected;
-      const queue = createBrowserInputQueue(async (body) => {
-        if (ownsConnection() && viewer.current === expected) await action(body, expected);
-      }, (cause) => {
-        if (!ownsConnection() || viewer.current !== expected) return;
-        haltMessage.current = cause instanceof Error ? cause.message : String(cause);
-        setError(haltMessage.current);
-      });
-      inputQueue.current = queue;
-      browserControl.current = createBrowserControl({
-        queue,
-        take: () => action({ type: "take" }, expected),
-        release: () => action({ type: "release" }, expected),
-        command: (body) => execute(body),
-        busy: () => pendingOperation.current !== null,
-        owned: () => controlNow.current.owned,
-        onTakeStatus: setTakeStatus,
-        onError: setError,
-        onHalted: () => setError(haltMessage.current),
-      });
-      setConnected(true);
-    });
-    // A ready event alone is not recovery: a flapping stream can open and
-    // fail immediately. Reset the retry budget only after a live heartbeat.
-    listen("heartbeat", () => { reconnectCount.current = 0; });
-    listen("frame", (data) => { if (viewer.current) setFrame({ ...data, viewerId: viewer.current, generation: current }); });
-    listen("tabs", (data) => {
-      if (!Array.isArray(data.tabs)) return;
-      setTabs(data.tabs);
-      const active = data.tabs.find((tab: BrowserTab) => tab.active);
-      if (active && !urlEditing.current) setAddress(active.url === "about:blank" ? "" : active.url);
-    });
-    listen("url", (data) => { if (typeof data.url === "string" && !urlEditing.current) setAddress(data.url === "about:blank" ? "" : data.url); });
-    listen("status", (data) => {
-      if (data.viewportWidth > 0 && data.viewportHeight > 0) setViewport({ width: data.viewportWidth, height: data.viewportHeight });
-    });
-    listen("control", (data) => {
-      controlNow.current = data;
-      setControl(data);
-      // Only another window's hold hides the page; this viewer's own take
-      // keeps it visible while the bot finishes.
-      if (data.held && !data.owned) { setFrame(null); setTabs([]); setAddress(""); }
-      browserControl.current?.observe();
-    });
-    source.addEventListener("error", (event) => {
-      // A closed source may still deliver its queued error after a profile
-      // switch or reconnect. It must not clear the replacement viewer/input.
-      if (stopped || !ownsConnection()) return;
-      stopped = true;
-      let message = "Browser connection ended. Reconnect to continue watching.";
-      let retryable = !(event instanceof MessageEvent);
-      if (event instanceof MessageEvent) {
-        try {
-          const data = JSON.parse(event.data);
-          message = data.message || message;
-          retryable = data.retryable === true;
-        } catch { /* Malformed server errors require explicit reconnect. */ }
-      }
-      const delay = retryable ? RECONNECT_DELAYS[reconnectCount.current] : undefined;
-      if (delay !== undefined) {
-        reconnectCount.current++;
-        message = RECONNECT_MESSAGE;
-        reconnectTimer = setTimeout(() => {
-          if (!ownsConnection()) return;
-          // Reopen observation only, not browser commands or a human lease.
-          generation.current++;
-          setAttempt((value) => value + 1);
-        }, delay);
-      }
-      setError(message); setBusy(false); setConnected(false); setFrame(null); setControl({ held: false, controlling: false, owned: false });
-      controlNow.current = NO_CONTROL; setTakeStatus("");
-      // Keep this generation alive: a successful restart closes its stream
-      // before the action reply arrives, and must still reconnect afterward.
-      viewer.current = ""; inputQueue.current?.clear(); inputQueue.current = null;
-      browserControl.current?.close(); browserControl.current = null; source.close();
-    });
-    return () => {
-      stopped = true;
-      clearTimeout(reconnectTimer);
-      if (ownsConnection()) {
-        // Closing the panel hands control back before the connection ends;
-        // held or unsent input is left to the server's disconnect cleanup.
-        browserControl.current?.leave();
-        browserControl.current?.close(); browserControl.current = null;
-        generation.current++; viewer.current = ""; pendingOperation.current = null;
-        inputQueue.current?.clear(); inputQueue.current = null;
-      }
-      source.close();
-    };
-  }, [bot.id, bot.browserProfile, attempt, action]);
+    setTabs([]);
+    setNav(stream ? NO_NAV : { ...NO_NAV, canGoBack: true, canGoForward: true });
+    setStarting(false);
+    setGone(false);
+    pageNow.current = null;
+  }, [bot.id, bot.browserProfile, attempt, stream]);
 
-  // On macOS a full-screen element takes the whole window into native full
-  // screen, where minimize is disabled. The button has to lead back out, and
-  // it follows the document so Esc, the green button and View > Toggle Full
-  // Screen keep it honest too (MOCA-266).
+  const connect = useCallback<SurfaceConnect>((target, events) => {
+    if (stream) return createPreviewStreamClient({ access: browserStreamAccess(bot.id), ...target }, events);
+    const key = `${bot.id}\n${bot.browserProfile ?? ""}`;
+    if (resume.current.key !== key) resume.current = { key, viewer: "" };
+    return createLiveStreamClient(bot.id, events, (body, viewerId) => api(`/api/bots/${encodeURIComponent(bot.id)}/browser/action`, {
+      // 120 s matches the server's browser requestTimeoutMs.
+      method: "POST", body: JSON.stringify({ ...body, viewerId }), timeoutMs: 120_000,
+    }), resume.current);
+  }, [bot.id, bot.browserProfile, stream]);
+
+  const interact = useCallback((input: PreviewStreamInput) => {
+    if (controlRef.current?.controller === "another-viewer") { setError(BROWSER_HELD_ELSEWHERE); return; }
+    browserControl.current?.interact(input);
+  }, []);
+
+  const onClient = useCallback((client: PreviewStreamClient | null) => {
+    clientRef.current = client;
+    browserControl.current?.close();
+    browserControl.current = null;
+    if (!client) return;
+    const transport = "transport" in client
+      ? (client as LiveStreamClient).transport
+      : streamTransport(client, {
+        current: () => controlRef.current,
+        watch: (listener) => { controlListeners.current.add(listener); return () => { controlListeners.current.delete(listener); }; },
+      }, BROWSER_HELD_ELSEWHERE);
+    const created = createBrowserControl({
+      transport,
+      owned: () => controlRef.current?.controller === "you",
+      onTakeStatus: setTakeStatus,
+      onError: setError,
+      onHalted: () => setError(t("browser.input.tooSlow")),
+    });
+    created.keep(keepNow.current);
+    browserControl.current = created;
+  }, []);
+
+  const onControl = useCallback((next: PreviewStreamControl | null) => {
+    const previous = controlRef.current;
+    controlRef.current = next;
+    setControl(next);
+    if (previous?.controller === "you" && next?.controller !== "you") setKept(false);
+    if (next === null) setTakeStatus("");
+    for (const listener of controlListeners.current) listener(next);
+    browserControl.current?.observe();
+  }, []);
+
+  const onMessage = useCallback((message: Readonly<Record<string, unknown>>) => {
+    if (message.type === "tabs") {
+      const next = tabsOf(message.tabs);
+      setTabs(next);
+      const active = next.find((tab) => tab.active);
+      if (active) {
+        setNav((current) => ({ ...current, url: active.url }));
+        pageNow.current = active.url;
+        latest.current.openSignInPage();
+      }
+    } else if (message.type === "nav" && typeof message.url === "string") {
+      setNav({ url: message.url, loading: message.loading === true, canGoBack: message.canGoBack === true, canGoForward: message.canGoForward === true });
+      pageNow.current = message.url;
+      latest.current.openSignInPage();
+    } else if (message.type === "url" && typeof message.url === "string") {
+      setNav((current) => ({ ...current, url: message.url as string }));
+      pageNow.current = message.url;
+      latest.current.openSignInPage();
+    } else if (message.type === "viewport") {
+      const next = message.setting as PreviewViewportSetting | undefined;
+      if (next && (next.mode === "fill" || next.mode === "preset")) setSetting(next);
+      if (typeof message.zoom === "number") setZoom(message.zoom);
+    } else if (message.type === "starting") {
+      setStarting(true);
+    }
+  }, []);
+
+  useEffect(() => { browserControl.current?.keep(kept || signInOpen); }, [kept, signInOpen]);
+  const takeControl = () => { setKept(true); browserControl.current?.keep(true); browserControl.current?.takeControl(); };
+  const handBack = () => { setKept(false); browserControl.current?.handBack(); };
+  const openSignInPage = () => {
+    const url = signInPage.current;
+    if (!url || pageNow.current === null) return;
+    signInPage.current = null;
+    if (!pageNow.current || pageNow.current === "about:blank") interact({ type: "navigate", url });
+  };
+  latest.current = { openSignInPage, takeControl };
+  useEffect(() => {
+    if (!signIn || !connected || signInHandled.current === signIn.nonce) return;
+    signInHandled.current = signIn.nonce;
+    signInPage.current = signIn.url;
+    latest.current.takeControl();
+    latest.current.openSignInPage();
+  }, [signIn, connected]);
+
+  // On macOS a full-screen element takes the window into native full screen, where minimize is disabled.
   useEffect(() => {
     const update = () => setFullscreen(Boolean(panel.current) && document.fullscreenElement === panel.current);
     document.addEventListener("fullscreenchange", update);
@@ -219,112 +198,106 @@ export function LiveBrowser({ bot }: { bot: Bot }) {
     void request?.catch(() => setError(leaving ? "Could not leave full screen. Press Esc instead." : "Full screen is unavailable in this browser."));
   };
 
-  const execute = async (body: Record<string, unknown>) => {
-    if (pendingOperation.current !== null) return;
-    const expected = viewer.current;
-    const current = generation.current;
-    const queue = inputQueue.current;
-    pendingOperation.current = current;
-    setPending(true); setError("");
-    try {
-      await queue?.drain();
-      if (generation.current !== current || viewer.current !== expected) return;
-      await action(body, expected);
-      // A halted queue silently drops input; restore the banner the
-      // setError("") above cleared so the view does not look interactive.
-      if (inputQueue.current?.stopped() && generation.current === current) setError(haltMessage.current);
-      if (generation.current === current && body.type === "restart") reconnect();
-    }
-    catch (cause) { if (generation.current === current) setError(cause instanceof Error ? cause.message : String(cause)); }
-    finally {
-      if (generation.current === current && pendingOperation.current === current) {
-        pendingOperation.current = null; setPending(false);
-      }
-    }
+  const restart = () => {
+    if (!window.confirm(t("browser.panel.confirmRestart"))) return;
+    setError("");
+    if (!clientRef.current?.send({ type: "restart" })) setError("The browser view is not connected. Reconnect it, then try again.");
   };
-  // Usable whenever connected and no other window holds the browser: the
-  // first real interaction takes control from the bot by itself.
-  const heldElsewhere = control.held && !control.owned;
-  const interactive = connected && !heldElsewhere && !pending;
-  // The dialog pins a lease; it cannot acquire one or freeze the field the
-  // person picked. Click that page field first, before writing in the dialog.
-  const typingReady = interactive && control.owned && control.controlling;
-  // Toolbar actions wait out a take as they wait out a running action, so a
-  // repeated click cannot pile up behind it. Page input still buffers.
-  const taking = takeStatus === "pending" || takeStatus === "slow";
-  const commandsReady = interactive && !taking;
-  const reconnecting = error === RECONNECT_MESSAGE;
-  const pill = "flex max-w-full items-center gap-1.5 whitespace-nowrap rounded-full border bg-menu px-2.5 py-1 text-[11px] shadow-sm sm:text-[12px]";
-  return <div ref={panel} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-hairline/40 bg-card text-ink">
-    <div className="flex min-h-12 items-center gap-1 px-2 pt-1.5">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-        {tabs.length ? tabs.map((tab) => <div key={tab.tabId} className={`flex max-w-52 shrink-0 items-center gap-1 rounded-xl px-1 text-[12px] ${tab.active ? "bg-inset text-ink" : "text-ink-secondary"}`}>
-          <Globe size={13} className="ml-1.5 shrink-0 opacity-60" />
-          <button className="truncate px-1 py-2 text-left disabled:cursor-default" disabled={!commandsReady} onClick={() => command({ type: "tab-select", tabId: tab.tabId })} title={tab.title || tab.url}>{tab.title || "New tab"}</button>
-          <button className={button} aria-label={`Close ${tab.title || "tab"}`} disabled={!commandsReady} onClick={() => command({ type: "tab-close", tabId: tab.tabId })}><X size={13} /></button>
-        </div>) : <div className="flex items-center gap-2 rounded-xl bg-inset px-3 py-2 text-[12px] text-ink-secondary"><Globe size={13} />New tab</div>}
-        <button className={`${button} shrink-0`} disabled={!commandsReady} aria-label="New tab" title="New tab" onClick={() => command({ type: "tab-new" })}><Plus size={17} /></button>
-      </div>
-      <button className={button} title={fullscreen ? "Exit full screen" : "Full screen"} aria-label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>{fullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}</button>
-      {/* Profiles can't switch while this window holds the browser: opening them hands it back now, not after the idle wait. */}
-      <button className={`${button} rounded-xl bg-inset p-2`} title={`Browser profile: ${profileName}`} aria-label="Browser profiles" aria-expanded={showProfiles} onClick={() => { browserControl.current?.handBack(); setShowProfiles(true); }}><UserRound size={16} /></button>
-    </div>
-    <form className="flex h-12 items-center gap-1 border-b border-hairline/40 px-2" onSubmit={(e) => { e.preventDefault(); if (commandsReady && address.trim()) command({ type: "navigate", url: /^https?:\/\//i.test(address.trim()) ? address.trim() : `https://${address.trim()}` }); }}>
-      <div className="flex shrink-0 items-center">
-        <button type="button" className={button} disabled={!commandsReady} aria-label="Back" onClick={() => command({ type: "back" })}><ArrowLeft size={17} /></button>
-        <button type="button" className={button} disabled={!commandsReady} aria-label="Forward" onClick={() => command({ type: "forward" })}><ArrowRight size={17} /></button>
-        <button type="button" className={button} disabled={!commandsReady} aria-label="Reload page" onClick={() => command({ type: "reload" })}><RotateCw size={17} /></button>
-      </div>
-      <input ref={addressInput} aria-label="Browser address" readOnly={!commandsReady} value={address} onChange={(e) => setAddress(e.target.value)} onFocus={(e) => { urlEditing.current = true; if (commandsReady) e.target.select(); }} onBlur={() => { urlEditing.current = false; }} placeholder={connected ? "about:blank" : "Connecting…"} spellCheck={false} className="mx-1 min-w-0 flex-1 rounded-lg bg-transparent px-2 py-1.5 text-center text-[12px] outline-none placeholder:text-ink-secondary focus:bg-inset focus:text-left" />
-      <details className="relative shrink-0">
-        <summary className={`${button} list-none cursor-pointer [&::-webkit-details-marker]:hidden`} aria-label="Browser menu" title="Browser menu"><EllipsisVertical size={17} /></summary>
-        <div className="absolute right-0 top-full z-20 mt-2 flex w-44 flex-col rounded-xl border border-hairline/50 bg-card p-1.5 text-[12px] shadow-xl">
-          <button type="button" className="rounded-md px-3 py-2 text-left hover:bg-inset disabled:opacity-40" disabled={!typingReady} onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); setShowTyping(true); }}>Type or paste text…</button>
-          <button type="button" className="rounded-md px-3 py-2 text-left hover:bg-inset" onClick={(e) => { e.currentTarget.closest("details")?.removeAttribute("open"); reconnect(); }}>Reconnect view</button>
-          <button type="button" className="rounded-md px-3 py-2 text-left hover:bg-inset disabled:opacity-40" disabled={!connected || pending || taking} onClick={(e) => {
-            e.currentTarget.closest("details")?.removeAttribute("open");
-            if (!window.confirm("Restart this profile’s browser? Open tabs will close. Saved logins are kept. Stop any bots using it first.")) return;
-            void execute({ type: "restart" });
-          }}>Restart browser…</button>
+  const togglePip = () => {
+    if (floating === bot.id) { closeBrowserPictureInPicture(); return; }
+    void openBrowserPictureInPicture({ botId: bot.id, seed: surface.current?.canvas() ?? null }).catch(() => setError("Picture in picture is unavailable here."));
+  };
+
+  const heldElsewhere = control?.controller === "another-viewer";
+  const commandsReady = connected && !heldElsewhere;
+  const you = control?.controller === "you";
+  const typingReady = connected && you;
+  const pipSupported = stream && supportsBrowserPictureInPicture();
+  return <div ref={panel} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-hairline/40 bg-card text-ink" data-browser-transport={stream ? "stream" : "live"}>
+    <ChromeRow
+      ref={address}
+      botName={bot.name}
+      tabs={tabs}
+      nav={nav}
+      connected={connected}
+      control={control}
+      takeStatus={takeStatus}
+      commandsReady={commandsReady}
+      profileName={profileName}
+      fullscreen={fullscreen}
+      onCommand={interact}
+      onAddress={(text) => {
+        const url = resolveAddressBarInput(text);
+        if (commandsReady && url) interact({ type: "navigate", url });
+        else if (text.trim()) setError(t("browser.panel.enterAddress"));
+      }}
+      onTake={takeControl}
+      onHandBack={handBack}
+      onFullscreen={toggleFullscreen}
+      onProfiles={() => { browserControl.current?.handBack(); setShowProfiles(true); }}
+      menu={<MoreMenu
+        stream={stream}
+        ready={connected && you}
+        typing={typingReady}
+        setting={setting}
+        zoom={zoom}
+        pip={pipSupported ? { open: floating === bot.id } : null}
+        onViewport={(next) => clientRef.current?.send({ type: "viewport", setting: next })}
+        onZoom={(factor) => clientRef.current?.send({ type: "zoom", factor })}
+        onPip={togglePip}
+        onType={() => { setMasked(false); setShowTyping(true); }}
+        onSecret={() => { setMasked(true); setShowTyping(true); }}
+        onReconnect={reconnect}
+        onRestart={restart}
+      />}
+    />
+    {error && <div role="alert" className="flex shrink-0 items-center justify-between gap-2 border-b border-hairline/30 px-3 py-2 text-[12px] text-danger"><span>{error}</span>{!connected && <button className="shrink-0 underline" onClick={reconnect}>{t("browser.panel.reconnect")}</button>}</div>}
+    {takeStatus === "stale" && <div role="status" className="shrink-0 border-b border-hairline/30 px-3 py-1.5 text-[12px] text-accent-text">{t("browser.control.stale", { name: bot.name })}</div>}
+    <div className="relative flex min-h-0 flex-1 flex-col bg-inset/40">
+      <StreamSurface
+        key={`${attempt}:${stream ? "stream" : "live"}:${bot.browserProfile ?? ""}`}
+        ref={surface}
+        connect={connect}
+        input={interact}
+        followSize={stream}
+        label={`${bot.name}’s browser page`}
+        onClient={onClient}
+        onControl={onControl}
+        onMessage={onMessage}
+        onConnectedChange={(next) => { setConnected(next); if (next) { setStarting(false); setGone(false); setError(""); } }}
+        onFirstFrame={() => setStarting(false)}
+        onUnauthorized={() => { if (stream) setFallback(true); else setGone(true); }}
+        onGone={() => setGone(true)}
+        onClose={(code, reason) => { if (code === 1013 && reason) setError(reason); }}
+        onLeave={() => address.current?.focus()}
+      />
+      {heldElsewhere || gone || !connected || starting ? (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-card/95 p-6 text-center text-[13px] text-ink-secondary">
+          {heldElsewhere ? <Hand size={24} /> : gone ? <Globe size={24} /> : <Loader2 size={24} className="animate-spin" />}
+          <span>{heldElsewhere ? BROWSER_HELD_ELSEWHERE : gone ? t("browser.panel.disconnected") : !starting ? t("browser.panel.opening") : stream ? "Starting the browser…" : t("browser.live.botBusy", { name: bot.name })}</span>
+          {gone ? <button type="button" className="rounded-lg border border-hairline px-3 py-1.5 text-[12px] text-ink hover:bg-inset" onClick={reconnect}>{t("browser.panel.reconnect")}</button> : null}
         </div>
-      </details>
-    </form>
-    {error && <div role={reconnecting ? "status" : "alert"} className={`flex items-center justify-between gap-2 border-b border-hairline/30 px-3 py-2 text-[12px] ${reconnecting ? "text-ink-secondary" : "text-danger"}`}><span>{error}</span>{!connected && <button className="shrink-0 underline" onClick={reconnect}>Reconnect</button>}</div>}
-    <div className="relative min-h-0 flex-1 overflow-hidden bg-inset/40">
-      {frame ? <BrowserViewport frame={frame} {...viewport} driving={interactive} input={input}
-        onReturnToToolbar={() => addressInput.current?.focus()}
-        acknowledge={(seq) => { if (generation.current === frame.generation && viewer.current === frame.viewerId) void action({ type: "ack", seq }, frame.viewerId).catch(() => {}); }}
-        onDecodeError={() => { if (generation.current === frame.generation && viewer.current === frame.viewerId) setError("A browser frame could not be decoded. Close and reopen the panel to reconnect."); }} />
-        : <div className="flex min-h-64 flex-col items-center justify-center gap-3 p-6 text-center text-[13px] text-ink-secondary">{connected && heldElsewhere ? <Hand size={24} /> : error && !reconnecting ? <Globe size={24} /> : <Loader2 size={24} className="animate-spin" />}<span>{heldElsewhere ? "Live view paused for human control" : reconnecting ? "Reconnecting…" : error ? "Browser disconnected" : busy ? t("browser.live.botBusy", { name: bot.name }) : "Opening the live browser…"}</span></div>}
-      {/* Status only, never a control: it floats over the top of the page,
-          readable at any panel width, and every click passes through it. */}
-      <div role="status" className="pointer-events-none absolute inset-x-0 top-2 flex justify-center px-3">
-        {takeStatus === "slow" ? <span className={`${pill} border-hairline text-ink-secondary`}>
-          <Loader2 size={13} className="shrink-0 animate-spin" aria-hidden="true" /><span className="truncate">{t("browser.control.waiting", { name: bot.name })}</span>
-        </span> : takeStatus === "stale" ? <span className={`${pill} border-accent-border text-accent-text`}>
-          <Hand size={13} className="shrink-0" aria-hidden="true" /><span className="truncate">{t("browser.control.stale", { name: bot.name })}</span>
-        </span> : !takeStatus && control.owned && control.controlling ? <span className={`${pill} border-accent-border text-accent-text`} aria-description={t("browser.control.yoursHint", { name: bot.name })}>
-          <Hand size={13} className="shrink-0" aria-hidden="true" /><span className="truncate">{t("browser.control.yours")}</span>
-        </span> : null}
-      </div>
+      ) : null}
     </div>
     <dialog ref={profilesDialog} onClose={() => setShowProfiles(false)} onClick={(e) => { if (e.target === e.currentTarget) setShowProfiles(false); }} className="m-auto w-[min(420px,calc(100%-32px))] max-h-[80vh] overflow-auto rounded-2xl border border-hairline/50 bg-card p-5 text-ink shadow-2xl backdrop:bg-black/40">
-      <div className="mb-4 flex items-center justify-between"><h2 className="text-[15px] font-medium">Browser profiles</h2><button className={button} aria-label="Close browser profiles" onClick={() => setShowProfiles(false)}><X size={16} /></button></div>
-      {/* Opening this hands an idle hold back at once; say why the switcher waits otherwise. */}
-      {(heldElsewhere || (control.owned && (pending || taking))) && <p className="mb-3 text-[12px] text-ink-secondary">{t(heldElsewhere ? "browser.profiles.heldElsewhere" : "browser.profiles.busy")}</p>}
-      <BrowserProfilesManager bot={bot} disabled={pending || control.held} onProfileChanged={() => { setShowProfiles(false); reconnect(); }} />
+      <div className="mb-4 flex items-center justify-between"><h2 className="text-[15px] font-medium">{t("browser.panel.profiles")}</h2><button className={button} aria-label={t("browser.panel.closeProfiles")} onClick={() => setShowProfiles(false)}><X size={16} /></button></div>
+      {(heldElsewhere || (you && takeStatus !== "")) && <p className="mb-3 text-[12px] text-ink-secondary">{t(heldElsewhere ? "browser.profiles.heldElsewhere" : "browser.profiles.busy")}</p>}
+      <BrowserProfilesManager bot={bot} disabled={heldElsewhere || takeStatus === "pending" || takeStatus === "slow"} onProfileChanged={() => { setShowProfiles(false); reconnect(); }} />
     </dialog>
-    <dialog ref={typingDialog} onClose={() => setShowTyping(false)} className="m-auto w-[min(420px,calc(100%-32px))] rounded-2xl border border-hairline/50 bg-card p-5 text-ink shadow-2xl backdrop:bg-black/40">
-      <div className="mb-3 flex items-center justify-between"><h2 className="text-[14px] font-medium">Type into the selected page field</h2><button className={button} aria-label="Close typing" onClick={() => setShowTyping(false)}><X size={16} /></button></div>
+    {/* Security: a password or code typed here goes only to the page's focused field; it is never held in state, logged or shown. */}
+    <dialog ref={typingDialog} onClose={() => { const field = typingDialog.current?.querySelector("input"); if (field) field.value = ""; setShowTyping(false); }} className="m-auto w-[min(420px,calc(100%-32px))] rounded-2xl border border-hairline/50 bg-card p-5 text-ink shadow-2xl backdrop:bg-black/40">
+      <div className="mb-3 flex items-center justify-between"><h2 className="text-[14px] font-medium">{masked ? t("browser.typeSecret.title") : t("browser.panel.typeTextTitle")}</h2><button className={button} aria-label={t("browser.panel.closeTyping")} onClick={() => setShowTyping(false)}><X size={16} /></button></div>
       <form className="flex flex-col gap-3" onSubmit={(e) => {
-      e.preventDefault(); const field = e.currentTarget.elements.namedItem("pageText") as HTMLInputElement;
-      if (typingReady && field.value) { input({ type: "input_keyboard", eventType: "char", text: field.value }); field.value = ""; setShowTyping(false); }
-    }}><input name="pageText" aria-label="Text for the page" autoComplete="off" maxLength={4096} placeholder="Type or paste text" className="rounded-lg bg-inset px-3 py-2 text-[13px] outline-none focus:ring-1 focus:ring-accent" /><button disabled={!typingReady} className="self-end rounded-lg bg-accent px-4 py-2 text-[12px] text-accent-ink disabled:opacity-40">Type</button></form>
+        e.preventDefault(); const field = e.currentTarget.elements.namedItem("pageText") as HTMLInputElement;
+        if (typingReady && field.value) { interact({ type: "text", text: field.value }); field.value = ""; setShowTyping(false); }
+      }}><input key={masked ? "secret" : "text"} name="pageText" type={masked ? "password" : "text"} aria-label={masked ? t("browser.typeSecret.field") : t("browser.panel.typeTextField")} autoComplete={masked ? "new-password" : "off"} spellCheck={false} maxLength={4096} placeholder={masked ? "••••••••" : t("browser.panel.typeTextPlaceholder")} className="rounded-lg bg-inset px-3 py-2 text-[13px] outline-none focus:ring-1 focus:ring-accent" />
+        {masked && <p className="flex items-center gap-1 text-[11.5px] text-ink-tertiary"><LockKeyhole size={11} aria-hidden="true" />{t("browser.typeSecret.note")}</p>}
+        <button disabled={!typingReady} className="self-end rounded-lg bg-accent px-4 py-2 text-[12px] text-accent-ink disabled:opacity-40">{t("browser.panel.typeButton")}</button></form>
     </dialog>
   </div>;
 }
 
-export function BrowserPanel({ bot }: { bot: Bot }) {
+export function BrowserPanel({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn }) {
   const { state } = useStore();
   const engine = state.config?.browserEngine;
   const [requested, setRequested] = useState(false);
@@ -338,15 +311,12 @@ export function BrowserPanel({ bot }: { bot: Bot }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setRequested(false); }
   };
-  if (admin === false) return <div className="p-5 text-[13px] text-ink-secondary">Only admins of this installation can view or control saved browser sessions.</div>;
-  if (bot.browser === false) return <div className="p-5 text-[13px] text-ink-secondary">Enable the browser in this bot’s profile to use it.</div>;
-  if (engine?.kind === "engine" && !installing && !engine.installError) return admin === null
-    ? <div className="p-5 text-[13px] text-ink-secondary">Loading browser…</div>
-    : <LiveBrowser key={bot.id} bot={bot} />;
+  if (bot.browser === false) return <div className="p-5 text-[13px] text-ink-secondary">{t("browser.panel.enableBot")}</div>;
+  if (engine?.kind === "engine" && !installing && !engine.installError) return <LiveBrowser key={bot.id} bot={bot} signIn={signIn} />;
   return <div className="flex min-h-0 flex-1 flex-col items-start justify-center gap-3 rounded-xl bg-card p-5">
-    <div className="text-[15px] font-medium text-ink">{engine?.kind === "engine" ? "Browser installation incomplete" : "Browser engine not installed"}</div>
-    <p className="text-[13px] leading-relaxed text-ink-secondary">{engine?.kind === "engine" ? "agent-browser is installed, but Chrome setup has not finished. Retry the browser installation." : browserUnavailableReason(state.config)}</p>
-    {engine?.installable || engine?.kind === "engine" ? <button type="button" onClick={() => void install()} disabled={installing || admin !== true} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-accent-ink disabled:opacity-60">{installing ? "Installing… (a one-time download of about 160 MB)" : engine?.kind === "engine" ? "Retry browser installation" : "Install the browser engine"}</button> : null}
+    <div className="text-[15px] font-medium text-ink">{engine?.kind === "engine" ? t("browser.panel.installIncomplete") : t("browser.panel.engineNotInstalled")}</div>
+    <p className="text-[13px] leading-relaxed text-ink-secondary">{engine?.kind === "engine" ? t("browser.panel.installIncompleteHelp") : browserUnavailableReason(state.config)}</p>
+    {engine?.installable || engine?.kind === "engine" ? <button type="button" onClick={() => void install()} disabled={installing || admin !== true} className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-accent-ink disabled:opacity-60">{installing ? t("browser.panel.installing") : engine?.kind === "engine" ? t("browser.panel.retryInstall") : t("browser.panel.installEngine")}</button> : null}
     {(engine?.installError || error) && <p role="alert" className="text-[12px] text-danger">{error ?? engine?.installError}</p>}
   </div>;
 }

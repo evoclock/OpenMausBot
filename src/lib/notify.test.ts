@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const sounds = vi.hoisted(() => ({ enabled: true }));
+const sounds = vi.hoisted(() => ({ enabled: true, finished: true }));
 vi.mock("./notification-preferences", () => ({
   notificationSoundsEnabled: () => sounds.enabled,
+  finishedNotificationsEnabled: () => sounds.finished,
 }));
 
 import {
@@ -41,6 +42,7 @@ function installNotification(permission: NotificationPermission, focused = false
 afterEach(() => {
   vi.unstubAllGlobals();
   sounds.enabled = true;
+  sounds.finished = true;
 });
 
 describe("desktop notifications", () => {
@@ -55,6 +57,32 @@ describe("desktop notifications", () => {
     const { requestPermission } = installNotification("default");
     await requestNotificationPermission();
     expect(requestPermission).toHaveBeenCalledOnce();
+  });
+
+  it("contains rejected and synchronous permission failures so Settings can retry", async () => {
+    const { requestPermission } = installNotification("default");
+    requestPermission.mockRejectedValueOnce(new Error("blocked"));
+    await expect(requestNotificationPermission()).resolves.toBe("default");
+    requestPermission.mockImplementationOnce(() => { throw new Error("unavailable"); });
+    await expect(requestNotificationPermission()).resolves.toBe("default");
+    await expect(requestNotificationPermission()).resolves.toBe("granted");
+  });
+
+  it("reports a permission already decided without asking again", async () => {
+    const { requestPermission } = installNotification("granted");
+    await expect(requestNotificationPermission()).resolves.toBe("granted");
+    expect(requestPermission).not.toHaveBeenCalled();
+  });
+
+  it("this device's switch mutes finished-work notices, never approval, sign-in or spend ones", () => {
+    const { notices } = installNotification("granted");
+    sounds.finished = false;
+    showNotification(frame, vi.fn());
+    expect(notices).toHaveLength(0);
+    showNotification({ ...frame, kind: "approval" }, vi.fn());
+    showNotification({ ...frame, kind: "sign-in" }, vi.fn());
+    showNotification({ ...frame, kind: "spend" }, vi.fn());
+    expect(notices).toHaveLength(3);
   });
 
   it("shows a notification after permission is granted", () => {
@@ -113,8 +141,6 @@ describe("desktop notifications", () => {
       vi.fn(),
     );
 
-    // one bot across two threads shares a tag, so the platform replaces
-    // rather than stacks; another bot gets its own key
     expect(notices[0]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     expect(notices[1]?.options?.tag).toBe(`openmausbot:${frame.botId}`);
     showNotification({ ...frame, botId: "bot-2" }, vi.fn());

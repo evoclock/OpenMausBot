@@ -1,11 +1,3 @@
-// A bubble's markdown must survive the thread list changing (a thread is
-// opened or renamed anywhere, a bot is renamed, the selection moves).
-// react-markdown builds its elements from the `components` map, so a new map
-// means new element types and React throws away every element of the
-// message: code highlights, wrap and copy state, spoilers, image previews.
-// And a message that cannot hold a thread link has no reason to follow the
-// thread list at all. Nor should a re-render or a re-mount of the same text
-// parse it again to repair tables and normalize math.
 import { createElement } from "react";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -20,8 +12,7 @@ vi.mock("react", async (importOriginal) => {
   const react = await importOriginal<typeof React>();
   return { ...react, use: vi.fn(react.use), useContext: vi.fn(react.useContext) };
 });
-// react-markdown is stubbed above, so every parse counted here is one of
-// ChatMarkdown's own passes over the text (table repair, math delimiters)
+// react-markdown is stubbed above, so every parse counted here is one of ChatMarkdown's own passes.
 vi.mock("mdast-util-from-markdown", async (importOriginal) => {
   const actual = await importOriginal<typeof import("mdast-util-from-markdown")>();
   return { ...actual, fromMarkdown: vi.fn(actual.fromMarkdown) };
@@ -33,7 +24,6 @@ import { ThreadRefsContext, type ThreadRefsValue } from "./ThreadRefs";
 
 const qa = { botId: "scout", botName: "Scout", threadId: "qa-245", title: "QA PR 245", activeAt: 1 };
 const before: ThreadRefsValue = { threads: [qa], currentBotId: "scout" };
-// someone opened a new thread and selected another bot
 const after: ThreadRefsValue = {
   threads: [qa, { botId: "ada", botName: "Ada", threadId: "launch", title: "Launch plan", activeAt: 2 }],
   currentBotId: "ada",
@@ -84,7 +74,6 @@ describe("ChatMarkdown normalization", () => {
   beforeEach(() => vi.mocked(fromMarkdown).mockClear());
 
   it("parses a message for table repair and math once, however often it renders", () => {
-    // the heading reads the thread list, so this bubble re-renders when it changes
     const text = "## Costs\n\n| Step | Cost |\n|---|\n| build | 5 |\n\nArea \\(x^2\\).";
     const first = markdownProps(before, text);
     expect(first.children).toContain("$x^2$");

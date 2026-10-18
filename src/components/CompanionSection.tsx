@@ -135,22 +135,16 @@ const endpointHost = (url: string): string => {
   }
 };
 
-/** `focusRequest` counts up when "Connect your phone" opened Settings here:
- * the phone flow scrolls into view with focus on Pair your phone. */
 export function CompanionSection({ profileEmail = "", focusRequest = 0 }: { profileEmail?: string; focusRequest?: number }) {
   const c = usePhoneSetupController(profileEmail);
   const state = c.state;
   const pairingFlow = useRef<HTMLDivElement>(null);
   const revealed = useRef(0);
   const loaded = Boolean(state);
-  // The flow is drawn once the companion's state is read; reveal it then,
-  // once per request. Any other Settings navigation ends the request (0).
   useEffect(() => {
     if (!focusRequest) revealed.current = 0;
     else if (revealed.current !== focusRequest && revealPhonePairing(pairingFlow.current)) revealed.current = focusRequest;
   }, [focusRequest, loaded]);
-  // An enrolled organisation can turn remote access off; the desktop refuses
-  // new pairing and turning the companion on. Existing devices are listed as before.
   const managedPolicy = useStore().state.config?.managedPolicy;
   const remoteBlocked = managedPolicy?.remoteAccess === false ? t("policy.remoteBlocked", { organization: managedPolicy.organizationName }) : null;
   const managedBy = managedPolicy?.remoteAccess === false ? t("policy.managedBy", { organization: managedPolicy.organizationName }) : null;

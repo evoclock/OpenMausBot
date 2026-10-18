@@ -2,15 +2,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { BaseSequencer, type TestSpecification } from "vitest/node";
 
-// Vitest's own --shard cuts the file list into equal-count slices, and this
-// suite runs one file at a time, so a shard takes the sum of its files. The
-// two slowest e2e files take about four and five minutes on Windows; they
-// landed in one slice with the fourth slowest, and that slice ran about eight
-// minutes longer than any other. This balances the slices by recorded seconds
-// instead: slowest file first, each to the shard with the least time so far.
-// Every file still runs exactly once, and `--shard=n/4` run locally picks the
-// same files as CI shard n.
-// scripts/testing/update-shard-weights.mjs refreshes the seconds from CI.
+// Vitest's --shard cuts equal-count slices; this balances them by recorded
+// seconds instead (slowest first, each to the shard with the least time so
+// far), and `--shard=n/4` locally picks the same files as CI shard n.
+// update-shard-weights.mjs refreshes the seconds from CI.
 export const SHARD_WEIGHTS_FILE = "scripts/testing/vitest-shard-weights.json";
 
 // A file absent from the weights is light (the file lists every file over

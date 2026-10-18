@@ -46,7 +46,6 @@ describe("visibility values", () => {
     expect(parseVisibility("admins")).toEqual({ ok: true, visibility: "admins" });
     expect(parseVisibility({ people: [" Ada@Example.test ", "ada@example.test", "@corp.test", ""] }))
       .toEqual({ ok: true, visibility: { people: ["ada@example.test", "@corp.test"] } });
-    // a list that names nobody is admins only, never everyone
     expect(parseVisibility({ people: [] })).toEqual({ ok: true, visibility: "admins" });
     expect(parseVisibility({ people: ["not an email"] }).ok).toBe(false);
     expect(parseVisibility({ people: ["a@b.c"], extra: 1 }).ok).toBe(false);
@@ -81,7 +80,6 @@ describe("visibility values", () => {
     expect(audienceWithin({ people: ["ada@example.test", "bob@example.test"] }, { people: ["ada@example.test"] })).toBe(false);
     expect(audienceWithin({ people: ["ada@example.test"] }, { people: ["@example.test"] })).toBe(true);
     expect(audienceWithin({ people: ["@example.test"] }, { people: ["ada@example.test"] })).toBe(false);
-    // a room feeds a bot only when everyone who sees the bot sees every bot in it
     expect(roomFeeds([undefined, { people: ["ada@example.test"] }], undefined)).toBe(false);
     expect(roomFeeds([undefined, { people: ["ada@example.test"] }], { people: ["ada@example.test"] })).toBe(true);
     expect(roomFeeds([undefined, undefined], undefined)).toBe(true);
@@ -130,7 +128,6 @@ describe("VisibleSet", () => {
     const bob = new VisibleSet(bots, groups, BOB);
     expect(bob.everything).toBe(false);
     expect([bob.bot("pub"), bob.bot("hr"), bob.bot("adm"), bob.bot("corp"), bob.bot("unknown")]).toEqual([true, false, false, true, false]);
-    // a room needs every one of its bots visible
     expect([bob.group("room-pub"), bob.group("room-mixed"), bob.group("room-empty")]).toEqual([true, false, false]);
     expect([bob.thread("t-pub-2"), bob.thread("t-hr"), bob.thread("t-room-mixed-2"), bob.thread("t-unknown")]).toEqual([true, false, false, false]);
     expect(bob.sections(["Ops", "People", "Empty"])).toEqual(["Ops"]);
@@ -219,7 +216,6 @@ describe("live frames for a member", () => {
     expect(frameForMember({ kind: "bot.queued", queues: { "t-pub": [1], "t-hr": [2] } }, ctx, seen())).toEqual({ kind: "bot.queued", queues: { "t-pub": [1] } });
     const config = { kind: "config", membership: {} };
     expect(frameForMember(config, ctx, seen())).toBe(config);
-    // a member's copy of a bot never lists who else may see it, nor a teammate they cannot
     expect(frameForMember({ kind: "bot", bot: { id: "corp", visibility: { people: ["@example.test"] }, peers: ["pub", "hr"] } }, ctx, seen()))
       .toEqual({ kind: "bot", bot: { id: "corp", peers: ["pub"] } });
   });
@@ -232,11 +228,9 @@ describe("live frames for a member", () => {
     const after = new VisibleSet(restricted, groups, BOB);
     expect(frameForMember({ kind: "bot", bot: { id: "pub" } }, context(after), state)).toEqual({ kind: "bot.deleted", botId: "pub" });
     expect(frameForMember({ kind: "bot", bot: { id: "pub" } }, context(after), state)).toBeUndefined();
-    // and gives it back: the whole record, transcript page included
     expect(frameForMember({ kind: "bot", bot: { id: "pub", name: "Pub" } }, context(before), state))
       .toEqual({ kind: "bot", bot: { id: "pub", name: "Pub", messages: [{ id: "m1" }] } });
     expect(state.bots.has("pub")).toBe(true);
-    // the same for a room
     const roomState = seen();
     const hiddenRoom = new VisibleSet(restricted, groups, BOB);
     expect(frameForMember({ kind: "group", group: { id: "room-pub" } }, context(hiddenRoom), roomState)).toEqual({ kind: "group.deleted", groupId: "room-pub" });

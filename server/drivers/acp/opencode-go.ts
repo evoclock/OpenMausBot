@@ -1,6 +1,4 @@
-// The maintained OpenCode CLI through its ACP stdio interface. OpenCode is
-// the harness; Zen, Go, OpenRouter, and user-configured/local providers are
-// models discovered from that harness rather than separate OpenMaus drivers.
+// OpenCode over ACP; Zen, Go, OpenRouter and local providers are models it discovers, not separate drivers.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16,15 +14,10 @@ import type { ModelCatalog, ProviderErrorCode } from "../../contracts.ts";
 import { titleCaseModelId } from "../../contracts.ts";
 import { execCli, killCliTree, spawnCli } from "../../procs.ts";
 
-/** Nothing is offered until OpenCode itself answers. An invented default is
- * exactly what broke bots when Zen retired `x-preview-f-free`. */
 const NO_MODELS: ModelCatalog = { default: "", options: [] };
 
-/** The last catalog each OpenCode binary reported, so a failed refresh keeps
- * a usable picker and the setup check needs no process of its own. */
 const lastSuccessfulCatalog = new Map<string, ModelCatalog>();
-/** Zen prices from `models --verbose` (V1): cost 0 means free. V2 prints no
- * metadata, so an id ending in `-free` is the fallback signal. */
+/** `models --verbose` (V1) prints Zen prices, cost 0 meaning free; V2 prints none, so a `-free` id suffix is the fallback. */
 const freeModels = new Set<string>();
 const paidModels = new Set<string>();
 
@@ -67,20 +60,13 @@ function localModelRecord(record: Record<string, unknown>): boolean {
   }
 }
 
-/** Whether a model costs nothing to run: Zen's own price when `models
- * --verbose` reported one, else the `-free` suffix Zen gives free models. */
 export function isFreeOpenCodeModel(id: string): boolean {
   if (freeModels.has(id)) return true;
   if (paidModels.has(id)) return false;
   return /(?:^|[-_/])free$/iu.test(id);
 }
 
-/** The model OpenMaus runs when nobody chose one, or when the chosen one is
- * gone. OpenCode's own pick (`current`) wins when it is free. Otherwise a
- * free model does: OpenCode 2 with a key picks a paid model on its own, and
- * a silent switch to per-token billing is not ours to make. Only an
- * all-paid catalog (the person's own providers) falls back to OpenCode's
- * pick. */
+/** OpenCode 2 with a key picks a paid model on its own, so a free model wins unless the catalog is all paid. */
 export function preferredOpenCodeModel(offered: readonly string[], current?: string | null): string {
   if (current && offered.includes(current) && isFreeOpenCodeModel(current)) return current;
   const free = offered.filter(isFreeOpenCodeModel);
@@ -95,12 +81,9 @@ interface ParsedModels {
   paid: string[];
 }
 
-/** Parse the metadata printed by `opencode models --verbose` (V1 only).
- *
- * The output is a sequence of `provider/model` header lines, each followed
- * by one JSON object. Model IDs can themselves contain `/` (OpenRouter), so
- * only the first separator identifies the provider. Older CLIs may print just
- * the headers; those still produce a usable catalog without metadata. */
+/** `opencode models --verbose` (V1): `provider/model` header lines, each followed by a JSON object.
+ * Ids can contain `/` (OpenRouter), so only the first separator names the provider; older CLIs print
+ * headers only. */
 function parseOpenCodeModels(stdout: string): ParsedModels {
   const options: ModelCatalog["options"] = [];
   const free: string[] = [];
@@ -122,9 +105,7 @@ function parseOpenCodeModels(stdout: string): ParsedModels {
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           record = parsed as Record<string, unknown>;
         }
-      } catch {
-        // A header-only/older CLI remains useful; fall back to the model id.
-      }
+      } catch {}
     }
     if (record.status === "deprecated") return;
     const cost = record.cost && typeof record.cost === "object" && !Array.isArray(record.cost)
@@ -183,9 +164,6 @@ function rememberPrices(parsed: Pick<ParsedModels, "free" | "paid">) {
   }
 }
 
-/** The `models --verbose` inventory as a catalog (V1). Discovery prefers the
- * ACP session's own list and uses this only for metadata; it remains the
- * catalog when the ACP probe cannot answer. */
 export function parseOpenCodeModelsOutput(stdout: string): ModelCatalog | null {
   const parsed = parseOpenCodeModels(stdout);
   if (!parsed.options.length) return null;
@@ -193,10 +171,7 @@ export function parseOpenCodeModelsOutput(stdout: string): ModelCatalog | null {
   return { default: preferredOpenCodeModel(parsed.options.map((option) => option.id)), options: parsed.options };
 }
 
-/** The catalog OpenCode itself offers a session, from the `model` select in
- * session/new's configOptions: the exact ids `session/set_config_option`
- * accepts, in the exact environment of the process. Same list as `opencode
- * models` on V1 and the only reliable one on V2. */
+/** The `model` select in session/new's configOptions: exactly what set_config_option accepts, and the only reliable list on V2. */
 export function catalogFromOpenCodeSession(result: unknown): { options: ModelCatalog["options"]; current: string | null } | null {
   const configOptions = (result as { configOptions?: unknown } | null)?.configOptions;
   const model = Array.isArray(configOptions)
@@ -215,8 +190,7 @@ export function catalogFromOpenCodeSession(result: unknown): { options: ModelCat
   visit(model.options);
   const options = [...new Set(ids)].filter(validModelSlug).map((id) => {
     const separator = id.indexOf("/");
-    // V1 names "OpenCode Zen/Big Pickle", V2 "opencode/Big Pickle": the
-    // provider comes from the id either way.
+    // V1 names "OpenCode Zen/Big Pickle", V2 "opencode/Big Pickle": the provider comes from the id.
     const raw = names.get(id)?.trim() ?? "";
     const name = (raw.includes("/") ? raw.slice(raw.indexOf("/") + 1) : raw).trim() || labelForModel(id.slice(separator + 1));
     return { id, label: `${providerLabel(id.slice(0, separator))} · ${name}` };
@@ -249,8 +223,6 @@ function runOpenCodeModelsVerbose(
 }
 
 function runGit(directory: string, args: string[]): Promise<void> {
-  // The person's git settings stay out: no signing prompt, no hooks, no
-  // repository named by a GIT_* variable.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
   return new Promise((resolveRun, rejectRun) => {
     execFile("git", [
@@ -266,12 +238,8 @@ function runGit(directory: string, args: string[]): Promise<void> {
 
 let discoveryFolder: Promise<string> | null = null;
 
-/** A folder OpenMaus owns for catalog probes, made its own git project once.
- * OpenCode records every session, empty ones included, under the project of
- * its working folder, and every folder outside git shares one global project:
- * `opencode run --continue` in any of them would resume OpenMaus's empty probe
- * instead of the person's last session. Without git the probe still works and
- * its session lands in the global list, as before. */
+/** OpenCode files every session under its working folder's project, and folders outside git share one
+ * global project, so `opencode run --continue` there would resume the probe's empty session. */
 function discoveryDirectory(): Promise<string> {
   discoveryFolder ??= (async () => {
     const directory = join(DATA_DIR, "providers", "opencode", "discovery");
@@ -282,18 +250,13 @@ function discoveryDirectory(): Promise<string> {
         await runGit(directory, ["init", "-q"]);
         await runGit(directory, ["commit", "-q", "--allow-empty", "--no-verify", "-m", "OpenMaus model discovery"]);
         writeFileSync(marker, "OpenCode files this folder's sessions under its own project.\n");
-      } catch {
-        // No git: probes run here all the same.
-      }
+      } catch {}
     }
     return directory;
   })();
   return discoveryFolder;
 }
 
-/** Open one ACP session on the binary and environment a turn uses, and
- * return what session/new answered. No prompt is sent and the process is
- * stopped as soon as the answer arrives. */
 export async function probeOpenCodeSession(
   cli: string,
   environment: Record<string, string | undefined>,
@@ -351,7 +314,6 @@ export async function probeOpenCodeSession(
           continue;
         }
         if (message?.id !== undefined && typeof message.method === "string") {
-          // A probe answers no request: refuse rather than leave it hanging.
           write({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "method not found" } });
           continue;
         }
@@ -382,16 +344,8 @@ export async function probeOpenCodeSession(
   });
 }
 
-/** Ask the same OpenCode binary that will run ACP for its effective catalog.
- *
- * The list comes from an ACP session/new in the turn's own environment: it
- * is what the session will accept, on OpenCode 1 and 2 alike. `models
- * --verbose` (OpenCode 1 only; 2 rejects the flag) runs alongside for
- * metadata the session does not carry: prices, context windows, reasoning
- * variants, and which models are local. Plain `opencode models` is not a
- * fallback: on OpenCode 2 it answers from a shared background service that
- * keeps whatever environment it started with, and its first answer after
- * that service starts is empty. */
+/** `models --verbose` is OpenCode 1 only (2 rejects the flag). Plain `opencode models` on 2 answers from a
+ * shared background service that keeps the env it started with, and its first answer is empty. */
 export async function discoverOpenCodeModels(
   environment: Record<string, string | undefined>,
   cli = "opencode",
@@ -399,12 +353,8 @@ export async function discoverOpenCodeModels(
   const probeSession = () => probeOpenCodeSession(cli, environment);
   const readMetadata = () => runOpenCodeModelsVerbose(cli, environment).then(parseOpenCodeModels);
   let [session, verbose] = await Promise.allSettled([probeSession(), readMetadata()]);
-  // Two OpenCode processes starting together in a home that has never run
-  // OpenCode race to create its database, and one of them fails (seen 1 in 8
-  // fresh homes). Once is enough to lose Zen's prices, which is what keeps a
-  // paid model from becoming the default, so a failed half runs again alone.
-  // A half that timed out is not retried: a wedged CLI must not double the
-  // wait at startup.
+  // Two OpenCode processes starting together in a fresh home race to create its database and one fails
+  // (1 in 8 fresh homes). A timed-out half is not retried.
   const retry = (result: PromiseSettledResult<unknown>) =>
     result.status === "rejected" && (result.reason as { timedOut?: boolean } | null)?.timedOut !== true;
   if (retry(session)) [session] = await Promise.allSettled([probeSession()]);
@@ -425,9 +375,7 @@ export async function discoverOpenCodeModels(
   return catalog;
 }
 
-/** Whether this OpenCode can run a turn at all: it offers at least one
- * model. Zen's free models need no login, so a working CLI almost always
- * can. Answered from the last discovery when there is one. */
+/** Whether this OpenCode offers any model; Zen's free models need no login. */
 export async function canRunOpenCode(
   environment: Record<string, string | undefined>,
   cli: string,
@@ -454,15 +402,10 @@ export function resetOpenCodeModelCache() {
   paidModels.clear();
 }
 
-/** Compatibility export for older tests/imports while the product migrates
- * from the Go-only name. */
 export const resetOpenCodeGoModelCache = resetOpenCodeModelCache;
 
-/** Whether OpenCode may read provider keys from the server's own
- * environment. Only when that environment is the person's own shell: not on a
- * Cloud home, a hosted team workspace or an organisation-managed desktop, and
- * not on a server whose sign-in list lets other people in, where every
- * member's bot would otherwise run on, and bill, the operator's key. */
+/** Provider keys come from the server's env only when it is the person's own shell: never on a Cloud
+ * home, hosted team, managed desktop or open sign-in list, where every bot would bill the operator's key. */
 export function openCodeProviderKeysAllowed(state: {
   cloudHome: boolean;
   hostedWorkspace: boolean;
@@ -479,16 +422,10 @@ let providerKeysAllowed = (): boolean => openCodeProviderKeysAllowed({
   sharedSignIn: false,
 });
 
-/** The server sets this before any driver is created, and narrows it with
- * Company enrollment and its sign-in list. */
 export function setOpenCodeProviderKeyPolicy(allowed: () => boolean): void {
   providerKeysAllowed = allowed;
 }
 
-/** Where OpenCode may not read the server's own environment, a provider key
- * reaches it only through its instance environment: a key the owner saved
- * in Settings (config.ts injectedEnvironment), which is theirs on any
- * server. The same name riding along in the server's env stays out. */
 function withholdProviderKeysWhenManaged(
   env: Record<string, string | undefined>,
   _config: unknown,
@@ -524,9 +461,7 @@ export function ensureOpenCodeInjectModel(
   if (existsSync(path)) {
     try {
       config = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    } catch {
-      // Malformed user config — inject into a fresh object rather than fail the turn.
-    }
+    } catch {}
   }
   const providers =
     config.provider && typeof config.provider === "object" && !Array.isArray(config.provider)
@@ -567,14 +502,8 @@ export function ensureOpenCodeInjectModel(
   return native;
 }
 
-/** Every path the OpenCode CLI may keep auth.json at.
- *
- * The CLI is xdg-flavoured on EVERY platform — `opencode auth list` on macOS
- * prints `~/.local/share/opencode/auth.json`, and that is where real logins
- * land. The platform-conventional locations are kept as fallbacks in case a
- * future CLI moves there, but the xdg path must come first: checking only
- * Library/Application Support on macOS is exactly the bug that made the app
- * demand a sign-in from users who were already signed in. */
+/** The CLI is xdg-flavoured on every platform (`opencode auth list` on macOS prints
+ * `~/.local/share/opencode/auth.json`), so the xdg path comes first. */
 function storedAuthPaths(env: Record<string, string | undefined>): string[] {
   const home = env.HOME || env.USERPROFILE || homedir();
   const roots = [
@@ -588,9 +517,6 @@ function storedAuthPaths(env: Record<string, string | undefined>): string[] {
   return [...new Set(roots)].map((root) => join(root, "opencode", "auth.json"));
 }
 
-/** True when auth.json contains any usable provider login managed by
- * OpenCode. The generic harness can run all of them, including `opencode`
- * (Zen), `opencode-go`, and third-party providers such as OpenRouter. */
 function usableAuthEntry(parsed: Record<string, unknown>): boolean {
   return Object.values(parsed).some((auth) => {
     if (!auth || typeof auth !== "object" || Array.isArray(auth)) return false;
@@ -605,9 +531,7 @@ function hasStoredOpenCodeAuth(env: Record<string, string | undefined>) {
   for (const path of storedAuthPaths(env)) {
     try {
       candidates.push(readFileSync(path, "utf8"));
-    } catch {
-      // A missing or unreadable file simply means there is no ambient login.
-    }
+    } catch {}
   }
   return candidates.some((raw) => {
     try {
@@ -618,37 +542,21 @@ function hasStoredOpenCodeAuth(env: Record<string, string | undefined>) {
   });
 }
 
-/** Whether `path` is `folder` itself or somewhere inside it. */
 function withinFolder(path: string, folder: string): boolean {
   const rest = relative(resolvePath(folder), resolvePath(path));
   return rest === "" || (rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
 }
 
-/** Whether a turn works in one of OpenMaus's own folders: a bot's shared
- * folder or a conversation's private one (server/workspace.ts). Everything in
- * them was written by bots, so none of it may become OpenCode configuration. */
+/** A bot's shared or private folder: bots wrote everything there, so none of it may become OpenCode configuration. */
 export function openMausOwnsWorkingFolder(cwd: string): boolean {
   return [join(DATA_DIR, "workspaces"), join(DATA_DIR, "task-workspaces")].some((root) =>
     withinFolder(cwd, root) && resolvePath(cwd) !== resolvePath(root));
 }
 
-/** Folders OpenMaus owns that an OpenCode bot may use outside its working
- * folder without an approval card: the attachments people send (every turn
- * that read one stalled on a card) and this bot's own shared folder, which
- * holds the memory its prompt points at.
- *
- * Never a folder at or above the turn's working folder. OpenCode reads
- * opencode.json, .opencode/ and AGENTS.md from every folder above its working
- * folder, so a file planted there would configure the bot's later
- * conversations: one prompt-injected turn could allow every folder for good.
- * That is also why earlier conversations (task-workspaces/<bot>, the parent of
- * every conversation's folder) still ask.
- *
- * Accepted: OpenCode's folder rule covers writes as well as reads, and it
- * allows edits and shell by default, so a bot can also change or delete files
- * in the attachments folder, which holds every conversation's uploads under
- * random names. Its edit rules match paths relative to the project and its
- * shell rules match command text, so neither can fence one folder reliably. */
+/** OpenMaus folders an OpenCode bot may use without an approval card: attachments and its own shared folder.
+ * Never one at or above the working folder: OpenCode reads opencode.json, .opencode/ and AGENTS.md from
+ * every folder above it, so a planted file would configure later conversations. Known risk: the folder
+ * rule covers writes too, so a bot can change or delete files in the attachments folder. */
 export function openCodeOwnedDirectories(botId?: string, cwd?: string): string[] {
   const directories = [ATTACHMENTS_DIR];
   // One path segment only: a bot id never names a folder outside its own.
@@ -693,14 +601,9 @@ function readText(path: string): string | undefined {
   }
 }
 
-/** The folder rule the person's own OpenCode config ends with, when it is a
- * single action ("deny", "ask" or "allow") rather than a folder map.
- * OPENCODE_PERMISSION is merged over the config and an object replaces a
- * string, so without this OpenMaus's folder list would quietly turn a "deny"
- * into OpenCode's default "ask". A folder map needs nothing: the two maps
- * merge. Sources in OpenCode's own order: global config, OPENCODE_CONFIG,
- * project files from the root down (unless project config is off), the
- * .opencode folders, then OPENCODE_CONFIG_CONTENT. */
+/** The person's own folder rule when it is a single action. OPENCODE_PERMISSION merges over the config
+ * and an object replaces a string, so a "deny" would otherwise become the default "ask". Sources in
+ * OpenCode's order: global config, OPENCODE_CONFIG, project files root down, .opencode, OPENCODE_CONFIG_CONTENT. */
 export function configuredOpenCodeFolderAction(
   env: Record<string, string | undefined>,
   cwd: string,
@@ -723,7 +626,6 @@ export function configuredOpenCodeFolderAction(
   if (env.OPENCODE_CONFIG) apply(readText(env.OPENCODE_CONFIG));
   const projectFolders: string[] = [];
   if (projectConfig) {
-    // Up to the git root, or the top of the disk outside git.
     for (let folder = resolvePath(cwd); ; folder = dirname(folder)) {
       projectFolders.push(folder);
       if (existsSync(join(folder, ".git")) || dirname(folder) === folder) break;
@@ -745,18 +647,12 @@ export function configuredOpenCodeFolderAction(
   return typeof rule === "string" ? rule : undefined;
 }
 
-/** OpenCode asks before a tool touches a folder outside the session's
- * working folder (its `external_directory` permission), which stalled every
- * turn that read an attachment on an approval card. Allow exactly the
- * folders OpenMaus owns for this bot; every other folder keeps the person's
- * rule, or OpenCode's default "ask". The rules depend only on the bot and the
- * working folder, so a conversation keeps one process. */
+/** OpenCode asks before a tool touches a folder outside the working folder (`external_directory`). */
 function allowOwnedDirectories(env: Record<string, string | undefined>, botId: string | undefined, cwd: string): void {
   let permission: Record<string, unknown> = {};
   if (env.OPENCODE_PERMISSION) {
     try {
       const parsed = JSON.parse(env.OPENCODE_PERMISSION) as unknown;
-      // A policy the person set that is not an object is theirs to keep.
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
       permission = parsed as Record<string, unknown>;
     } catch {
@@ -766,9 +662,7 @@ function allowOwnedDirectories(env: Record<string, string | undefined>, botId: s
   const directories = openCodeOwnedDirectories(botId, cwd);
   if (!directories.length) return;
   const existing = permission.external_directory;
-  // OpenCode evaluates rules in order and the last match wins, so these go
-  // after anything already there: the person's single action first as "*",
-  // then OpenMaus's folders.
+  // OpenCode evaluates rules in order and the last match wins.
   let rules: Record<string, unknown>;
   if (typeof existing === "string") rules = { "*": existing };
   else if (existing && typeof existing === "object" && !Array.isArray(existing)) rules = { ...(existing as Record<string, unknown>) };
@@ -784,12 +678,6 @@ function allowOwnedDirectories(env: Record<string, string | undefined>, botId: s
   env.OPENCODE_PERMISSION = JSON.stringify(permission);
 }
 
-/** Account failures in plain words, with the fix, naming the provider that
- * refused: with provider keys and `opencode auth login` a model may be
- * OpenRouter's or Anthropic's, not Zen's. Each stays under the 160
- * characters a chat error row shows. Zen and Go take the key saved in
- * Settings. On a Cloud the owner has no terminal for `opencode auth login`:
- * another provider's key is saved under Keys for other OpenCode providers. */
 export function describeOpenCodeAccountError(
   code: AccountErrorCode,
   model?: string,
@@ -820,9 +708,7 @@ export function describeOpenCodeAccountError(
   }
 }
 
-/** OpenCode's logins, as one value that changes when `opencode auth login`
- * adds or replaces one. A running `opencode acp` never reads auth.json again,
- * so a conversation's process must be replaced once it changes. */
+/** A running `opencode acp` never re-reads auth.json, so a login change needs a fresh process. */
 function openCodeLoginsFingerprint(env: Record<string, string | undefined>): string {
   return storedAuthPaths(env).map((path) => {
     try {
@@ -836,8 +722,6 @@ function openCodeLoginsFingerprint(env: Record<string, string | undefined>): str
 
 const support = (loadCatalog: OpenCodeCatalogLoader): AcpSupport => ({
   driverKind: "opencodeGo",
-  // Keep the historical driver kind so existing bots and instance config do
-  // not break; only the product name/catalog expand from Go to OpenCode.
   displayName: "OpenCode",
   models: NO_MODELS,
   defaultCli: "opencode",
@@ -856,8 +740,6 @@ const support = (loadCatalog: OpenCodeCatalogLoader): AcpSupport => ({
   spawnArgs: () => ["acp"],
   credentialEnv: ["OPENCODE_API_KEY", ...OPENCODE_PROVIDER_ENV],
   selectModel: { configId: "model" },
-  // A retired id (x-preview-f-free, the Ox Alpha preview) or none at all:
-  // the catalog default when this session offers it, else the session's own.
   fallbackModel: (sessionConfig, catalogDefault) => {
     const offered = offeredModels(sessionConfig, "model");
     if (catalogDefault && offered.includes(catalogDefault)) return catalogDefault;
@@ -868,17 +750,12 @@ const support = (loadCatalog: OpenCodeCatalogLoader): AcpSupport => ({
   transformEnv: withholdProviderKeysWhenManaged,
   spawnFingerprint: openCodeLoginsFingerprint,
   applyTurnEnv: (env, { fullAuto, botId, cwd }) => {
-    // In OpenMaus's own folders nothing is the person's project: a bot wrote
-    // it, and OpenCode would otherwise take it as configuration.
     if (openMausOwnsWorkingFolder(cwd)) env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
     if (!fullAuto) {
       allowOwnedDirectories(env, botId, cwd);
       return;
     }
-    // Scope native permissions to this child, not the user's OpenCode config.
-    // A wildcard alone leaves OpenCode's more-specific external-directory and
-    // read rules in place. Replace the built-in rules as well, including path
-    // maps, so Full means the same thing inside the provider and in OMB.
+      // A wildcard alone leaves OpenCode's more-specific external-directory and read rules in place.
     env.OPENCODE_PERMISSION = JSON.stringify(Object.fromEntries([
       "*", "external_directory", "read", "edit", "bash", "glob", "grep",
       "list", "task", "lsp", "skill", "webfetch", "websearch", "codesearch",
@@ -887,8 +764,6 @@ const support = (loadCatalog: OpenCodeCatalogLoader): AcpSupport => ({
   },
   pickAuthMethod: () => null,
   authFailure: "continue",
-  // Setup status only. Turns are never gated on it: a missing or rejected
-  // key comes back from the prompt itself and is shown with its fix.
   isAuthenticated: async (env, config) => (
     Boolean(env.OPENCODE_API_KEY)
     || hasStoredOpenCodeAuth(env)
@@ -903,18 +778,14 @@ const support = (loadCatalog: OpenCodeCatalogLoader): AcpSupport => ({
   buildPromptText: (turn) => turn.system ? `${turn.system}\n\n${turn.text}` : turn.text,
 });
 
-/** OpenCode 1.18 reports a provider's account refusal as a JSON-RPC internal
- * error wrapping an APIError; only the text says which. Recorded from the
- * real CLI: `{code: -32603, message: "Internal error: Invalid API key.",
- * data: {service: "session", errorName: "APIError"}}`. */
+/** OpenCode 1.18 reports a provider's account refusal as a JSON-RPC internal error wrapping an APIError:
+ * `{code: -32603, message: "Internal error: Invalid API key.", data: {service: "session", errorName: "APIError"}}`. */
 const ACCOUNT_ERROR_TEXT: ReadonlyArray<readonly [RegExp, AccountErrorCode]> = [
   [/insufficient (?:account )?(?:funds|balance|credits?)|out of credits?|no credits? (?:left|remaining)|payment required|\b402\b/iu, "insufficient_funds"],
-  // Not plain "rate limit exceeded": that is a transient 429, which OpenCode
-  // retries itself and automatic recovery may still route around.
+  // Not plain "rate limit exceeded": a transient 429 that OpenCode retries itself.
   [/\bquota\b|usage limit|(?:hourly|daily|weekly|monthly|5-hour) limit/iu, "quota_or_region_restriction"],
   [/\bsubscription\b/iu, "inactive_subscription"],
-  // "User not found." is OpenRouter's refusal of an unknown key (recorded
-  // through opencode 1.18.27 after `opencode auth login` with a dummy key).
+  // "User not found." is OpenRouter's refusal of an unknown key (opencode 1.18.27).
   [/invalid api key|api key (?:is )?(?:invalid|missing|revoked|expired)|incorrect api key|unauthori[sz]ed|\b401\b|authentication (?:failed|required)|(?:^|internal error: )user not found\b/iu, "invalid_credentials"],
 ];
 

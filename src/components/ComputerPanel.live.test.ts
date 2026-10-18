@@ -1,8 +1,4 @@
 // @vitest-environment happy-dom
-// A working bot's Cloud computer streams its screen over the app's one live
-// stream. The Computer panel takes those frames straight from it, shows them,
-// and does not capture its own screenshots while they keep arriving; when
-// they stop, its own capture takes over again.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";

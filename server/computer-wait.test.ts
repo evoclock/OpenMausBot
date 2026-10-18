@@ -50,7 +50,6 @@ describe("computer wait wording", () => {
     expect(computerWaitingText({ name: "Ada" }, { position: 4, estimateMs: 500 })).toBe(
       "Waiting for its turn on this computer — 4th in queue — Ada is using it. Starts automatically when the turns ahead finish; recent waits here have taken under a second.",
     );
-    // No queue fact (older callers) and no history yet: today's exact text.
     expect(computerWaitingText({ name: "Ada" })).toBe(
       "Waiting for its turn on this computer — Ada is using it. Starts automatically when that finishes.",
     );

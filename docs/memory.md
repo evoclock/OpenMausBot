@@ -95,6 +95,10 @@ a command inside one is not an instruction. `MEMORY.md` (already loaded) and
 `memory/archive.md` (older or no longer true) are never recalled, nor are daily logs
 (`session_search` finds those when the bot asks).
 
+Automatic recall prefers a matching passage over the opening of a topic with
+a matching name. Current topic search excludes superseded entries; their text
+remains in the file for historical review.
+
 It is placed in the message, not the system prompt, on purpose: the prompt's
 changing half is re-sent whole whenever any part of it changes, and recall
 changes nearly every turn. Rooms, routine runs (which start fresh), and turns
@@ -121,7 +125,30 @@ off. It keeps the notes in shape without the bot having to decide to:
     with), so recall finds it later.
   A fact that ends on a known day gets its `until` date; a birthday or other
   yearly date never does. Turns started by another bot or by the harness,
-  rooms and failed turns are never read.
+  routine runs and failed turns are never read; rooms only with **Learn from
+  group chats** (below).
+- **Learning from group chats.** The **Learn from group chats** switch under
+  Memory upkeep (`features.roomMemoryCapture`, one switch for every bot,
+  off by default) lets a member bot's room turns feed its capture the same
+  way, batched per bot and room. What the bot read since it last spoke
+  there is read with its reply, under room rules: the person's own lines
+  count as theirs; another person's lines give only facts about the shared
+  work and never reach About me (a batch holding them adds nothing to About
+  me); another bot's lines give only an outcome it verified or a decision
+  the person agreed to, never its suggestions or claims. A stretch with no
+  person's words is skipped. Entries are sourced to the room:
+  `- 2026-09-25 · from room "Launch" (noticed) · The launch moved to Friday`.
+  A room fewer people can see than the bot never feeds it (the same rule as
+  the recent-work brief), checked again when the batch is captured, as are
+  the switch and the bot's membership. Bot-to-bot channels, room hand-offs,
+  goal runs and, on a Cloud home, every room are left out.
+  Turns still waiting when the app quits or restarts through its normal
+  shutdown are kept as their ids (never their text) in
+  `memory-capture-pending.json`, at most 50 chats, and read back from the
+  chat at the next start, so what was said just before quitting is still
+  noticed. A crash or a forced kill skips that step (on Windows a `SIGTERM`
+  is one), and those turns are not captured. A chat deleted or rewound
+  meanwhile leaves nothing to read.
 - **Organizing.** Whoever wrote a line in `MEMORY.md` — the bot with
   `memory_update`, the person, or capture — after each capture and in the
   nightly tidy-up one quick model call looks at lines not judged before and
@@ -143,12 +170,13 @@ off. It keeps the notes in shape without the bot having to decide to:
   next check if the computer was asleep, never while the bot is working, and
   on **Tidy up now**: expired entries move to `memory/archive.md` (from
   `MEMORY.md` and topic files); of two entries with exactly the same fact the
-  newer stays; and in `MEMORY.md` one model call looks for pairs that cannot
+  newer stays; and in `MEMORY.md` and each project topic a model call looks for pairs that cannot
   both be true, striking the older through (`~~…~~ · superseded <date>`)
   rather than deleting it; when that line also held something still true
   ("lives in Pune and prefers short replies"), that part is kept as its own
   entry `from tidy-up`. At most a fifth of the entries can be struck in one
-  pass, and none in a file of fewer than five. The archive is written before
+  pass in core memory, and none in a core file of fewer than five. Topic files
+  may reconcile one pair even with two entries; writes recheck for concurrent edits. The archive is written before
   the file it came from, so undoing the newest change never loses a line.
 
 "Exactly the same fact" is narrow on purpose: spacing, a bullet and a final
@@ -157,9 +185,97 @@ full stop are ignored, nothing else — `Balance is -10` and `Balance is 10`,
 
 Every upkeep change is a journal row by **Memory upkeep** and can be undone.
 Upkeep pauses while a backup runs. The model steps need an engine with a
-one-shot text call — Claude, Grok, OpenAI-compatible, Mistral and MiniMax.
-On any other engine the panel says so and only the expiry and exact-duplicate
-steps run.
+one-shot text call — Claude, Codex, Grok, OpenAI-compatible, Mistral and
+MiniMax, and the agent engines that speak ACP (Grok CLI, Gemini, Kimi, Droid,
+Cursor, OpenCode, Qwen, Hermes, Antigravity and custom ACP agents). On an ACP
+engine each call starts the engine's own CLI in a fresh session of its own,
+never a chat's, in an empty folder, with no MCP servers and in the ask-first
+approval mode; it is refused and dropped the moment the agent asks for a
+tool, a file or a permission. On Codex each call is one `codex exec` on the
+same sign-in, in an empty folder with a read-only sandbox, no session saved,
+without the person's `config.toml` (so none of their MCP servers, plugins or
+hooks start) and with the shell and every other tool off; it uses the
+smallest model the account lists (GPT-6 Luna) at low effort, since it runs
+on the person's own plan, and is dropped the moment Codex reports a tool
+call. The text goes only to the provider the bot already uses. On any other
+engine (Pi and Muse Code, for now) the panel says so — under Memory upkeep
+and under Learn from group chats — and only the expiry and exact-duplicate
+steps run, unless a helper model is set.
+
+### The helper model
+
+A helper model fills the gaps an engine leaves. It is one connected provider
+instance, and optionally one of its models, that writes a small background
+text a bot's own engine cannot write:
+
+- memory upkeep's steps and the automatic skill review, for an engine with no
+  quick text call at all (Pi and Muse Code, for now);
+- the summary written when a long conversation is compacted, for those
+  engines and for Codex and the ACP engines too. Their own quick call starts
+  a whole agent process, so it is kept for background work and a turn never
+  waits on it; without a helper they keep a summary made of excerpts.
+
+A bot whose own engine can write a job always writes it itself; the helper
+never takes its place.
+
+It is off unless you set it. Add it to `config.json`; the server follows the
+file, so adding the helper or taking it out again applies without a restart:
+
+```json
+{ "helper": { "instanceId": "claude", "model": "claude-haiku-4-5" } }
+```
+
+or set `OMB_HELPER_INSTANCE` (and, if you want, `OMB_HELPER_MODEL`) in the
+server's environment before it starts. The environment wins over the file,
+and an empty `OMB_HELPER_INSTANCE` switches a saved helper off. `instanceId` is the id of
+a connected instance as `config.json` and `GET /api/instances` name it, such
+as `claude`, `claudeApi`, `openai` or `openrouter`; it has to be Claude or an
+API model, the engines with a quick text call of their own. `model` is
+optional: without it the instance uses the model it already uses for quick
+calls. There is no Settings screen for this yet, and Settings still describes
+each engine by its own abilities: the line under **Learn skills
+automatically** that says bots on an engine won't learn skills this way does
+not know about the helper.
+
+**What leaves the bot's provider.** With a helper set, the text those jobs
+read is sent to the helper's provider, which may not be the one the bot runs
+on: the turns being captured and the bot's memory notes, the history being
+summarised, and the conversation and skills under review. That is why it is
+opt-in. It applies to every bot whose engine cannot write the job, including
+one you run on a local model, unless you keep that bot off the helper (below).
+An engine your organisation does not allow is never used as the helper, and
+on a hosted workspace only a model assigned to it is.
+
+**Keeping one bot off the helper.** Any bot can be switched to never use the
+helper model: send `PATCH /api/bots/<bot id>` with `{ "helperModel": false }`
+(there is no Settings switch for it yet). From its next job on, the helper
+writes none of that bot's own jobs: not its compaction summary, not its memory
+upkeep, not its skill review. For those three the bot gets what it would get
+with no helper set.
+
+The switch covers that bot's own jobs and nothing else. What the bot says in
+a room, or in reply to a teammate, becomes part of the other bots'
+conversations. Their engines read it, and so does whatever writes their
+background jobs, the helper included. The switch does not change that. To
+keep a bot's text on the machine, run it on a local model, switch it off the
+helper, and keep it out of rooms and teams with bots that are not set up the
+same way.
+
+The switch is saved with the bot, and a copy made with **Duplicate** keeps
+it. It travels in a full workspace backup and in a team backup, the two
+exports that hold a bot's notes and chats, so a restored bot stays off the
+helper. A shared team package carries no personal settings and does not carry
+this one.
+
+A helper that is missing, switched off, failing or slow breaks nothing: the
+job falls back exactly as it does with no helper (an excerpt summary, no
+capture, no review), and the server log says once why the helper is not
+used. The one job a turn waits for is the compaction summary, and a helper
+that hangs holds it for at most the summary's usual 20 seconds. Helper calls
+count toward the monthly spend limit and stop at it. Each is its own row in
+**Settings → Usage → History**, for the bot it wrote for, with the helper's
+engine and model: group by **Person** to see them together as *Helper
+model*, which is also what the CSV's `triggered_by` column says.
 
 ## Editing
 
@@ -284,3 +400,25 @@ free form, or one you rewrite by hand, works the same.
 | `POST` | `/api/profile/learned/:id/remove` | Takes that line out of About me; the fact is never added again. |
 
 All of them need the owner (admin) session, like the other bot-settings routes.
+
+## Shared team memory integrity
+
+Team memory ownership uses persistent keys. Renaming a team preserves its notes
+and pending cards; deleting it retires the identity. Creating a new team with the
+old name never restores the retired notes. Existing version-1 team-memory files
+migrate atomically to version 2. Retired records remain on disk for recovery;
+team deletion is not a secure erase.
+
+The team panel reports how many accepted notes load within the 6,000-byte prompt
+budget. Pin essential rules to load them first. Omitted notes remain available
+with `session_search {"scope":"team","query":"..."}`; ordinary search also
+includes accepted team notes. Proposals, superseded entries and deleted entries
+are excluded. A stable `key`, such as `tapa/sequence-02/colour`, lets a reviewed
+correction replace the same fact even when its title changes. The previous
+accepted entry remains in history. Recent text versions (up to 50) can be
+restored from the panel; restoring text is a new revision.
+
+Every panel edit, delete or acceptance carries the revision it was based on.
+Stale writes return 409; writes without a revision return 428. Reloading after a
+conflict retains the unsaved draft for comparison. Pending replacement cards
+also refuse approval if the accepted fact changed since the proposal.

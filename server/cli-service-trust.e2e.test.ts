@@ -1,10 +1,4 @@
-// `openmausbot serve` on a server that trusts local requests only as a
-// service (OMB_LOOPBACK_TRUST=service). The real CLI starts the real server
-// in a disposable home: the server refuses session-less local admin requests,
-// yet the CLI that started it still prints a pairing code through the secret
-// it handed the server on stdin, and keeps running. Separate CLI commands
-// (and anything else on the machine, a bot's shell included) are refused
-// with an explanation instead of a misleading empty answer.
+// The real CLI starts the real server in a disposable home with OMB_LOOPBACK_TRUST=service.
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

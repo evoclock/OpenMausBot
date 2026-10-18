@@ -1,9 +1,4 @@
-// Per-bot profile history: an append-only NDJSON file in the bot folder,
-// one row per changed field. Same discipline as decision-log.ts — 0600,
-// through redactSecrets, serialized per file, fire-and-forget — because a
-// history write must never fail the change it records. Full before/after
-// text is kept only for the soul; redacted versions cannot be restored
-// exactly and are not rollback targets. Other fields keep short one-liners.
+// Append-only per-bot profile history (0600, redacted); a history write never fails the change it records.
 import { appendFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
@@ -19,13 +14,11 @@ export interface HistoryRow {
   id: string;
   at: number;
   actor: HistoryActor;
-  /** "ui", "api", `card:<messageId>`, "migration", "rollback" */
   via: string;
   field: string;
   summary: string;
   before?: string;
   after?: string;
-  /** False when the saved before-text cannot be restored exactly. */
   canRestore?: boolean;
   restoreUnavailableReason?: string;
 }
@@ -69,10 +62,6 @@ function withRestoreEligibility(row: HistoryRow): HistoryRow {
 }
 
 async function writeRows(botId: string, rows: HistoryRow[]): Promise<void> {
-  // A bot's folder is created when the bot is (writeSoulMirror on bot
-  // creation), so a real change always finds it there. If it is gone, the
-  // bot was deleted between the change firing and this write landing —
-  // skip rather than recreate a folder for a bot that no longer exists.
   if (!existsSync(botFolder(botId))) return;
   const file = historyFile(botId);
   mkdirSync(botFolder(botId), { recursive: true, mode: 0o700 });
@@ -84,7 +73,6 @@ function queueHistoryRows(botId: string, rows: HistoryRow[]): void {
   if (!rows.length) return;
   const previous = writeQueues.get(botId) ?? Promise.resolve();
   const queued = previous.then(() => writeRows(botId, rows)).catch(() => {
-    /* history must never take down the change it records */
   });
   writeQueues.set(botId, queued);
   void queued.finally(() => {
@@ -92,7 +80,6 @@ function queueHistoryRows(botId: string, rows: HistoryRow[]): void {
   });
 }
 
-/** Record every field that differs between `before` and `after`. */
 export function recordProfileChange(
   botId: string,
   actor: HistoryActor,
@@ -102,8 +89,6 @@ export function recordProfileChange(
 ): void {
   const at = Date.now();
   const rows: HistoryRow[] = [];
-  // Toggles land in history as the same on/off wording the card shows;
-  // every other proposable field is text.
   const historyText = (value: string | boolean | undefined): string =>
     value === undefined ? "" : typeof value === "boolean" ? (value ? "on" : "off") : value;
   for (const field of PROFILE_REQUEST_FIELDS) {
@@ -114,16 +99,10 @@ export function recordProfileChange(
   queueHistoryRows(botId, rows);
 }
 
-/** Test/shutdown seam. */
 export async function flushProfileHistory(botId: string): Promise<void> {
   await writeQueues.get(botId);
 }
 
-/** Shutdown seam for every bot at once: awaits whatever is currently
- * queued, so a history write in flight when the process stops still lands
- * before it exits. Each queued promise already swallows its own error
- * (`writeRows` must never take down the change it records), so this never
- * rejects either. */
 export async function flushAllProfileHistory(): Promise<void> {
   await Promise.allSettled(writeQueues.values());
 }
@@ -135,8 +114,6 @@ const isRow = (value: unknown): value is HistoryRow =>
   typeof (value as HistoryRow).field === "string" &&
   typeof (value as HistoryRow).actor === "string";
 
-/** Newest first, bounded to 500 rows from the newest 8 MiB. The append-only
- * log keeps older changes without making every settings read load them. */
 export function readHistory(botId: string, limit = 100): HistoryRow[] {
   let text: string;
   let offset: number;
@@ -169,18 +146,12 @@ export function readHistory(botId: string, limit = 100): HistoryRow[] {
     try {
       const value: unknown = JSON.parse(line);
       if (isRow(value)) {
-        // Old logs had only millisecond timestamps (not unique). Their
-        // append-only byte position gives each legacy entry a stable id,
-        // even as the bounded read window moves after later appends.
         const id = typeof value.id === "string" && value.id
           ? value.id
           : `legacy-${createHash("sha256").update(`${end}:${line}`).digest("hex")}`;
-        // Recheck old logs too: they predate eligibility metadata and may
-        // already contain irreversible redaction markers in the before-text.
         rows.push(withRestoreEligibility({ ...value, id }));
       }
     } catch {
-      /* torn line — skip */
     }
   }
   return rows;

@@ -143,8 +143,6 @@ describe("phonePairingLink", () => {
     expect(new URL(none!).searchParams.get("hosts")).toBeNull();
   });
 
-  // Oct 3: an Android phone showed "Miguel's+computer". URLSearchParams
-  // writes a space as "+", which is form encoding; the phones percent-decode.
   it("writes a space as %20, never +, so a phone shows the name it was given", () => {
     const link = phonePairingLink({ address: "192.168.1.34", port: 8810, code: "004209", token, name: "Miguel's computer" })!;
     expect(link).toContain("name=Miguel's%20computer");
@@ -168,9 +166,6 @@ describe("phonePairingLink", () => {
     expect(phonePairingLink({ address: "mini.example", token })).toBeNull();
   });
 
-  // Both phones refuse an address with a path, query or fragment (Android
-  // Endpoint.kt normalizedUrl, iOS CompanionEndpoint), so the builder does too
-  // rather than print a QR the scanner calls "not a pairing code".
   it("writes an origin as its bare origin and refuses one with a path, query or fragment", () => {
     expect(rawField(phonePairingLink({ address: "https://Mini.Example:443/", token })!, "address")).toBe(
       "https://mini.example",

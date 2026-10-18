@@ -1,7 +1,4 @@
-// Speech helper lifecycle, main-process side. The Swift recognizer is a tiny
-// background app because current macOS privacy enforcement requires the code
-// calling Speech/AVFoundation to be launched with its own Info.plist identity.
-// Compiled lazily in development; each recording session is one helper app.
+// macOS privacy enforcement requires the code calling Speech/AVFoundation to launch with its own Info.plist identity.
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -26,8 +23,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(__dirname, "resources", "speech-helper.swift");
 const INFO = path.join(__dirname, "resources", "speech-helper-Info.plist");
-// Packaged: the helper bundle ships pre-built + signed in Resources. A signed
-// app bundle must never be rewritten — lazy compilation would break its seal.
+// A signed app bundle must never be rewritten: lazy compilation would break its seal.
 const BUNDLE = app.isPackaged
   ? path.join(process.resourcesPath, "OpenMausBot Speech.app")
   : speechHelperBundle;
@@ -49,10 +45,6 @@ function sendEnd(win, info) {
   if (!win.isDestroyed()) win.webContents.send("speech:end", info);
 }
 
-/**
- * Start one recognition session. `endpointMs` is call-mode-only: composer
- * dictation deliberately keeps listening until its mic button is pressed.
- */
 export function startSpeech(win, options = {}) {
   stopSpeech();
   if (process.platform !== "darwin") {
@@ -72,10 +64,7 @@ export function startSpeech(win, options = {}) {
     return;
   }
 
-  // A direct spawn of Contents/MacOS/speech-helper loses the app-bundle
-  // identity and TCC kills it for lacking a usage description. LaunchServices
-  // preserves that identity. `open` redirects its stdout/stderr to files,
-  // which we tail to retain the helper's NDJSON streaming contract.
+  // A direct spawn loses the bundle identity and TCC kills it; LaunchServices keeps it. `open` sends stdout/stderr to files, tailed here.
   const sessionDir = mkdtempSync(path.join(app.getPath("temp"), "openmausbot-speech-"));
   const outputPath = path.join(sessionDir, "stdout.ndjson");
   const errorPath = path.join(sessionDir, "stderr.log");
@@ -138,13 +127,11 @@ export function startSpeech(win, options = {}) {
         const parsed = JSON.parse(line);
         if (typeof parsed.error === "string") reportedError = parsed.error;
         if (parsed.partial === false && typeof parsed.text === "string") completed = true;
-        // A stopped/replaced helper can flush one last chunk. Never leak it
-        // into the session that replaced it.
+        // A stopped or replaced helper can flush one last chunk: never into the session that replaced it.
         if (child === speechSession && !win.isDestroyed()) {
           win.webContents.send("speech:transcript", parsed);
         }
       } catch {
-        /* non-JSON noise on stdout — ignore */
       }
     }
   };
@@ -160,9 +147,7 @@ export function startSpeech(win, options = {}) {
   proc.on("close", (code) => {
     drain();
     cleanup();
-    // stopSpeech() clears child before creating the stop marker. Suppressing
-    // that close event is essential in call mode: intentional TTS muting must
-    // not look like the natural end of a spoken turn.
+    // stopSpeech() clears child before the stop marker, so intentional TTS muting never looks like the end of a spoken turn.
     if (child !== speechSession) return;
     child = null;
     if (reportedError) {
@@ -190,8 +175,6 @@ export function stopSpeech() {
   } catch {}
 }
 
-/** Finalize the active request and keep it owned until the recognizer emits
- * its final transcript. Used by push-to-talk key release. */
 export function finishSpeech() {
   if (!child) return;
   try {

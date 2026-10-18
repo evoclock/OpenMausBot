@@ -20,12 +20,10 @@ const DEFAULT_MODELS: ModelCatalog = {
 };
 
 const DEFAULT_KEY_ENV = "OPENAI_COMPAT_API_KEY";
-/** A provider's own key (the built-in OpenAI and OpenRouter instances). An
- * instance reading one of these never falls back to the workspace
- * OpenAI-compatible key, URL, model or routing. */
+/** A provider's own key: such an instance never falls back to the workspace OpenAI-compatible key, URL,
+ * model or routing. */
 const OWN_KEY_ENVS = new Set(["OMB_OPENAI_API_KEY", "OMB_OPENROUTER_API_KEY"]);
 
-/** OpenAI's own API, seeded until its live catalog loads. */
 const OPENAI_MODELS: ModelCatalog = {
   default: "gpt-5",
   options: [
@@ -34,9 +32,7 @@ const OPENAI_MODELS: ModelCatalog = {
   ],
 };
 
-/** OpenAI's /models lists every model the key can reach: embeddings, speech,
- * images, moderation and Responses-only models too. Only chat models belong
- * in a chat picker. */
+/** OpenAI's /models also lists embeddings, speech, images, moderation and Responses-only models. */
 export function isOpenAIChatModel(id: string): boolean {
   if (!/^(gpt-|chatgpt-|o\d)/i.test(id)) return false;
   return !/(audio|realtime|tts|transcribe|search|image|embedding|moderation|instruct|codex|computer-use|deep-research|-pro\b)/i.test(id);
@@ -45,9 +41,7 @@ export function isOpenAIChatModel(id: string): boolean {
 export interface OpenAICompatConfig {
   tools?: boolean;
   url: string;
-  /** Where the key comes from; see OWN_KEY_ENVS. */
   apiKeyEnv: string;
-  /** "openai": seed and filter the catalog for OpenAI's own API. */
   catalog?: "openai";
   key?: string;
   model?: string;
@@ -70,7 +64,6 @@ function decodeConfig(raw: unknown): OpenAICompatConfig {
   if (config.managedModels !== undefined && (!Array.isArray(config.managedModels) || !config.managedModels.length || config.managedModels.some(model => typeof model !== "string" || !model.trim()))) throw new Error("Invalid managed models.");
   const ownKey = typeof config.apiKeyEnv === "string" && OWN_KEY_ENVS.has(config.apiKeyEnv);
   if (config.catalog !== undefined && config.catalog !== "openai") throw new Error("catalog must be \"openai\"");
-  // Workspace defaults belong to the shared OpenAI-compatible connection only.
   const envUrl = ownKey ? undefined : process.env.OPENAI_COMPAT_URL;
   return {
     ...(config.tools !== undefined ? { tools: config.tools as boolean } : {}),
@@ -85,8 +78,7 @@ function decodeConfig(raw: unknown): OpenAICompatConfig {
     model: typeof config.model === "string" && config.model
       ? config.model
       : ownKey ? undefined : process.env.OPENAI_COMPAT_MODEL || undefined,
-    // An explicit empty override disables inherited routing for an isolated
-    // connection (CLI setup uses this). Absent still inherits the global pin.
+    // An explicit empty override disables inherited routing; absent still inherits the global pin.
     provider: typeof config.provider === "string"
       ? config.provider || undefined
       : ownKey ? undefined : process.env.OPENAI_COMPAT_PROVIDER || undefined,
@@ -101,9 +93,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     access: "api",
   },
   models: DEFAULT_MODELS,
-  // Nothing to install: the key and base URL are saved in the app. The old
-  // descriptor offered a config.json sentence as an "Open install in
-  // Terminal" command.
   install: {
     docsUrl: "https://openrouter.ai/keys",
     settings: "connections",
@@ -114,9 +103,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
   async create(input) {
     const { config } = input;
-    // An instance that names its own key variable reads only that one: the
-    // workspace key (OPENAI_COMPAT_API_KEY) belongs to the workspace's
-    // endpoint and must not reach this instance's host.
+    // An instance naming its own key variable reads only that one: the workspace key must not reach its host.
     const ownKeyVariable = config.apiKeyEnv !== DEFAULT_KEY_ENV;
     const apiKey =
       config.key ??
@@ -125,8 +112,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       process.env[config.apiKeyEnv] ??
       (ownKeyVariable ? undefined : process.env[DEFAULT_KEY_ENV]) ??
       "";
-    // The default key and the built-in providers' keys are saved in
-    // Settings → API keys; any other variable is configured where it was written.
     const missingKey = !ownKeyVariable || OWN_KEY_ENVS.has(config.apiKeyEnv)
       ? "No API key — open Settings → API keys."
       : `no API key — set ${config.apiKeyEnv} or add it to the instance config`;
@@ -154,8 +139,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         type Row = { id?: unknown; name?: unknown; created?: unknown };
         const json = await response.json() as { data?: Row[] } | Row[];
         let rows = Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
-        // OpenAI lists its catalog unordered and mixed with non-chat models:
-        // keep chat models, newest first.
+        // OpenAI lists its catalog unordered and mixed with non-chat models.
         if (config.catalog === "openai") {
           rows = rows
             .filter((row) => typeof row.id === "string" && isOpenAIChatModel(row.id))
@@ -170,7 +154,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           options.push({
             id,
             label: typeof row.name === "string" && row.name.trim() ? row.name : id,
-            // A provider's own catalog is its official list, not a custom model.
             ...(config.catalog === "openai" ? {} : { custom: true }),
           });
         }
@@ -179,9 +162,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           options.unshift({ id: config.model, label: config.model, custom: true });
         }
         catalog = { default: config.model ?? options[0].id, options };
-      } catch {
-        // Catalog refresh is opportunistic; keep the seeded options.
-      }
+      } catch {}
     };
     if (apiKey) void fetchModels();
 
@@ -212,9 +193,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       includeUsageInCompleted: true,
       nativeLog: {
         source: "openai-compat.chat.completions",
-        // Tool names are the answer to "did the harness send them?" — the
-        // LiteLLM/proxy hop after this point is what drops tools silently,
-        // and until now the tee held no record either side could compare.
         outgoing: (_turn, messages, model, tools) => ({
           model,
           messageCount: messages.length,

@@ -1,23 +1,8 @@
-// The inspector's data: what a thread's turn actually looked like on the
-// wire. Nothing new is captured here — the harness already tees two logs
-// per thread, and this just reads them back:
-//
-//   events/<threadId>.ndjson  — the normalized RuntimeEvent stream the bus
-//                               publishes (server/harness/bus.ts)
-//   native/<threadId>.ndjson  — the provider's own protocol messages,
-//                               verbatim and secret-redacted
-//                               (server/drivers/native.ts)
-//
-// Merged by timestamp so a tool call and the raw message behind it sit
-// next to each other. Newest-`limit` only: a long-lived thread has
-// thousands of native lines and the panel wants the recent ones first.
 import { closeSync, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { InspectorEntry, InspectorPage, NativeRecord } from "../shared/inspector.ts";
 
-// The inspector wire shapes live in shared/inspector.ts now (part of the
-// wire model); re-exported here so existing importers keep working.
 export type { InspectorEntry, InspectorPage, NativeRecord } from "../shared/inspector.ts";
 
 const DEFAULT_LIMIT = 300;
@@ -35,14 +20,10 @@ interface LineCount {
 }
 type FileStat = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs">;
 
-// Counts are incremental per append-only log. The first request scans bytes
-// once (without decoding or parsing every JSON record); later requests inspect
-// only bytes appended since the cached size. Keep this bounded across threads.
 const lineCounts = new Map<string, LineCount>();
 const LINE_COUNT_CACHE_MAX = 256;
 
-/** Thread ids are uuids the harness minted; anything else is not a file we
- * should be reading. */
+/** Only harness-minted uuids: anything else is not a file to read. */
 function assertThreadId(threadId: string) {
   if (!/^[\w-]+$/.test(threadId)) throw new Error("invalid thread id");
 }
@@ -94,8 +75,6 @@ function parseRecent<T>(text: string, includeFirst: boolean, limit: number, vali
       const value: unknown = JSON.parse(raw);
       if (valid(value)) out.push(value);
     } catch {
-      // A torn line during a write, or a hand-edited record. Keep looking
-      // farther back until we still have `limit` valid recent entries.
     }
   }
   return out.slice(-limit);
@@ -123,9 +102,6 @@ export function readRecentLines<T>(file: string, limit: number, valid: RecordGua
       if (read <= 0) break;
       bytes = Buffer.concat([chunk.subarray(0, read), bytes]);
       position = start;
-      // The first line is partial until we reach byte zero. Parse only once
-      // enough complete candidates exist; corrupt candidates make us keep
-      // walking backwards rather than returning fewer valid rows.
       const text = bytes.toString("utf8");
       if (position === 0 || text.split("\n").length - 1 >= limit) {
         lines = parseRecent(text, position === 0, limit, valid);
@@ -146,13 +122,9 @@ const stringOrMissing = (value: unknown) => value === undefined || typeof value 
 const stringOrNullOrMissing = (value: unknown) => value === undefined || value === null || typeof value === "string";
 const numberOrNullOrMissing = (value: unknown) => value === undefined || value === null || typeof value === "number";
 const stringsOrMissing = (value: unknown) => value === undefined || (Array.isArray(value) && value.every((item) => typeof item === "string"));
-/** A computer holder as the wait events carry it: a name, and the holding
- * thread's title when one was known. */
 const computerHolderOrMissing = (value: unknown) =>
   value === undefined ||
   (isRecord(value) && typeof value.name === "string" && stringOrMissing(value.task));
-/** A replayed structured ask. Only the shape the card actually reads is
- * required; the rest is optional and simply absent on an older event. */
 const askQuestionsOrMissing = (value: unknown) =>
   value === undefined ||
   (Array.isArray(value) &&
@@ -229,8 +201,6 @@ export function isRuntimeEvent(value: unknown): value is RuntimeEvent {
         typeof value.summary === "string" &&
         stringsOrMissing(value.choices) &&
         askQuestionsOrMissing(value.questions) &&
-        // Required fields only: events recorded before origin exists replay
-        // unchanged, and a value other than the two documented marks is not.
         (value.origin === undefined || value.origin === "tool" || value.origin === "output")
       );
     case "request.resolved":
@@ -280,14 +250,10 @@ export function readThreadEvents(input: {
   const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent);
   const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord);
 
-  // cap each log on its own, then merge: the native tee is several times
-  // chattier than the runtime stream, and one shared cap would leave the
-  // Events lens with a handful of rows behind hundreds of raw ones
   const merged: InspectorEntry[] = [
     ...runtime.lines.map((data): InspectorEntry => ({ kind: "runtime", at: data.createdAt, data })),
     ...native.lines.map((data): InspectorEntry => ({ kind: "native", at: data.at, data })),
   ];
-  // stable sort: ties keep file order, which is emit order
   merged.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
   return {

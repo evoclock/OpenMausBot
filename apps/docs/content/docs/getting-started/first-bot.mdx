@@ -31,9 +31,9 @@ create a bot, call a model, or change any other profile setting.
 
 Open **App settings → General → Defaults for new bots → Edit**. This opens the same editor as bot creation. Save the identity, model, instructions, access preferences, memory, skills, and routines you want future bots to start with. Leave the name empty for a random suggested name each time.
 
-Saving defaults does not change existing bots or start routines. When creating a bot, you can override or clear any inherited value. Full access and local-computer Auto still require their normal confirmation when the bot is created; a saved default is not a permission grant.
+Saving defaults does not change existing bots or start routines. When creating a bot, you can override or clear any inherited value. New bots start at Full access unless the saved defaults pick another level. A saved level applies to the new bot at once, with no confirmation; local-computer Auto still asks for its confirmation when the bot is created.
 
-These full templates apply to the creation dialog and the HTTP bot-creation endpoint. Bot-driven team setup keeps its own reviewed setup flow; it does not automatically copy template memory, skills, or routines.
+These full templates apply to the creation dialog and the HTTP bot-creation endpoint. Bot-driven team setup applies at once with an Undo; it does not automatically copy template memory, skills, or routines.
 
 ## Give it a useful first task
 

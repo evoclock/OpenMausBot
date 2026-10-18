@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { launchVerificationServer, runControlOmb, type VerificationServer } from "../../scripts/control-omb.ts";
 import type { Scenario, Step } from "../types.ts";
@@ -6,9 +6,11 @@ import { buildScriptedPlan } from "../providers/mock/scripted-plan.ts";
 import { BaseWorld, type WorldContext } from "./base-world.ts";
 import { waitUntil } from "./api.ts";
 import { installLibrarySkill } from "../../server/skill-library.ts";
+import { readHandoffs as readRuntimeHandoffs } from "../../server/testing/handoff-rows.ts";
 
-/** The coordination world: the real server plus the scripted engine, exactly
- * the proven e2e recipe (launchVerificationServer with room scripting). * Ordinary chat, coordinate_bots handoffs, and routines run end to end. */
+/** The coordination world: the real server plus the scripted engine, with room
+ * scripting. Ordinary chat, coordinate_bots handoffs and routines run end to
+ * end. */
 export class CoordinationWorld extends BaseWorld {
   private session: VerificationServer | undefined;
   private dataDir = "";
@@ -139,9 +141,9 @@ export class CoordinationWorld extends BaseWorld {
     return runs.find((run: any) => run.id === wanted) ?? runs.at(-1);
   }
 
+  /** The coordinated turns in the server's runtime.db. */
   protected override readHandoffs(): Array<Record<string, any>> {
-    const path = join(this.dataDir, "room-handoffs.json");
-    return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as Array<Record<string, any>>) : [];
+    return readRuntimeHandoffs(this.dataDir);
   }
 
   override async close(): Promise<void> {

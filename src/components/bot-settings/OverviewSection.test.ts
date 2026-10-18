@@ -6,14 +6,11 @@ import type { BotOverview } from "@/lib/bot-overview-types";
 import type { PromptPreviewData } from "./PromptPreview";
 import { OverviewSection } from "./OverviewSection";
 
-// renderToStaticMarkup HTML-escapes apostrophes as &#x27; — decode before
-// comparing against plain-text fixtures that use a straight quote.
+// renderToStaticMarkup HTML-escapes apostrophes as &#x27;; decode before comparing.
 function render(element: Parameters<typeof renderToStaticMarkup>[0]): string {
   return renderToStaticMarkup(element).replace(/&#x27;/g, "'");
 }
 
-// A bot with every off switch flipped: exercises all six "wont" sentences
-// buildBotOverview (server/bot-overview.ts) can produce at once.
 const sentences: BotOverview = {
   who: {
     name: "Scout",
@@ -46,13 +43,13 @@ describe("OverviewSection", () => {
     const markup = render(createElement(OverviewSection, {
       overview: { ...sentences, setup: [
         { id: "identity", label: "Identity", done: true, section: "identity" },
-        { id: "folder", label: "Choose a project folder", done: false, section: "access" },
+        { id: "folder", label: "Choose a working folder", done: false, section: "access" },
         { id: "schedule", label: "Add a routine", done: false, section: "routines" },
       ] }, prompt: null, onOpen: vi.fn(),
     }));
     expect(markup).toContain("Setup ideas");
     expect(markup).toContain("You can start chatting now.");
-    expect(markup).toContain("Choose a project folder");
+    expect(markup).toContain("Choose a working folder");
     expect(markup).not.toContain("Finish setting up");
     expect(markup).not.toContain("1 of 3 done");
     expect(markup).not.toContain(">Identity</span>");
@@ -91,8 +88,6 @@ describe("OverviewSection", () => {
       createElement(OverviewSection, { overview: sentences, prompt: null, promptError: true, onOpen: vi.fn() }),
     );
 
-    // Closed by default, so the failure text isn't shown yet — but the
-    // header must not be stuck offering a preview that will never arrive.
     expect(markup).toContain("Prompt preview");
   });
 
@@ -102,8 +97,6 @@ describe("OverviewSection", () => {
     );
 
     expect(markup).toContain("Couldn’t refresh — showing the last loaded overview.");
-    // The data itself must still be there — a refresh failure is not a load
-    // failure, so none of the sections should be replaced by an error state.
     for (const line of sentences.wont) {
       expect(markup).toContain(line);
     }

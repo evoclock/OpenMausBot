@@ -1,8 +1,4 @@
-// The line the harness prints when a turn starts (stderr, which the desktop
-// app keeps in server.log). It shows the start of the prompt, so a stuck turn
-// can be traced to what was asked. Words spoken on a Live call are never
-// logged — the call's summary line (liveCallSummaryLine) has counters only —
-// so a turn carrying any of them shows `text=(spoken)` instead.
+// Words spoken on a Live call are never logged: such a turn shows `text=(spoken)`.
 
 export interface TurnStartLog {
   botId: string;
@@ -10,7 +6,6 @@ export interface TurnStartLog {
   images: number;
   depth: number;
   card: boolean;
-  /** some of the turn's words were spoken on a Live call */
   spoken: boolean;
 }
 

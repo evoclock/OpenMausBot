@@ -12,28 +12,24 @@ import {
   runSummary,
   showRun,
   skillPrompt,
-  skillStaged,
+  runSkill,
   verifySteps,
   verifySummary,
 } from "./verify-steps";
 import type { Message } from "@/state/store";
 
 let seq = 0;
-/** Claude-style chip: the tool name with the command riding in `summary`. */
 const claude = (command: string, ok?: boolean): Message =>
   ({ id: `c${++seq}`, at: seq, role: "bot", kind: "activity", tool: { name: "Bash", summary: command, ...(ok === undefined ? {} : { ok }) } });
-/** Codex-style chip: the command is the name AND the summary. */
 const codex = (command: string, ok?: boolean): Message =>
   ({ id: `x${++seq}`, at: seq, role: "bot", kind: "activity", tool: { name: command, summary: command, ...(ok === undefined ? {} : { ok }) } });
-/** ACP-style chip: an 80-char title plus the full command in `summary`. */
 const acp = (command: string, ok?: boolean): Message =>
   ({ id: `a${++seq}`, at: seq, role: "bot", kind: "activity", tool: { name: command.slice(0, 80), summary: command, ...(ok === undefined ? {} : { ok }) } });
 const text = (body: string): Message => ({ id: `m${++seq}`, at: seq, role: "bot", kind: "text", text: body });
-/** What the person typed: the message that opens an ask. */
 const ask = (body: string): Message => ({ id: `u${++seq}`, at: seq, role: "user", kind: "text", text: body });
-const stagedSkill = (): Message => ({
+const stagedSkill = (card: Record<string, unknown> = {}): Message => ({
   id: `o${++seq}`, at: seq, role: "bot", kind: "options",
-  card: { title: "Enable this skill?", options: [], skillRequest: { name: "verify-omb" } } as unknown as Message["card"],
+  card: { title: "Enable this skill?", options: [], skillRequest: { name: "verify-omb" }, ...card } as unknown as Message["card"],
 });
 const triggerTerms = (): string[] =>
   JSON.parse(readFileSync(new URL("../../skills/create-verification-skill/manifest.json", import.meta.url), "utf8")).triggerTerms;
@@ -75,7 +71,6 @@ describe("parseControlCommand", () => {
   it("marks a dry run wherever the flag sits in the segment", () => {
     expect(parseControlCommand("pnpm control:omb send --bot b --dry-run")).toEqual({ subcommand: "send", dryRun: true });
     expect(parseControlCommand("pnpm control:omb --dry-run send")).toEqual({ subcommand: "send", dryRun: true });
-    // the flag in another segment belongs to that command
     expect(parseControlCommand("pnpm control:omb doctor && pnpm release --dry-run")).toEqual({ subcommand: "doctor", dryRun: false });
   });
 
@@ -203,13 +198,10 @@ describe("runSteps", () => {
   it("starts at the person's last message, so a previous ask's steps drop off", () => {
     const steps = runSteps([ask("release it"), claude("npm publish", true), ask("now verify"), claude(DOCTOR, true), claude(PUSH, true)]);
     expect(steps.map((s) => s.label)).toEqual(["doctor", "git push"]);
-    // a blank user message (an attachment-only send) does not open an ask
     expect(runSteps([ask("release it"), claude("npm publish", true), ask("  "), claude(DOCTOR, true)]).map((s) => s.label))
       .toEqual(["npm publish", "doctor"]);
-    // the bot's own text is not an ask
     expect(runSteps([ask("release it"), claude("npm publish", true), text("done"), claude(DOCTOR, true)]).map((s) => s.label))
       .toEqual(["npm publish", "doctor"]);
-    // no ask at all (a routine's thread): the thread is one run
     expect(runSteps([claude("npm publish", true), claude(DOCTOR, true)]).map((s) => s.label)).toEqual(["npm publish", "doctor"]);
   });
 
@@ -265,15 +257,17 @@ describe("runSummary", () => {
   });
 });
 
-describe("skillStaged", () => {
-  it("is true once a skill proposal follows the run's first step", () => {
+describe("runSkill", () => {
+  it("follows the last skill card after the run's first step", () => {
     const run = [claude(DOCTOR, true), codex(SEND, false)];
     const steps = runSteps(run);
-    expect(skillStaged([text("hi"), ...run], steps)).toBe(false);
-    expect(skillStaged([text("hi"), ...run, stagedSkill()], steps)).toBe(true);
-    // a proposal from before the run is not this run's
-    expect(skillStaged([stagedSkill(), ...run], steps)).toBe(false);
-    expect(skillStaged([stagedSkill()], [])).toBe(false);
+    expect(runSkill([text("hi"), ...run], steps)).toBeNull();
+    expect(runSkill([text("hi"), ...run, stagedSkill()], steps)).toBe("pending");
+    expect(runSkill([stagedSkill(), ...run], steps)).toBeNull();
+    expect(runSkill([stagedSkill()], [])).toBeNull();
+    expect(runSkill([...run, stagedSkill({ answered: "allow", autoApplied: true })], steps)).toBe("saved");
+    expect(runSkill([...run, stagedSkill({ answered: "allow", autoApplied: true, undone: true })], steps)).toBeNull();
+    expect(runSkill([...run, stagedSkill({ answered: "deny" })], steps)).toBeNull();
   });
 });
 
@@ -286,8 +280,6 @@ describe("skillPrompt", () => {
       const terms = triggerTerms();
       const opening = prompt.split("\n")[0].toLowerCase();
       expect(terms.some((term) => opening.includes(term.toLowerCase()))).toBe(true);
-      // the skill mounts on a substring match anywhere in the turn
-      // (selectBundledSkills), so notes typed above or below still mount it
       const annotated = `Also cover the send step.\n\n${prompt}Keep the doctor step first.`.toLowerCase();
       expect(terms.some((term) => annotated.includes(term.toLowerCase()))).toBe(true);
     });
@@ -299,7 +291,6 @@ describe("skillPrompt", () => {
         "Do not re-run these steps; their results are in this thread. Use the passing ones as the recipe with their exact commands and note the failed ones as gotchas.",
         "",
       ]);
-      // no request known: no Goal line, nothing invented
       const bare = skillPrompt(steps);
       expect(bare.split("\n")[1]).toMatch(/^Do not re-run these steps/);
       expect(bare).not.toContain("Goal:");
@@ -318,7 +309,6 @@ describe("skillPrompt", () => {
       expect(prompt).toContain(`✓ git push — ${PUSH}\n`);
       expect(prompt).not.toContain(`${PUSH} (verified)`);
       expect(prompt).not.toContain(`✓ doctor — ${DOCTOR} --dry-run`);
-      // the skill owns the layout; the prompt does not restate it
       expect(prompt).not.toMatch(/Launch \/ Doctor/);
       expect(prompt).not.toContain("skill_manage");
     });
@@ -328,8 +318,6 @@ describe("skillPrompt", () => {
     const steps = runSteps([claude(PUSH, true), claude("npm publish", false), claude("gh release create v1")]);
     const prompt = skillPrompt(steps, "publish the release");
 
-    // server/skill-learn.test.ts proves the other half: a turn that opens with
-    // this line is expanded into the skill-authoring turn exactly as /learn is.
     it("asks in plain words — no slash command — with the goal and the one rule under the shared opening line", () => {
       expect(prompt.startsWith(`${SAVE_RUN_AS_SKILL_LINE}\n`)).toBe(true);
       expect(prompt.split("\n").slice(0, 4)).toEqual([
@@ -339,7 +327,6 @@ describe("skillPrompt", () => {
         "",
       ]);
       expect(prompt).not.toContain("/learn");
-      // no request known: the run itself is the goal
       expect(skillPrompt(steps).split("\n")[1]).toBe("Goal: the run below");
     });
 

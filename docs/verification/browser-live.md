@@ -15,8 +15,8 @@ URLs. Open **only** the printed preview URL. Ctrl-C closes its native browsers,
 UI and harness, then removes its temporary data; the server log remains.
 
 1. The panel contains two browser-chrome rows and a live blank page. There is
-   no “coming next” card and no Take control button. While the bot has the
-   browser, nothing is sent until you interact; hovering never takes it.
+   no “coming next” card. While the bot has the browser, nothing is sent until
+   you interact or press **Take control**; hovering never takes it.
 2. Enter the printed test-page URL and press Enter. That first interaction
    takes the browser from the bot (a pill over the top of the page reads
    “You’re using the browser”, at every panel width), then navigates; it is
@@ -36,7 +36,11 @@ UI and harness, then removes its temporary data; the server log remains.
    only clicking or typing in the page sends Tab there.
 3. Stop for 8 seconds: control returns to the bot and the pill disappears.
    A Cmd shortcut such as Cmd+C must not delay that. Keep **Type or paste
-   text…** open past 8 seconds: control stays yours until it closes.
+   text…** open past 8 seconds: control stays yours until it closes. Press
+   **Take control**, then wait a minute: it stays yours until **Hand back**,
+   which returns it at once. **Type a password or code…** shows a masked
+   field; its text reaches the selected page field and appears in no log,
+   response or other view.
    Holding a mouse button or key down must never hand back. Reconnect the
    view, then leave it connected for at least 30 seconds on the same static
    image. It must not stall waiting for an ACK. The page remains intact and
@@ -60,6 +64,31 @@ UI and harness, then removes its temporary data; the server log remains.
 7. Reconnect while a restart is still finishing, or change profiles before an
    earlier command finishes. A late response must not disconnect the new view,
    change its error state, or acknowledge an old frame as the new viewer.
+8. Sign-in requests: script Pepper's turn to call `request_sign_in` for the
+   test page (the e2e below does this with the fake engine). One **Sign in
+   needed** card and one notification arrive. **Open** selects the Browser tab
+   already in your control; the page stays the bot's, or opens the site when
+   the bot left it blank, and the banner above it offers Done and Cancel. Idle
+   time never hands it back while the request is open. **Done** on the card
+   (or from a second window) hands the browser back and resumes Pepper with
+   “the person finished signing in”; **Cancel** resumes it with “declined”.
+9. Saved logins: on the same card choose **Save a login** and save a test
+   account (fake values) for the test page's site. Pepper resumes and calls
+   `fill_login`; the page's username and password boxes fill, the form is
+   submitted, the tool result names only what was filled and where the page
+   went, and **Settings → Logins** lists the login by site without its
+   password. Open the same page under a subdomain: `fill_login` fills it
+   too. Under another site, or plain http on a non-local address, it refuses
+   and types nothing. Call `fill_login` with `submit: false`, then ask Pepper
+   to `eval` the password box's value: the browser refuses eval on that page
+   for a minute, and the password is cleared from the box after it. A
+   snapshot shows `••••••`.
+10. 1Password (only with a test account and a test vault, never a real one):
+   connect a service account limited to one vault holding a test Login item
+   for the test page's site. Its row appears read-only, marked From
+   1Password; `fill_login` fills it like a saved login. Pick another bot for
+   the vault under 1Password in Settings → Logins: Pepper no longer lists or
+   fills it. Unit tests use a fake SDK and reach no network.
 
 Focused automated coverage:
 
@@ -67,9 +96,13 @@ Focused automated coverage:
 pnpm exec vitest run server/browser-engine.test.ts server/browser-runtime.test.ts \
   server/harness-mcp-proxy.test.ts server/browser-live.test.ts \
   server/browser-live-routes.test.ts server/browser-codex-path.integration.test.ts \
-  src/lib/browser-input-queue.test.ts src/lib/browser-control.test.ts src/lib/browser-profiles.test.ts \
-  src/components/BrowserProfilesManager.test.ts src/components/BrowserViewport.test.ts \
-  src/components/BrowserPanel.test.ts
+  src/lib/browser-stream-v1.test.ts src/lib/browser-stream-client.test.ts src/lib/browser-control.test.ts \
+  src/lib/browser-profiles.test.ts src/components/BrowserProfilesManager.test.ts \
+  src/components/browser/StreamSurface.test.ts server/routes/browser-viewers.test.ts \
+  src/components/BrowserPanel.test.ts src/components/SignInRequestCard.test.ts \
+  server/sign-in-request.e2e.test.ts server/login-fill.test.ts server/login-store.test.ts \
+  server/totp.test.ts server/routes/logins.test.ts src/components/LoginsSettings.test.ts \
+  server/saved-login.e2e.test.ts server/onepassword.test.ts scripts/prepare-duckdb.test.mjs
 ```
 
 Those tests cover native transport lifecycle, owner/session scoping, gate races,
@@ -77,39 +110,6 @@ stale list/stream events, native key routing, bounded input/backpressure,
 revoked capabilities, and exact saved-state cleanup. Native workflow testing
 is still required: a green mocked
 frame test alone does not prove browser input or restoration works.
-
-## Native mobile control
-
-The native checks below never pair a phone or read a real browser profile.
-Swift and Android core tests cover finite streaming/refusal deadlines, bounded
-frame parsing, server-owned control, cancellable actions and coalesced ACKs:
-
-```sh
-cd ios && swift test
-```
-
-From `android/`:
-
-```sh
-./gradlew :core:test :app:testDebugUnitTest --tests '*BrowserControlWiringTest*' :app:assemblePreview
-```
-
-`BrowserControlWiringTest` drives the real Compose screen against a synthetic
-loopback SSE/action server: watch-only, take, a letterboxed center tap at
-640 × 360, typed text, hand-back, background release and the exact viewer's
-release on disposal.
-
-Generate the iOS project and use a fresh disposable simulator as described in
-[iOS thread verification](ios-threads.md), selecting
-`-only-testing:OpenMausCompanionUITests/BrowserControlUITests`. That case uses
-the Debug-only `-browser-preview` URLProtocol fixture to exercise the real
-SwiftUI screen, ownership, touch mapping, soft keyboard, hand-back and release
-when leaving. Keep the result bundle and its screenshot; remove only the
-simulator created for the check.
-
-These fixtures do not prove physical-device gestures, HTTPS/Tailscale pairing,
-or behavior across a real network interruption. No microphone, provider call,
-personal computer control or existing phone is used.
 
 ## One-minute idle and reconnect regression
 

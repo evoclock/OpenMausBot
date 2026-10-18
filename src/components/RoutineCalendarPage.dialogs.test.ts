@@ -1,8 +1,3 @@
-// The calendar's paused-routines list is a modal dialog: it must hand its
-// element to the shared modal keyboard handling (focus in, Tab trapped, Escape
-// closes) and name its icon-only close button. Event details are a drawer
-// beside the calendar instead (the grid stays usable while it is open), so it
-// must not trap focus; the page's own Escape handling closes it.
 import { Children, createElement, isValidElement, type ReactElement, type ReactNode, type RefObject } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -68,7 +63,6 @@ describe.each([
     const element = tree.find((node) => node.props.role === "dialog")!;
     expect(fixture.calls).toHaveLength(1);
     expect(element.props.ref).toBe(fixture.calls[0]!.ref);
-    // focusable itself, so focus can land on it when it has no field to start in
     expect(element.props.tabIndex).toBe(-1);
     fixture.calls[0]!.onClose();
     expect(onClose).toHaveBeenCalledOnce();

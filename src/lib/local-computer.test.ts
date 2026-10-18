@@ -4,7 +4,6 @@ import {
   autoSelectsLocalComputer,
   busyBoatView,
   instanceSupportsLocalComputer,
-  linuxAutoDescription,
   localComputerDisabledReason,
   localComputerSelectable,
   persistedComputerSelectionMatches,
@@ -69,7 +68,6 @@ describe("local computer UI eligibility", () => {
   });
 
   it("states that Linux Auto never selects this computer", () => {
-    expect(linuxAutoDescription()).toContain("otherwise computer use stays off");
     expect(
       autoSelectsLocalComputer({
         platform: "linux",
@@ -169,8 +167,6 @@ describe("local computer UI eligibility", () => {
   });
 
   it("never creates or wakes a Boat because Cloud computer was chosen or the panel opened", () => {
-    // The bot's first computer call starts it; the panel only says so, and
-    // starting it now is the person's own button.
     const cloud = { computer: "cloud" as const, configured: true, canUseCloud: true, autoLocal: true };
     expect(resolveBoatPanelAction({ ...cloud, boatState: null })).toBe("cloud-new");
     for (const boatState of ["archived", "stopped"]) {
@@ -179,44 +175,34 @@ describe("local computer UI eligibility", () => {
     for (const boatState of ["idle", "ready", "running"]) {
       expect(resolveBoatPanelAction({ ...cloud, boatState })).toBe("attach-ready-boat");
     }
-    // Starting already (the person's button, or another conversation): watch it come up.
     expect(resolveBoatPanelAction({ ...cloud, boatState: "provisioning" })).toBe("busy-boat");
   });
 
   it("watches instead of provisioning while a turn owns the box", () => {
     const cloud = { computer: "cloud" as const, configured: true, canUseCloud: true, autoLocal: true, busy: true };
-    // a ready boat is shown as it is — its frames already stream in mid-turn
     for (const boatState of ["ready", "idle", "running"]) {
       expect(resolveBoatPanelAction({ ...cloud, boatState })).toBe("attach-ready-boat");
     }
-    // anything else is the turn's to create or wake; the panel waits
     for (const boatState of ["archived", "stopped", "provisioning", null]) {
       expect(resolveBoatPanelAction({ ...cloud, boatState })).toBe("busy-boat");
     }
-    // busy never unlocks the cloud when it is not available
     expect(resolveBoatPanelAction({ ...cloud, boatState: "ready", canUseCloud: false })).toBe("auto-unavailable");
-    // and Auto stays observation-only regardless of busy
     expect(resolveBoatPanelAction({ ...cloud, computer: undefined, boatState: "ready" })).toBe("show-ready-boat");
     expect(resolveBoatPanelAction({ ...cloud, computer: undefined, boatState: null, autoLocal: false })).toBe("auto-unavailable");
   });
 
   it("while it watches, spins only for a cloud computer that is really starting", () => {
-    // Missing or asleep: only the bot's first computer call starts it, and a
-    // turn that never uses the screen never does. Nothing to wait for.
     expect(busyBoatView(null, true)).toEqual({ line: "computer.cloud.new", spinner: false });
     expect(busyBoatView(null, false)).toEqual({ line: "computer.cloud.new", spinner: false });
     for (const boatState of ["archived", "stopped"]) {
       expect(busyBoatView(boatState, true)).toEqual({ line: "computer.cloud.asleep", spinner: false });
       expect(busyBoatView(boatState, false)).toEqual({ line: "computer.cloud.asleep", spinner: false });
     }
-    // Starting: a turn is bringing it up, or it is still coming up after one.
     expect(busyBoatView("provisioning", true)).toEqual({ line: "computer.phase.busyBoat", spinner: true });
     expect(busyBoatView("resuming", false)).toEqual({ line: "computer.phase.starting", spinner: true });
   });
 
   it("never gives any engine a passive Auto creation exception", () => {
-    // Engine kind intentionally is not an input: every engine follows the
-    // same read-only Auto rule.
     expect(resolveBoatPanelAction({
       computer: undefined,
       configured: true,

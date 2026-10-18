@@ -23,12 +23,9 @@ import {
 import { api, useStore } from "@/state/store";
 import type { NewBotDefaults } from "../../shared/new-bot-defaults";
 
-/** What the file will hold, counted from the server's own dry run, so the
- * numbers are exactly what Save file writes. Pure, for tests. */
 export function ShareTeamContents({ preview, includeMemory, localSkips }: {
   preview: ShareResponse;
   includeMemory: boolean;
-  /** Pictures the dialog could not prepare, already worded. */
   localSkips: string[];
 }) {
   const pkg = preview.document.package;
@@ -62,8 +59,7 @@ export function ShareTeamContents({ preview, includeMemory, localSkips }: {
         ))}
       </dl>
       {pkg.connections?.length ? (
-        // The whole address, before Save: hosted servers often carry a key
-        // in it, and this is where the person can see what goes out.
+        // Security: the whole address shows before Save, since hosted server URLs often carry a key.
         <div className="mt-3 text-[12.5px] text-ink-secondary">
           <div className="font-medium text-ink">{t("teamShare.addresses")}</div>
           <ul className="mt-1 space-y-0.5">
@@ -97,13 +93,9 @@ export function ShareTeamContents({ preview, includeMemory, localSkips }: {
   );
 }
 
-/** The skill boxes. They are drawn from the team's skill names, which come
- * back on a refused export too, so they never vanish behind an error. Pure,
- * for tests. */
 export function ShareSkillChoices({ available, ticked, counted, onToggle }: {
   available: readonly string[];
   ticked: ReadonlySet<string>;
-  /** The server has answered at least once. */
   counted: boolean;
   onToggle: (skill: string) => void;
 }) {
@@ -123,8 +115,6 @@ export function ShareSkillChoices({ available, ticked, counted, onToggle }: {
   );
 }
 
-/** Share team…: choose what goes in, see exactly what that is, save the
- * file. No confirm step; the person's click on Save file is the decision. */
 export function ShareTeamDialog({ team, onClose }: { team: string; onClose: () => void }) {
   const { state } = useStore();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -138,17 +128,12 @@ export function ShareTeamDialog({ team, onClose }: { team: string; onClose: () =
   const [summary, setSummary] = useState("");
   const [release, setRelease] = useState("");
   const [notes, setNotes] = useState("");
-  // Pictures and starter notes start ticked (SHARE_DIALOG_DEFAULTS).
   const [includePictures, setIncludePictures] = useState<boolean>(SHARE_DIALOG_DEFAULTS.includePictures);
   const [includeMemory, setIncludeMemory] = useState<boolean>(SHARE_DIALOG_DEFAULTS.includeMemory);
-  // New bot defaults are personal until shared: off unless ticked.
   const [includePreset, setIncludePreset] = useState(false);
-  // The defaults' picture, prepared the first time the box is ticked.
   const [presetPicture, setPresetPicture] = useState<{ dataUrl?: string } | null>(null);
-  // null = "all": whatever fits, as the server decides; a Set = exactly these.
   const [skillChoice, setSkillChoice] = useState<Set<string> | null>(null);
   const [pictures, setPictures] = useState<{ avatars: Record<string, string>; skipped: string[] } | null>(null);
-  // The server's answers: counts, skill boxes and refusals (shareAnswered / shareRefused).
   const [view, setView] = useState<ShareView>(SHARE_VIEW_START);
   const { preview, available, included, error } = view;
   const setError = (message: string) => setView((current) => ({ ...current, error: message }));
@@ -169,7 +154,6 @@ export function ShareTeamDialog({ team, onClose }: { team: string; onClose: () =
       if (!cancelled) setPictures({ avatars: {}, skipped: [] });
     });
     return () => { cancelled = true; };
-    // Pictures are prepared once per dialog; the bot list is stable meanwhile.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -197,10 +181,8 @@ export function ShareTeamDialog({ team, onClose }: { team: string; onClose: () =
     dryRun,
   }), [team, name, tagline, summary, release, notes, skillChoice, available, includeMemory, includePictures, pictures, includePreset, presetPicture]);
 
-  // Live counts: re-run the server's dry run whenever what goes in changes.
   useEffect(() => {
     if (!pictures) return;
-    // No counts (and no Save) until the preset's picture is ready to go in.
     if (includePreset && !presetPicture) { setView((current) => ({ ...current, preview: null })); return; }
     const id = ++request.current;
     const all = skillChoice === null;
@@ -217,7 +199,6 @@ export function ShareTeamDialog({ team, onClose }: { team: string; onClose: () =
         });
     }, 250);
     return () => window.clearTimeout(timer);
-    // Text fields do not change the counts; only what goes in does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pictures, skillChoice, includeMemory, includePictures, includePreset, presetPicture]);
 

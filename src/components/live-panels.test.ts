@@ -1,7 +1,4 @@
 // @vitest-environment happy-dom
-// The Inspector and Activity panels follow the app's one live stream. They
-// open no stream of their own: runtime events reach them from the stream the
-// store already holds, and a gap the stream could not replay reloads them.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -36,7 +33,6 @@ const bot = {
 const runtime = (eventId: string, fields: Record<string, unknown>, threadId = "thread") => ({
   eventId, provider: "codex", threadId, createdAt: "2026-10-04T09:00:00.000Z", ...fields,
 }) as RuntimeEvent;
-// How the store hands frames on; the panels hear nothing else.
 const frame = (event: RuntimeEvent) => publishLiveFrame({ kind: "runtime", event });
 const missed = () => publishMissedFrames();
 

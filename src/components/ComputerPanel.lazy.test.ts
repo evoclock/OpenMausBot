@@ -1,9 +1,4 @@
 // @vitest-environment happy-dom
-// Choosing Cloud computer, or opening the Computer panel, creates and wakes
-// nothing: the bot's first computer call starts its cloud computer. The
-// panel says so, and starting it now is the person's own button. A
-// conversation that select_computer moved to an existing cloud computer
-// still shows that computer's screen.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -13,7 +8,6 @@ import type { AppState, Bot, InstanceInfo } from "@/state/store";
 const fixture = vi.hoisted(() => ({
   boatState: null as string | null,
   posts: [] as string[],
-  /** Looks at this conversation's computer (GET), each a relay call. */
   looks: 0,
   advanced: true,
 }));
@@ -32,6 +26,8 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   }),
 }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
+// The owner: starting a cloud computer early is an Admin's shortcut.
+vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => true }));
 vi.mock("./CloudScreenPreview", () => ({
   CloudScreenPreview: () => createElement("div", { "data-live-screen": "" }),
 }));
@@ -147,13 +143,11 @@ describe("Computer panel on Cloud computer", () => {
     await open(makeBot({ computer: "cloud" }));
     flushSync(() => button("Start it now")!.click());
     await settle();
-    // One start, then the screen it shows (screenshots never wake anything).
     expect(fixture.posts.filter((path) => !path.endsWith("/screenshot"))).toEqual(["/api/bots/scout/computer/provision"]);
     expect(document.querySelector("[data-live-screen]")).not.toBeNull();
   });
 
   it("says the same about a cloud computer this conversation was moved to, without a start button", async () => {
-    // The bot works on Auto; select_computer moved this one conversation.
     const moved = { tasks: [{ threadId: "thread", title: "Thread", createdAt: 1, approvalMode: "ask", surface: "cloud", surfaceAuto: true }] } as Partial<Bot>;
     fixture.boatState = "archived";
     await open(makeBot(moved));
@@ -177,12 +171,10 @@ describe("Computer panel on Cloud computer", () => {
     const moved = (busy: boolean) => makeBot({ busy, tasks: [{ threadId: "thread", title: "Thread", createdAt: 1, approvalMode: "ask", surface: "cloud", surfaceAuto: true }] } as Partial<Bot>);
     fixture.boatState = "archived";
     await open(moved(true));
-    // The turn has not used the computer, so nothing is starting.
     expect(text()).toContain("Scout's cloud computer is asleep. It wakes in a few seconds when Scout needs it.");
     expect(text()).not.toContain("Your bot is using this computer right now");
     expect(spinning()).toBe(false);
 
-    // The turn ends: the panel settles on what it found and stops looking.
     await open(moved(false));
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();

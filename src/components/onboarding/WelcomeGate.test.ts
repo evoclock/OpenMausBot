@@ -55,10 +55,8 @@ function storage() {
 }
 
 const fresh = { onboarding: EMPTY_ONBOARDING };
-// The desktop app's own page: the full bridge, remoteClient included.
 const LOCAL_PAGE = { ogb: { platform: "darwin", remoteClient: { active: false }, workspaces: {} } };
-// A hosted workspace the desktop app opened (Server → Connect hosted
-// workspace…): preload exposes only its remote-safe subset, still truthy.
+// A hosted workspace the desktop app opened: preload exposes only its remote-safe subset, still truthy.
 const REMOTE_PAGE = { ogb: { platform: "darwin", workspaces: {}, getCapabilities: () => ({}) } };
 beforeEach(() => {
   fixture.values = [];
@@ -93,7 +91,6 @@ describe("who gets the welcome flow", () => {
   it("leaves an OMB Cloud home's first run to its engine sign-in", () => {
     vi.stubGlobal("window", REMOTE_PAGE);
     expect(gate({ hosted: false, canSave: true, cloudHome: true }).tree).toBeNull();
-    // Settings → Replay welcome tour still opens it there
     store.state = { ...store.state, welcomeOpen: true };
     expect(gate({ hosted: false, canSave: true, cloudHome: true }).tree?.type).toBe(WelcomeFlow);
   });
@@ -115,13 +112,10 @@ describe("who gets the welcome flow", () => {
     expect(store.api).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
     expect(localStorage.getItem("omb.onboarding.sharedWorkspaceHint")).toBe("1");
-    // once dismissed, a fresh visit in this browser does not show it again
     fixture.values = [];
     expect(render(() => SharedWorkspaceHint({ replay: false, onClose: vi.fn() })).html).toBe("");
-    // but Settings → Replay welcome tour shows it again
     fixture.values = [];
     expect(render(() => SharedWorkspaceHint({ replay: true, onClose: vi.fn() })).html).toContain("shared OpenMausBot");
-    // storage that throws (private window) still shows it and never breaks
     vi.stubGlobal("localStorage", { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } });
     fixture.values = [];
     expect(render(() => SharedWorkspaceHint({ replay: false, onClose: vi.fn() })).html).toContain("shared OpenMausBot");
@@ -139,11 +133,9 @@ describe("who gets the welcome flow", () => {
   });
 
   it("adds nothing for a member of a server that is not hosted, such as the owner's own paired browser", () => {
-    // no note: the team copy would be false there, and it would be new UI
     const { tree, html } = gate({ hosted: false, canSave: false });
     expect(tree).toBeNull();
     expect(html).toBe("");
-    // an explicit Settings replay still opens the ordinary flow, as before
     store.state = { ...store.state, welcomeOpen: true };
     const replay = gate({ hosted: false, canSave: false }).tree!;
     expect(replay.type).toBe(WelcomeFlow);
@@ -193,7 +185,6 @@ describe("who gets the welcome flow", () => {
     store.state = { ...store.state, appSettingsOpen: false };
     const resumed = gate(LOCAL_VIEWER).tree!;
     expect(resumed.props.initialBeat).toBe("engines");
-    // finishing forgets it: a later Settings replay starts at the greeting
     (resumed.props.onDone as () => void)();
     store.state = { ...store.state, welcomeOpen: true };
     expect(gate(LOCAL_VIEWER).tree?.props.initialBeat).toBeUndefined();

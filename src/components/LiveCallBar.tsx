@@ -1,6 +1,3 @@
-// The Live call bar: above the composer of the chat the call belongs to, so
-// the person watches the bot work while they talk. The call itself (media)
-// lives app-wide in src/lib/live-call-media.ts; this is only its face.
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Mic, MicOff, PhoneOff, RotateCcw, Settings, X } from "lucide-react";
 
@@ -16,11 +13,8 @@ import type { LiveCallState, LiveClient } from "../../shared/wire";
 import { LiveCallSettings } from "./LiveCallSettings";
 
 export type LiveCallBarView =
-  /** `hint`: a note while the call runs (the window blocked its audio) */
   | { kind: "local"; title: string; caption: string; heard: string; muted: boolean; ending: boolean; hint: string | null }
-  /** a phone (or another window) holds this bot's call */
   | { kind: "remote"; title: string; callId: string }
-  /** `action`: the one thing that helps, if anything does */
   | { kind: "notice"; text: string; action: LiveCallAction | null };
 
 const DEVICE_KEY = {
@@ -35,7 +29,6 @@ function clock(ms: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-/** Pure: what the bar shows for this chat. */
 export function liveCallBarView({ bot, media, server, now }: {
   bot: { id: string; threadId: string; name: string };
   media: LiveMediaState;
@@ -47,12 +40,9 @@ export function liveCallBarView({ bot, media, server, now }: {
     return { kind: "notice", text: media.notice, action: media.phase === "failed" ? media.action : null };
   }
   if (here && isLiveCallRunning(media.phase)) {
-    // the clock runs from the moment the call went live, also while it ends
     const when = media.startedAt !== null ? clock(now - media.startedAt) : t("call.live.connecting");
     return {
       kind: "local",
-      // after this window's Hang up, until the computer confirms the end (as
-      // on the iPhone); an end nobody here asked for keeps the call's title
       title: media.hangingUp ? t("call.live.hangingUp") : `${t("call.live.with", { name: bot.name })} · ${when}`,
       caption: media.caption,
       heard: media.heard,
@@ -61,10 +51,6 @@ export function liveCallBarView({ bot, media, server, now }: {
       hint: media.notice,
     };
   }
-  // Not "ending": a call this window just hung up is briefly still ending on
-  // the harness after the media module let go of it, and a call another
-  // device hangs up has nothing left to hang up. A status this window does
-  // not know counts as running, so the bar (and its Hang up) stays.
   if (
     server && server.status !== "ending" && server.status !== "ended"
     && server.botId === bot.id && server.threadId === bot.threadId && server.callId !== media.callId
@@ -74,18 +60,10 @@ export function liveCallBarView({ bot, media, server, now }: {
   return null;
 }
 
-/** Whether another device (a phone, another window) holds the one Live
- * line while this window holds no call: a call button that would start a
- * Live call is hidden then, as on the iPhone (Take turns stays). Any status
- * but "ended" holds the line. */
 export function liveLineHeldElsewhere(media: LiveMediaState, server: LiveCallState | null): boolean {
   return Boolean(server && server.status !== "ended") && !isLiveCallRunning(media.phase);
 }
 
-/** Hang up a call another device holds. If the harness no longer knows it
- * (this bar missed the end frame), take its real state so the bar goes —
- * unless a live.call frame newer than `since` (the store's
- * liveCallVersion when the button was pressed) lands meanwhile. */
 export async function hangUpRemoteCall(
   callId: string,
   since: number,
@@ -100,7 +78,6 @@ export async function hangUpRemoteCall(
       const answer = liveCallFromFrame(await request<unknown>("/api/live/call"));
       if (answer) dispatch({ type: "liveCallLookup", call: answer.call, since, seq });
     } catch {
-      /* offline: the next connection refreshes the call */
     }
   }
 }
@@ -137,8 +114,6 @@ export function LiveCallBar({ bot }: { bot: Bot }) {
 
   if (!view) return null;
   const button = "flex h-8 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12.5px] font-medium transition-colors";
-  // lines up with the composer below it. The composer dock lets clicks
-  // through to the transcript; the bar itself takes them.
   const frame = "pointer-events-auto mx-5 mb-2 flex items-center rounded-xl border bg-panel px-3 py-2 text-[12.5px] text-ink";
 
   if (view.kind === "notice") {
@@ -192,9 +167,7 @@ export function LiveCallBar({ bot }: { bot: Bot }) {
     >
       <span className="size-2 shrink-0 animate-pulse rounded-full bg-success" aria-hidden />
       <span className="shrink-0 font-medium tabular-nums">{view.title}</span>
-      {/* One line that always shows the newest words: right-to-left
-          overflow clips the oldest words (and puts the ellipsis) on the left,
-          while the text itself stays left-to-right. */}
+      {/* direction: rtl clips the oldest words (and puts the ellipsis) on the left; the text itself stays left-to-right. */}
       <span
         className={cn(
           "order-last w-full min-w-0 truncate text-left [direction:rtl] sm:order-none sm:w-auto sm:flex-1",

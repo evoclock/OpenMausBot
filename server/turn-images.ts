@@ -1,10 +1,3 @@
-// Turn-local image admission.
-//
-// Composer messages persist a standalone <attached-image> transport tag so
-// every client can render the attachment later. Providers should not have to
-// discover that image through a filesystem tool (and an approval round trip),
-// so this module turns only app-owned tags from the CURRENT message into the
-// structured image input each native protocol understands.
 import { lstatSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 
@@ -14,8 +7,6 @@ import { ATTACHMENTS_DIR, IMAGE_MAX_BYTES } from "./attachments.ts";
 import type { TurnImageInput } from "./contracts.ts";
 import { decodeAttachmentAttribute } from "./message-file.ts";
 
-/** Matches the companion composer policy. Four maximum-sized images are
- * bounded to 40 MiB before a provider is asked to ingest them. */
 export const TURN_IMAGE_MAX_COUNT = 4;
 export const TURN_IMAGE_MAX_BYTES = TURN_IMAGE_MAX_COUNT * IMAGE_MAX_BYTES;
 
@@ -57,9 +48,7 @@ function walk(node: MarkdownNode, visit: (node: MarkdownNode) => void): void {
   }
 }
 
-/** Find only exact, standalone HTML transport tags. mdast keeps examples in
- * code fences/code spans out of HTML nodes; the line boundary check keeps
- * prose containing a tag literal from becoming an attachment capability. */
+/** Standalone tags only: prose that contains a tag literal must not become an attachment capability. */
 function imageTagCandidates(text: string): TagCandidate[] {
   const candidates: TagCandidate[] = [];
   walk(fromMarkdown(text) as MarkdownNode, (node) => {
@@ -83,9 +72,7 @@ function ownedImage(path: string, attachmentsDir: string): TurnImageInput | null
   const name = path.split(/[\\/]/).at(-1) ?? "";
   if (!OWNED_IMAGE_NAME.test(name)) return null;
 
-  // The composer receives and returns the exact server-generated path. A
-  // basename match alone would let an arbitrary /tmp/<uuid>.png masquerade
-  // as an app attachment, so the lexical path must point into this store too.
+  // A basename match alone would let any /tmp/<uuid>.png pose as an app attachment: the path must point into this store.
   const expected = resolve(attachmentsDir, name);
   if (resolve(path) !== expected) return null;
 
@@ -105,21 +92,16 @@ function ownedImage(path: string, attachmentsDir: string): TurnImageInput | null
 }
 
 export interface ExtractTurnImagesOptions {
-  /** Injectable only so focused tests never touch the user's data store. */
   attachmentsDir?: string;
   maxCount?: number;
   maxBytes?: number;
 }
 
-/** Resolve and remove trusted image tags from provider-facing text. The
- * caller continues to persist the original string unchanged. Invalid tags
- * stay visible as ordinary text and never turn into native image input. */
+/** Invalid tags stay visible as ordinary text and never become native image input. */
 export function extractTurnImages(
   text: string,
   options: ExtractTurnImagesOptions = {},
 ): { text: string; images: TurnImageInput[] } {
-  // Almost every turn is plain text. Skipping the Markdown tree for those
-  // turns keeps image transport work out of the hot send path.
   if (!text.includes("<attached-image")) return { text, images: [] };
 
   const attachmentsDir = options.attachmentsDir ?? ATTACHMENTS_DIR;
@@ -142,4 +124,50 @@ export function extractTurnImages(
     providerText = providerText.slice(0, tag.start) + providerText.slice(tag.end);
   }
   return { text: providerText, images: admitted.map((item) => item.image) };
+}
+
+export function extractSteerImages(
+  texts: readonly string[],
+  options: ExtractTurnImagesOptions = {},
+): { texts: string[]; images: TurnImageInput[] } | null {
+  const maxCount = options.maxCount ?? TURN_IMAGE_MAX_COUNT;
+  const maxBytes = options.maxBytes ?? TURN_IMAGE_MAX_BYTES;
+  const resolved: string[] = [];
+  const images: TurnImageInput[] = [];
+  try {
+    for (const text of texts) {
+      const item = extractTurnImages(text, options);
+      resolved.push(item.text);
+      images.push(...item.images);
+    }
+  } catch {
+    return null;
+  }
+  if (images.length > maxCount) return null;
+  if (images.reduce((total, image) => total + image.bytes, 0) > maxBytes) return null;
+  return { texts: resolved, images };
+}
+
+export function extractReplayImages<T extends { role: "user" | "assistant"; text: string }>(
+  transcript: readonly T[],
+  current: readonly TurnImageInput[],
+  options: ExtractTurnImagesOptions = {},
+): { transcript: T[]; images: TurnImageInput[] } {
+  let maxCount = (options.maxCount ?? TURN_IMAGE_MAX_COUNT) - current.length;
+  let maxBytes = (options.maxBytes ?? TURN_IMAGE_MAX_BYTES) - current.reduce((total, image) => total + image.bytes, 0);
+  const replayed = [...transcript];
+  const images: TurnImageInput[] = [];
+  for (let index = replayed.length - 1; index >= 0 && maxCount > 0; index -= 1) {
+    const entry = replayed[index]!;
+    if (entry.role !== "user") continue;
+    const item = extractTurnImages(entry.text, { ...options, maxCount: Infinity, maxBytes: Infinity });
+    if (!item.images.length) continue;
+    const bytes = item.images.reduce((total, image) => total + image.bytes, 0);
+    if (item.images.length > maxCount || bytes > maxBytes) break;
+    replayed[index] = { ...entry, text: item.text };
+    images.unshift(...item.images);
+    maxCount -= item.images.length;
+    maxBytes -= bytes;
+  }
+  return { transcript: replayed, images };
 }

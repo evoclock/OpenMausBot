@@ -72,7 +72,6 @@ describe("the organization library in the real renderer", () => {
     const api = (path: string, method = "GET", body?: unknown) => request(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, info.url);
     const evidence = (name: string) => ui("screenshot", "--out", join(ROOT, ".omb-scratch", "verify-evidence", name));
 
-    // No organization: Templates has no organization tab.
     await click("New or share");
     await click("Templates");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Community templates");
@@ -93,7 +92,6 @@ describe("the organization library in the real renderer", () => {
     });
     expect(relayed.status).toBe(200);
 
-    // The shelf is the first tab and opens first.
     await click("New or share");
     await click("Templates");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Packages Customer Co shares with you");
@@ -101,14 +99,12 @@ describe("the organization library in the real renderer", () => {
     for (const line of ["From Customer Co", "Sales desk", "Recommended by Acme Partners", "Sales skills", "From Acme Partners"]) expect(shelf).toContain(line);
     await evidence("org-library-shelf.png");
 
-    // Details is the existing preview: skills arrive switched on here.
     await click("Details of Sales desk");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Included skills — switched on");
     expect(await snapshot()).toContain("Skills arrive switched on and routines paused");
     await evidence("org-library-preview.png");
     await click("Back to templates");
 
-    // One click adds the team: no confirmation.
     await click("Add Sales desk");
     await expect.poll(snapshot, { timeout: 20_000 }).toContain('button "Sales desk"');
     const bots = (await api("/api/bots")).bots.filter((bot: { section?: string }) => bot.section === "Sales desk");
@@ -119,7 +115,6 @@ describe("the organization library in the real renderer", () => {
     }
     expect((await api("/api/routines")).routines.every((routine: { enabled: boolean }) => !routine.enabled)).toBe(true);
 
-    // The shelf now says Added; the skills-only package adds in place.
     await click("New or share");
     await click("Templates");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Packages Customer Co shares with you");
@@ -131,7 +126,6 @@ describe("the organization library in the real renderer", () => {
     await evidence("org-library-added.png");
     await press("Escape");
 
-    // The added bot's settings: the provenance line, and Skills → From Customer Co.
     const state = await ui("snapshot", "--interactive");
     const profile = Object.entries(state.refs as Record<string, { role: string; name: string }>)
       .find(([, entry]) => entry.role === "button" && /Open .+ profile/.test(entry.name));

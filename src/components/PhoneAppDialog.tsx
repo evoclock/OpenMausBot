@@ -1,7 +1,3 @@
-// "Get the phone app": the iPhone app on the App Store and the Android app
-// as an APK. The app belongs on the phone, not on this computer, so each is a
-// code to scan with the phone's camera, with the link beside it. Getting the
-// app is the first step; Connect your phone, in the same menu, is the second.
 import { useEffect, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
@@ -14,16 +10,12 @@ export const PHONE_APPS: ReadonlyArray<{ id: "ios" | "android"; nameKey: LocaleK
   { id: "android", nameKey: "phoneApp.android", actionKey: "phoneApp.androidAction", url: ANDROID_APK_URL },
 ];
 
-/** One place a phone can connect from here, as the menu offers it. */
 export interface PhoneAppConnect {
   key: string;
-  /** where it connects: to your Cloud (always on), to this computer… */
   subtitle: string;
   onSelect: () => void;
 }
 
-/** `connect`: where this window can pair a phone, first one first; the
- * dialog ends on that next step. Empty, it only says where the app is. */
 export function PhoneAppDialog({ open, onClose, connect = [] }: { open: boolean; onClose: () => void; connect?: PhoneAppConnect[] }) {
   const closeRef = useRef<HTMLButtonElement>(null);
 

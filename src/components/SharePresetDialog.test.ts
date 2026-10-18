@@ -60,7 +60,6 @@ describe("Share as preset", () => {
     expect(words).toContain("The preset bots appear in New bot, above the built-in roles.");
     expect(words).not.toContain("Team members");
     expect(words).not.toContain("group chats");
-    // A team file's presets are now added too.
     expect(text(renderToStaticMarkup(createElement(TeamImportDetails, { pending: teamImportPreview(fixture("full-team.v2.json")), importedNames: ["Morgan", "Scout", "Quill"] }))))
       .toContain("Preset bots: 1 · appear in New bot");
   });

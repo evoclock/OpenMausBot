@@ -1,6 +1,3 @@
-// Router and API-key setup lives under Settings → Connections: searching for
-// what people call it has to find it, and OpenCode's own sign-in is named
-// there for providers OpenMaus has no field for.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +28,7 @@ describe("Settings → Connections", () => {
   it.each(["router", "OpenRouter", "base URL", "API key", "OpenAI", "Anthropic", "Groq"])("is found by searching for %s", async (typed) => {
     const { SECTIONS, sectionMatches } = await import("./SettingsModal");
     const connections = SECTIONS.find((entry) => entry.id === "connections")!;
-    // the modal lowercases and trims what was typed before matching
+    // The modal lowercases and trims what was typed before matching.
     expect(sectionMatches(connections, typed.trim().toLowerCase())).toBe(true);
   });
 
@@ -42,7 +39,6 @@ describe("Settings → Connections", () => {
     expect(html).toContain('<code class="font-mono">opencode auth login</code>');
   });
 
-  // A Cloud has no terminal: a key for any OpenCode provider is saved here.
   it("offers keys for other OpenCode providers next to the OpenCode key", async () => {
     const { SettingsModal } = await import("./SettingsModal");
     const html = renderToStaticMarkup(createElement(SettingsModal));
@@ -52,8 +48,6 @@ describe("Settings → Connections", () => {
     expect(html).toContain("Keys for other OpenCode providers");
   });
 
-  // A Cloud owner has no terminal there: the terminal command would be a dead
-  // end, and the keys for other OpenCode providers are the way on.
   it("sends nobody on a Cloud to a terminal, only to the keys for other providers", async () => {
     const { configStatusFromFrame } = await import("@/state/store");
     fixture.config = configStatusFromFrame({
@@ -61,6 +55,7 @@ describe("Settings → Connections", () => {
       box: { configured: false },
       vps: { configured: false, sshAlias: "" },
       rooms: { turnTimeoutMinutes: 10 },
+      mcp: { callTimeoutMinutes: 10 },
       localVm: { mode: "shared", maxInstances: 1 },
       cloudHome: true,
     });

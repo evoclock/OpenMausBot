@@ -1,30 +1,13 @@
-// Trims models.dev's api.json down to what OpenMausBot needs and drops
-// anything unsafe to hand to OpenCode. Both the build script that makes the
-// bundled snapshot (scripts/build-model-catalog.mjs) and the runtime refresh
-// (catalog.ts) run their data through trimModelsDevCatalog, so a catalog
-// fetched later passes exactly the same filter as the one we ship.
-//
-// Why braces matter: OpenCode expands `{env:NAME}` and `{file:path}` anywhere
-// in its config text, and writing the brace as { in JSON does not stop it
-// (verified on OpenCode 1.18.27). A provider or model string carrying a brace
-// could make OpenCode read another provider's key or any file the user can
-// read into a model name. So any provider or model with a `{` or `}` in any of
-// its strings (or object keys) is dropped here, before anything else sees it.
-//
-// The trimmed shape keeps models.dev's own field names, so trimming is
-// idempotent: a trimmed catalog passes through unchanged. That lets catalog.ts
-// run every source (our cache, OpenCode's raw cache, the snapshot) through the
-// same function. On disk each model also leaves out `id` (it is the key) and
-// `tool_call` (every kept model has it); packCatalog/unpackCatalog convert,
-// which keeps the shipped snapshot under its 150 KB gzipped budget.
+// OpenCode expands `{env:NAME}` and `{file:path}` anywhere in its config text, and escaping the brace in JSON does not
+// stop it (verified on OpenCode 1.18.27): any provider or model with a brace in any string or key is dropped here.
+// The trimmed shape keeps models.dev's field names, so trimming is idempotent.
 import { normalizeApiUrl } from "../cli-api-setup.ts";
 
 export const MODEL_CATALOG_SCHEMA = 1;
 
 export type CatalogModelStatus = "alpha" | "beta";
 
-/** US dollars per million tokens. Cache prices are left out to keep the
- * snapshot small; the provider's own model list is the place for them. */
+/** US dollars per million tokens. */
 export interface CatalogCost {
   input?: number;
   output?: number;
@@ -46,10 +29,9 @@ export interface CatalogModel {
 export interface CatalogProvider {
   id: string;
   name: string;
-  /** Key variable names OpenCode reads for this provider (models.dev `env`). */
   env: string[];
   npm?: string;
-  /** OpenAI-compatible (or, per `npm`, the SDK's) base URL; https or loopback http. */
+  /** https, or http on loopback. */
   api?: string;
   /** Documentation link; https only. */
   doc?: string;
@@ -58,11 +40,9 @@ export interface CatalogProvider {
 
 export type CatalogProviders = Record<string, CatalogProvider>;
 
-/** A model as written to disk: `id` is its key and `tool_call` is implied. */
 export type StoredCatalogModel = Omit<CatalogModel, "id" | "tool_call">;
 export type StoredCatalogProviders = Record<string, Omit<CatalogProvider, "models"> & { models: Record<string, StoredCatalogModel> }>;
 
-/** The file format of both the bundled snapshot and OpenMausBot's own cache. */
 export interface ModelCatalogDocument {
   schema: typeof MODEL_CATALOG_SCHEMA;
   /** When this data was last known to match models.dev (ISO 8601). */
@@ -86,11 +66,9 @@ export interface CatalogDrop {
 }
 
 export interface TrimOptions {
-  /** Called for every provider or model dropped for safety or bad shape. */
   onDrop?: (drop: CatalogDrop) => void;
 }
 
-// Generous caps: models.dev's largest provider lists about 600 models today.
 const MAX_PROVIDERS = 2_000;
 const MAX_MODELS_PER_PROVIDER = 5_000;
 const MAX_DEPTH = 8;
@@ -100,13 +78,10 @@ const ENV_NAME = /^[A-Za-z0-9_]{1,128}$/;
 const CONTROL = /[\u0000-\u001f\u007f]/u;
 const RELEASE_DATE = /^\d{4}-\d{2}(?:-\d{2})?$/;
 
-/** True when the text holds a brace OpenCode could treat as a substitution. */
 export function hasBrace(value: string): boolean {
   return value.includes("{") || value.includes("}");
 }
 
-/** True when any string or object key inside `value` holds a brace. Values
- * nested deeper than models.dev ever goes count as unsafe too. */
 export function containsBrace(value: unknown, depth = 0): boolean {
   if (typeof value === "string") return hasBrace(value);
   if (value === null || typeof value !== "object") return false;
@@ -118,18 +93,14 @@ export function containsBrace(value: unknown, depth = 0): boolean {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** A map keyed by provider or model id. It has no prototype, so an id such as
- * `constructor` or `toString` finds nothing unless the catalog lists it, and a
- * `__proto__` key could not replace the prototype (it is also rejected). */
+/** No prototype: an id like `constructor` finds nothing, and `__proto__` cannot replace it (it is also rejected). */
 const idMap = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 
-/** Never a real id; as a plain-object key it would set the prototype. */
 const RESERVED_KEY = "__proto__";
 
 const finite = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 
-/** A display name: control characters removed, trimmed, capped. */
 function displayName(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
   const clean = value.replace(new RegExp(CONTROL.source, "gu"), "").trim().slice(0, 128);
@@ -158,9 +129,7 @@ function apiUrl(value: unknown): string | undefined {
 function trimModel(key: string, raw: unknown): CatalogModel | "skip" | "invalid" {
   if (!isRecord(raw)) return "invalid";
   if (raw.id !== undefined && raw.id !== key) return "invalid";
-  // The caller already drops a key with a brace; this is the backstop.
   if (!key || key.length > 256 || key === RESERVED_KEY || hasBrace(key) || CONTROL.test(key) || /\s/u.test(key)) return "invalid";
-  // Only models an agent can drive: current, tool-calling, text in.
   if (raw.status === "deprecated" || raw.tool_call !== true) return "skip";
   const modalities = isRecord(raw.modalities) ? raw.modalities : undefined;
   const input = Array.isArray(modalities?.input)
@@ -197,8 +166,6 @@ function trimProvider(key: string, raw: unknown, options: TrimOptions): CatalogP
     return undefined;
   };
   if (!isRecord(raw)) return drop("invalid");
-  // Every provider-level string, not only the fields kept below: a brace
-  // anywhere means the entry was written for a templating system.
   const { models: rawModels, ...fields } = raw;
   if (hasBrace(key) || containsBrace(fields)) return drop("brace");
   if (!PROVIDER_ID.test(key) || (raw.id !== undefined && raw.id !== key)) return drop("invalid");
@@ -231,10 +198,6 @@ function trimProvider(key: string, raw: unknown, options: TrimOptions): CatalogP
   return { ...provider, models };
 }
 
-/** models.dev api.json (or an already-trimmed catalog) → the trimmed,
- * brace-free provider map, sorted by provider and model id. Anything that is
- * not an object yields an empty map. The provider map and every model map
- * have no prototype, so looking up an id the catalog lacks gives undefined. */
 export function trimModelsDevCatalog(raw: unknown, options: TrimOptions = {}): CatalogProviders {
   const providers = idMap<CatalogProvider>();
   if (!isRecord(raw)) return providers;
@@ -245,14 +208,12 @@ export function trimModelsDevCatalog(raw: unknown, options: TrimOptions = {}): C
   return providers;
 }
 
-/** Counts for logs and the build script's report. */
 export function catalogStats(providers: CatalogProviders): { providers: number; models: number } {
   let models = 0;
   for (const provider of Object.values(providers)) models += Object.keys(provider.models).length;
   return { providers: Object.keys(providers).length, models };
 }
 
-/** The on-disk form of a trimmed catalog. */
 export function packCatalog(providers: CatalogProviders): StoredCatalogProviders {
   return Object.fromEntries(Object.entries(providers).map(([id, provider]) => [id, {
     ...provider,
@@ -263,8 +224,6 @@ export function packCatalog(providers: CatalogProviders): StoredCatalogProviders
   }]));
 }
 
-/** A stored catalog back in models.dev's shape, ready for trimModelsDevCatalog.
- * It only restores the two packed fields; trimming still validates the rest. */
 export function unpackCatalog(stored: unknown): unknown {
   if (!isRecord(stored)) return stored;
   return Object.fromEntries(Object.entries(stored).map(([id, provider]) => {

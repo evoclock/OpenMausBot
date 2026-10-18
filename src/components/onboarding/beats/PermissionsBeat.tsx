@@ -1,8 +1,5 @@
-// Beat: what the app may use. Desktop only, microphone only. Screen
-// Recording deliberately has no row: macOS 15+ makes a pre-grant unreliable
-// (per-process status caching, helper misattribution, periodic re-prompts),
-// so the OS flow triggers on the first real capture in the Computer panel,
-// the moment the user has context for the dialog.
+// No Screen Recording row: macOS 15+ makes a pre-grant unreliable (per-process status caching, helper misattribution,
+// re-prompts), so the OS asks on the first real capture.
 import { useEffect, useState } from "react";
 import { Check, Mic } from "lucide-react";
 import { t } from "@/lib/i18n";
@@ -15,7 +12,6 @@ export function PermissionsBeat({ onNext, onSkip, setMascot, bump }: BeatProps) 
     setMascot("listening");
     const poll = () => window.ogb?.permStatus?.().then(setPerms).catch(() => {});
     poll();
-    // keep polling — the user may grant in System Settings and come back
     const timer = setInterval(poll, 2000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

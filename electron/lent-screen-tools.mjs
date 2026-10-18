@@ -1,14 +1,5 @@
-// What a lent screen accepts, argument by argument. Derived from the local
-// computer-control driver's own input schemas (cua-driver 0.12.6 `describe`),
-// keeping only arguments that observe or operate what is on screen. Anything
-// that names a local path, a command line, a port or a system prompt is not
-// lent: `screenshot_out_file` and `debug_image_out` write a file anywhere
-// (screenshots come back inline instead), `image_path` and a path-like
-// `cursor_icon` read one, `launch_app`'s `additional_arguments` is a command
-// line and its `webkit_inspector_port` opens a port, and its `urls` accept
-// file paths, so only web addresses pass. An argument not listed for its tool
-// is refused, never forwarded, so a newer driver lends nothing new until it is
-// reviewed and listed here. A tool not listed is refused, too.
+// From cua-driver 0.12.6 `describe` schemas, keeping only arguments that observe or operate the screen: nothing that names
+// a path, command line, port or system prompt. Unlisted tools and arguments are refused, so a newer driver lends nothing new.
 const ID = { type: "string", max: 200 };
 const LABEL = { type: "string", max: 1000 };
 const TEXT = { type: "string", max: 20_000 };
@@ -21,8 +12,7 @@ const DELIVERY = oneOf("background", "foreground");
 const SCOPE = oneOf("window", "desktop");
 const BUTTON = oneOf("left", "right", "middle");
 const INPUT_ROUTE = oneOf("trusted", "dom_event");
-/** Web addresses only: never a file path or a custom scheme that starts a
- * program. */
+/** Web addresses only: never a file path or a custom scheme that starts a program. */
 const WEB_URLS = { type: "urls", max: 10, schemes: ["http:", "https:"] };
 const PAGE_URL = { type: "url", schemes: ["http:", "https:", "about:"] };
 
@@ -93,9 +83,7 @@ function acceptable(spec, value) {
   }
 }
 
-/** The arguments to forward for one lent screen tool, or an error naming what
- * is refused. Returns a fresh plain object: nothing outside the allow-list,
- * nothing inherited, nothing the server could smuggle through a prototype. */
+/** A fresh plain object: nothing outside the allow-list, nothing inherited through a prototype. */
 export function lentScreenArguments(name, input) {
   const allowed = Object.hasOwn(LENT_SCREEN_ARGUMENTS, name) ? LENT_SCREEN_ARGUMENTS[name] : null;
   if (!allowed) return { error: `${String(name).slice(0, 100)} is not part of lent apps and screen` };
@@ -110,9 +98,6 @@ export function lentScreenArguments(name, input) {
   return { arguments: forwarded };
 }
 
-/** A driver tool as the Cloud sees it: only lent tools, and each schema cut
- * down to the arguments a lent screen accepts, so the model is never offered
- * one that would be refused. */
 export function lentScreenToolListing(tools) {
   if (!Array.isArray(tools)) return [];
   return tools.filter(tool => typeof tool?.name === "string" && LENT_SCREEN_TOOLS.has(tool.name)).map(tool => {

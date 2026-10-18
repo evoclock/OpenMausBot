@@ -1,15 +1,5 @@
-// What a server's bots did on this computer through computer sharing, kept
-// on this computer for the person to read (Settings). One JSON object per
-// operation: when, which server, which action, where (folder name and
-// relative path, the tool name, or the command text) and whether it worked.
-// Never file contents, command output, typed text or tool arguments. The file
-// is owner-only and sits in the protected sharing directory, so no shared
-// folder can read or rewrite it, and no lent screen argument can name a path.
-//
-// Append-only: this module only ever appends a line (O_APPEND, never through
-// a symbolic link). It never rewrites or truncates an entry; to stay bounded
-// it renames a full file to `<file>.1` (replacing the older one) and starts a
-// new file, so the log always holds between one and two files of history.
+// Never file contents, command output, typed text or tool arguments. Owner-only, inside the protected sharing directory,
+// append-only (O_APPEND, never through a symlink); a full file rotates to `<file>.1`.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -17,8 +7,7 @@ const KEEP = 500;
 // oxlint-disable-next-line no-control-regex
 const clean = (value, max) => typeof value === "string" ? value.replace(/[\x00-\x1f\x7f]+/g, " ").slice(0, max) : undefined;
 
-/** The one-line description of an operation, from the local grant (folder
- * names come from this computer, never from the server). */
+/** Folder names come from this computer, never from the server. */
 export function describeSharedOperation(grant, operation) {
   switch (operation?.action) {
     case "list_files":
@@ -50,8 +39,7 @@ export function createLendingActivity(file, { now = Date.now, keep = KEEP } = {}
     count++;
   };
   return {
-    /** Never throws: a full disk must not stop an operation's answer or the
-     * stop switch. */
+    /** Never throws: a full disk must not stop an operation's answer or the stop switch. */
     record({ env, action, detail, ok, error }) {
       const entry = {
         at: now(), server: clean(env?.name, 120) ?? "", origin: clean(env?.origin, 300) ?? "",
@@ -61,7 +49,7 @@ export function createLendingActivity(file, { now = Date.now, keep = KEEP } = {}
       try { append(JSON.stringify(entry)); } catch { count = null; }
       return entry;
     },
-    /** Newest first. Malformed lines are skipped, never trusted. */
+    /** Malformed lines are skipped, never trusted. */
     list(limit = 100) {
       const count = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, keep * 2) : 100;
       const entries = [];
@@ -70,7 +58,7 @@ export function createLendingActivity(file, { now = Date.now, keep = KEEP } = {}
         try {
           const entry = JSON.parse(line);
           if (entry && typeof entry.at === "number" && typeof entry.action === "string") entries.push(entry);
-        } catch { /* skip */ }
+        } catch {}
       }
       return entries;
     },

@@ -1,12 +1,6 @@
-// Outbound actions: the calls that reach a person outside the app, or move
-// money. Sending an email, replying in a thread, posting to a channel,
-// publishing, inviting, sharing, refunding, charging. These get their own
-// confirmation regardless of approval level, and an optional daily
-// allowance per bot, because the cost of one wrong send is paid by someone
-// who never saw the bot.
-//
-// Shared between the harness (which enforces it) and the app (which shows
-// the setting), so both agree on what "outbound" means.
+// Outbound actions: calls that reach a person outside the app or move money.
+// They get their own confirmation regardless of approval level, and an optional
+// daily allowance per bot. Shared by the harness (which enforces it) and the app.
 
 export type OutboundPolicy = {
   /** ask: every outbound call waits for a tap. allow: up to dailyCap a day. */
@@ -66,6 +60,14 @@ function actionTokens(name: string): string[] {
     .filter(Boolean);
 }
 
+/** Does the tool name describe a read-only action? This is deliberately
+ * narrower than "not outbound": updates, deletes and other writes do not
+ * become reads merely because they send nothing to another person. */
+export function isReadOnlyTool(name: string): boolean {
+  const tokens = actionTokens(name);
+  return tokens.length > 0 && READ_VERBS.has(tokens[0]);
+}
+
 /** Does this tool send something to someone, or move money? */
 export function isOutboundTool(name: string): boolean {
   // A raw API call from the workbench can do anything an app tool can, and
@@ -73,7 +75,7 @@ export function isOutboundTool(name: string): boolean {
   if (name === "COMPOSIO_PROXY_EXECUTE") return true;
   const tokens = actionTokens(name);
   if (tokens.length === 0) return false;
-  if (READ_VERBS.has(tokens[0])) return false;
+  if (isReadOnlyTool(name)) return false;
   if (tokens.some((token) => SEND_VERBS.has(token))) return true;
   if (tokens.includes("DRAFT")) return false;
   return tokens.some((token) => CREATE_VERBS.has(token)) && tokens.some((token) => SENT_NOUNS.has(token));

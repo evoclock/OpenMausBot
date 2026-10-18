@@ -1,6 +1,3 @@
-// Beat: your phone. The shared phone-setup state machine in its onboarding
-// variant; it can always be resumed later from Settings → Companion, which
-// is why skipping here costs nothing.
 import { useEffect } from "react";
 import { PhoneSetupFlow } from "@/components/PhoneSetupFlow";
 import { track } from "@/lib/analytics";

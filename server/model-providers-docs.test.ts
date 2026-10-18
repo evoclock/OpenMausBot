@@ -1,15 +1,11 @@
-// The "Other model providers" docs page tells people how to use OpenRouter,
-// Fireworks AI, DeepSeek and Cline before OpenMausBot has a screen for them.
-// Each workaround it gives depends on a detail of today's code, so each one
-// is pinned here to that code. When one of these fails, the behaviour moved:
-// update apps/docs/content/docs/providers/model-providers.mdx with it.
+// Pins each workaround the "Other model providers" docs page gives to the code it depends on: when one fails, update the page.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "./config.ts";
+import { OPENCODE_PROVIDER_ENV, PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "./config.ts";
 import { discoverOpenCodeModels, ensureOpenCodeInjectModel, resetOpenCodeModelCache } from "./drivers/acp/opencode-go.ts";
 import { readClaudeAuthSettings, readClaudeModelCatalog } from "./drivers/claude.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
@@ -18,9 +14,6 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PAGE = readFileSync(join(ROOT, "apps", "docs", "content", "docs", "providers", "model-providers.mdx"), "utf8");
 const EN = JSON.parse(readFileSync(join(ROOT, "src", "locales", "en.json"), "utf8")) as Record<string, string>;
 
-/** One section of the page, from its heading to the next heading of the same
- * or a higher level, with line wrapping collapsed so a sentence can be
- * matched whatever its line breaks. */
 function section(heading: string): string {
   const lines = PAGE.split(/\r?\n/u);
   const start = lines.findIndex((line) => line === heading);
@@ -45,9 +38,7 @@ afterEach(async () => {
 });
 
 describe("Claude Code section", () => {
-  // What OpenRouter's or DeepSeek's shell exports look like once copied into
-  // the env block, plus FireConnect's header and the model settings the page
-  // says are and aren't carried over. Every value is fake.
+  // Shell exports as copied into the env block, plus FireConnect's header and model settings. Every value is fake.
   const settingsHome = (env: Record<string, string>, extra: Record<string, unknown> = {}) => {
     const home = scratch("omb-docs-claude-");
     mkdirSync(join(home, ".claude"), { recursive: true });
@@ -66,7 +57,6 @@ describe("Claude Code section", () => {
   it("sends people to the settings.json env block, which Claude bots carry over", () => {
     const home = settingsHome(providerEnv);
 
-    // The address, the key and FireConnect's key header reach the bot's CLI.
     expect(readClaudeAuthSettings({ HOME: home }).env).toEqual({
       ANTHROPIC_BASE_URL: providerEnv.ANTHROPIC_BASE_URL,
       ANTHROPIC_AUTH_TOKEN: providerEnv.ANTHROPIC_AUTH_TOKEN,
@@ -75,28 +65,19 @@ describe("Claude Code section", () => {
 
     const text = section("### Claude Code");
     expect(text).toContain("Put `ANTHROPIC_BASE_URL` and your key in the `env` block of `~/.claude/settings.json`.");
-    // OpenRouter's and DeepSeek's guides export in the shell, which the
-    // desktop app never sees: the page must not say their guides already
-    // wrote the env block.
     expect(text).toContain("OpenRouter's and DeepSeek's guides use shell exports, which the desktop app doesn't see, so copy those lines into the `env` block.");
     expect(text).not.toMatch(/Those guides put/u);
-    // Terminal exports on a server are not the advice for Claude.
     expect(text).toContain("On a server, use the `env` block too, not exports in the terminal that starts the server.");
   });
 
-  it("lists ANTHROPIC_MODEL under the picker entry the page names, and nothing else from the file", () => {
+  it("lists ANTHROPIC_MODEL and non-Claude tier models under the picker entry the page names, and nothing else from the file", () => {
     const home = settingsHome(providerEnv, {
-      // FireConnect's own picker list, which the page says doesn't show up.
       modelPicker: { options: [{ model: "glm-latest[1m]", label: "GLM" }] },
     });
     const catalog = readClaudeModelCatalog({ HOME: home });
     const custom = catalog.options.filter((option) => option.custom).map((option) => option.id);
 
-    // Custom rows are what the picker shows behind its local-model entry.
-    expect(custom).toEqual([providerEnv.ANTHROPIC_MODEL]);
-    // The per-tier and subagent model settings never reach a bot, neither in
-    // the picker nor in the CLI's settings.
-    expect(JSON.stringify(catalog)).not.toContain(providerEnv.ANTHROPIC_DEFAULT_SONNET_MODEL);
+    expect(custom).toEqual([providerEnv.ANTHROPIC_MODEL, providerEnv.ANTHROPIC_DEFAULT_SONNET_MODEL]);
     expect(JSON.stringify(catalog)).not.toContain(providerEnv.CLAUDE_CODE_SUBAGENT_MODEL);
     expect(JSON.stringify(catalog)).not.toContain("glm-latest");
     const carried = Object.keys(readClaudeAuthSettings({ HOME: home }).env ?? {});
@@ -107,8 +88,8 @@ describe("Claude Code section", () => {
     const text = section("### Claude Code");
     expect(text).toContain(`If you also set \`ANTHROPIC_MODEL\` there, that model appears under **${label}** in the Claude model picker; pick it.`);
     expect(text).toContain("FireConnect's model list doesn't show up in OpenMausBot, so add `ANTHROPIC_MODEL` yourself.");
+    expect(text).toContain("So do `ANTHROPIC_CUSTOM_MODEL_OPTION` and each `ANTHROPIC_DEFAULT_*_MODEL` that isn't a Claude model.");
     expect(text).toContain("`ANTHROPIC_DEFAULT_*_MODEL` and `CLAUDE_CODE_SUBAGENT_MODEL` aren't carried over.");
-    // The old, wrong advice: ANTHROPIC_MODEL is carried over as a pick.
     expect(text).not.toMatch(/such as `ANTHROPIC_MODEL`, aren't carried/u);
   });
 
@@ -137,7 +118,6 @@ describe("OpenCode 2.x section", () => {
 });
 
 describe("OpenCode config file", () => {
-  // The provider example on the page, exactly as a reader would paste it.
   const example = (page = PAGE) => {
     const block = /```json\r?\n([\s\S]*?)```/u.exec(page.slice(page.indexOf("### OpenCode")));
     expect(block, "the OpenCode section has no json example").not.toBeNull();
@@ -178,11 +158,10 @@ describe("OpenCode config file", () => {
 });
 
 describe("Keys exported on a server", () => {
-  const exported = ["OPENROUTER_API_KEY", "FIREWORKS_API_KEY", "DEEPSEEK_API_KEY", "CLINE_API_KEY"];
+  const exported = ["OPENROUTER_API_KEY", "FIREWORKS_API_KEY", "DEEPSEEK_API_KEY"];
 
   it("reach every engine, as the page warns", () => {
-    // Every engine filters its inherited environment through these two lists
-    // (or stripWorkspaceCredentialEnv). None of them names these keys.
+    // Every engine filters its inherited environment through these two lists (or stripWorkspaceCredentialEnv).
     const filtered = new Set<string>([...PROVIDER_CREDENTIAL_ENV, ...WORKSPACE_CREDENTIAL_ENV]);
     expect(exported.filter((name) => filtered.has(name))).toEqual([]);
     const env: Record<string, string | undefined> = Object.fromEntries(exported.map((name) => [name, "fake"]));
@@ -192,6 +171,16 @@ describe("Keys exported on a server", () => {
     const text = section("### OpenCode");
     for (const name of exported) expect(text).toContain(`\`${name}\``);
     expect(text).toContain("Keys exported this way reach every engine on that server, and any bot that can run commands can read them.");
+  });
+
+  it("documents Cline's separate credential scope and native setup", () => {
+    expect(PROVIDER_CREDENTIAL_ENV).toContain("CLINE_API_KEY");
+    expect(OPENCODE_PROVIDER_ENV).toContain("CLINE_API_KEY");
+    expect(section("### OpenCode")).toContain("`CLINE_API_KEY` is scoped to the Cline and OpenCode engines.");
+    const cline = section("### Cline engine");
+    expect(cline).toContain("`cline auth`");
+    expect(cline).toContain("**Cline default (configured)**");
+    expect(cline).toContain("An unconfigured account remains unavailable.");
   });
 
 });

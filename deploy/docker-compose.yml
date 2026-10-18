@@ -16,6 +16,11 @@ services:
     # prebuilt on every main push; `docker compose up --build` builds from source instead
     image: ghcr.io/milind-soni/openmausbot:latest
     restart: unless-stopped
+    # The bots' browsers (docs/browser-packaging.md, "Process hygiene"): an
+    # init collects the browser processes whose parents exit, and Chrome
+    # gets the shared memory OMB's desktop containers give it.
+    init: true
+    shm_size: 512m
     volumes:
       - data:/data
     ports:

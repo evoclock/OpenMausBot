@@ -11,8 +11,7 @@ const ACTIONS: Record<string, LocaleKey> = {
   invalid: "lending.action.invalid",
 };
 
-/** This computer's own record of what a server's bots did here (Electron
- * main keeps it; a server cannot write to it). Newest first. */
+/** Security: Electron main keeps this record; a server cannot write to it. */
 export function LendingActivityList({ entries }: { entries: DesktopLendingActivity[] | null }) {
   return <div className="flex flex-col gap-2">
     <p className="font-medium text-ink">{t("lending.activity.title")}</p>

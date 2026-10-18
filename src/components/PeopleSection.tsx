@@ -1,23 +1,17 @@
-// App settings → People, on a hosted server: who may sign in to this
-// workspace with an emailed code, their role, when they were last seen,
-// what each person spent this month, and an invite link that opens the
-// sign-in page with their address filled in. The link is convenience, not
-// a second door: the one-time code still goes to the address itself.
-//
-// On a workspace whose members the organisation's Admin decides (portal
-// membership), this list decides nothing, so the section turns read-only:
-// who has signed in, what they spent, and a link to Admin → People.
+// Security: the invite link is convenience, not a second door; the one-time code still goes to the address itself.
 import { useCallback, useEffect, useState } from "react";
-import { Check, Copy, ExternalLink, Link2, Loader2, Plus, RefreshCw } from "lucide-react";
+import { Check, Copy, ExternalLink, Link2, Loader2, Plus, RefreshCw, X } from "lucide-react";
 import { api } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { useCopyFeedback } from "@/lib/copy-text";
 import { formatUsd, hasFiniteCost } from "@/lib/usage";
 import { readMembership, type Membership } from "../lib/membership";
 import { readSessionState, type SessionState } from "../lib/session";
 import { canPairDevices } from "./ServerPairingCard";
 import { normalizeAccessEntry, withEntry, withoutEntry, type SignInLists } from "./SignInAccessCard";
 import { Card } from "./SettingsPrimitives";
+import { Select } from "./Select";
 
 export type Role = "admin" | "member";
 
@@ -25,24 +19,19 @@ export type Role = "admin" | "member";
 export interface Person {
   entry: string;
   role: Role;
-  /** `@domain`: everyone at a company, not one person. */
   isDomain: boolean;
   lastSeenAt: number | null;
   devices: number;
   turns: number;
   costUsd: number | null;
-  /** part of costUsd is estimated from list prices (see Usage → History) */
   estimated?: boolean;
 }
 
-/** The sign-in page with the invited address filled in; a domain entry gets the plain page. */
 export function inviteLink(base: string, entry: string): string {
   const origin = base.replace(/\/+$/, "");
   return entry.startsWith("@") ? `${origin}/pair` : `${origin}/pair?email=${encodeURIComponent(entry)}`;
 }
 
-/** One row per list entry, joined with the devices that signed in as that
- * address and the month's usage the ledger attributed to it. */
 export function mergePeople(
   lists: SignInLists,
   sessions: Array<{ email?: string; lastSeenAt: number }>,
@@ -72,8 +61,6 @@ export function mergePeople(
   return people;
 }
 
-/** One row per address that has signed in, for a workspace whose members
- * Admin manages: role from what their sessions may do, nothing to edit. */
 export function peopleFromSessions(
   sessions: Array<{ email?: string; lastSeenAt: number; scopes?: string[] }>,
   usage: Array<{ key: string; turns: number; costUsd: number | null }>,
@@ -103,14 +90,12 @@ export function lastSeenLabel(lastSeenAt: number | null, now = Date.now()): stri
   return new Date(lastSeenAt).toISOString().slice(0, 10);
 }
 
-/** The table alone, so it renders the same from a fetch or a fixture. */
 export function PeopleTable({ people, busy, onRole, onRemove, onLink, readOnly = false }: {
   people: Person[];
   busy: boolean;
   onRole: (person: Person, role: Role) => void;
   onRemove: (person: Person) => void;
   onLink: (person: Person) => void;
-  /** Admin decides membership: show the rows, offer nothing to change. */
   readOnly?: boolean;
 }) {
   if (people.length === 0) return <p className="text-[13px] text-ink-secondary">{t(readOnly ? "people.portal.empty" : "people.empty")}</p>;
@@ -151,27 +136,15 @@ export function PeopleTable({ people, busy, onRole, onRemove, onLink, readOnly =
 }
 
 export function CopyLink({ link }: { link: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 2000);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied(true);
-    } catch {
-      /* the link stays selectable when clipboard access is blocked */
-    }
-  };
+  const { state, copy } = useCopyFeedback(link);
   return (
     <div className="mt-3 rounded-lg border border-hairline/40 bg-inset p-3 text-[12.5px]">
       <div className="mb-1 text-ink-secondary">{t("people.link")}</div>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 select-all break-all text-ink">{link}</code>
-        <button type="button" onClick={() => void copy()} className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-ink-secondary hover:bg-control hover:text-ink">
-          {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}{copied ? t("people.copied") : t("people.copy")}
+        <button type="button" onClick={copy} className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-ink-secondary hover:bg-control hover:text-ink">
+          {state === "copied" ? <Check size={13} className="text-success" /> : state === "failed" ? <X size={13} className="text-danger" /> : <Copy size={13} />}
+          {t(state === "copied" ? "people.copied" : state === "failed" ? "common.copyFailed" : "people.copy")}
         </button>
       </div>
       <p className="mt-2 text-[11.5px] leading-relaxed text-ink-secondary">{t("people.linkHint")}</p>
@@ -179,8 +152,6 @@ export function CopyLink({ link }: { link: string }) {
   );
 }
 
-/** Portal membership: this server's list decides nothing, so say where
- * people are managed and show, read-only, who has signed in here. */
 export function PortalPeople({ peopleUrl, people }: { peopleUrl: string | null; people: Person[] }) {
   const noop = () => {};
   return (
@@ -296,11 +267,11 @@ export function PeopleSection() {
           disabled={busy}
           className="min-w-[16rem] flex-1 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none disabled:opacity-50"
         />
-        <select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label={t("people.colRole")} disabled={busy} className="rounded-lg border border-hairline/40 bg-inset px-2 py-2 text-[12.5px] text-ink focus:outline-none">
+        <Select value={role} onChange={(e) => setRole(e.target.value as Role)} aria-label={t("people.colRole")} disabled={busy}>
           <option value="member">{t("people.roleMember")}</option>
           <option value="admin">{t("people.roleAdmin")}</option>
-        </select>
-        <button type="submit" disabled={busy || !draft.trim()} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-semibold text-white hover:brightness-110 disabled:opacity-60">
+        </Select>
+        <button type="submit" disabled={busy || !draft.trim()} className="ui-button ui-button-primary">
           {busy ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}{t("people.invite")}
         </button>
         <button type="button" onClick={() => void load()} disabled={loading || busy} aria-label={t("people.refresh")} title={t("people.refresh")} className="rounded-md p-1.5 text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50"><RefreshCw size={13} className={cn(loading && "animate-spin")} /></button>

@@ -48,6 +48,18 @@ Talk to them like contacts. Watch them work. Approve what matters.
 <br>
 <br>
 
+<sub>Powered by <a href="https://boat.dev">boat.dev</a></sub>
+<br>
+<a href="https://boat.dev">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/sponsors/boat-logo-white.svg">
+    <img src="docs/assets/sponsors/boat-logo.svg" alt="Boat (boat.dev)" height="34">
+  </picture>
+</a>
+
+<br>
+<br>
+
 <img src="docs/screenshots/hero.png" alt="OpenMausBot — a Telegram-style chat app where every chat is a real AI agent" width="900">
 
 </div>
@@ -87,7 +99,7 @@ apps, running on your machine under Apache 2.0. If you searched for an *open Mus
 | **Open Muse** | Meta's single personal agent in a Meta cloud VM, US and Canada only | A team instead of one agent; runs anywhere; data in `~/.openmausbot` | [Meta Muse alternative](https://www.openmausbot.com/blog/open-source-alternative-to-meta-muse) |
 | **Open dots** | OpenAI's always-on agent inside ChatGPT, GPT only, Pro and Business Premium plans | Several agents; your Claude, ChatGPT or Grok login; no plan required | [OpenAI dots alternative](https://www.openmausbot.com/blog/openai-dots-alternative) |
 | **Open Cue** | Manus's invite-only agents with their own phone, email and wallet | No invite; OAuth instead of passwords; open source | [Cue by Manus alternative](https://www.openmausbot.com/blog/open-source-alternative-to-cue-by-manus) |
-| **Open Instinct** | Spear Street's invite-only agent that holds your passwords on a cloud computer | Asks before it acts; signs in over OAuth; your machine | [Instinct AI alternative](https://www.openmausbot.com/blog/instinct-ai-alternative) |
+| **Open Instinct** | Spear Street's invite-only agent that holds your passwords on a cloud computer | Ask for approval when you want it; signs in over OAuth; your machine | [Instinct AI alternative](https://www.openmausbot.com/blog/instinct-ai-alternative) |
 
 All five side by side: [Muse vs Grok Bot vs Dots vs Cue](https://www.openmausbot.com/blog/muse-vs-grok-bot-vs-dots-vs-cue),
 and a decision guide in five questions: [Which AI agent should I use?](https://www.openmausbot.com/blog/which-ai-agent-should-i-use)
@@ -171,8 +183,8 @@ channel and its bots under a named context, then rename it or change its members
 
 ### ⚡ Fast decisions with Jev
 
-Add a TypeSafe Jev key in **Settings → Decision model** and rooms set to **Auto** pick the bot that fits each
-un-mentioned message in a few hundred milliseconds, falling back to the room's lead whenever Jev is off or unsure.
+Add a TypeSafe Jev key, or an OpenRouter key and model, in **Settings → Decision model** and rooms set to **Auto** pick the bot
+that fits each un-mentioned message in a few hundred milliseconds, falling back to the room's lead whenever the decision model is off or unsure.
 See [docs/decision-model.md](docs/decision-model.md).
 
 ### 📦 Install a complete team from one Markdown file
@@ -234,6 +246,7 @@ expressions · screenshots of the bot's work folded into the transcript.
 ![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-0F172A?logo=tailwindcss&logoColor=38BDF8)
 ![Composio](https://img.shields.io/badge/Composio-e6493a)
+![Boat](https://img.shields.io/badge/Boat-sponsor-111111)
 ![Cua](https://img.shields.io/badge/Cua%20Driver-1f2937)
 ![ElevenLabs](https://img.shields.io/badge/ElevenLabs-000000?logo=elevenlabs&logoColor=white)
 ![Fish Audio](https://img.shields.io/badge/Fish%20Audio-2563eb)
@@ -246,7 +259,7 @@ expressions · screenshots of the bot's work folded into the transcript.
 | **Claude · Codex · Grok** | The agents behind every bot, run through their local CLIs |
 | **Electron** | Desktop shells for macOS, Windows, and Ubuntu |
 | **React + Vite + Tailwind CSS** | The chat app UI and its build |
-| **Boat** ([boat.dev](https://boat.dev)) | Each bot's cloud computer |
+| **Boat** ([boat.dev](https://boat.dev)) | Each bot's cloud computer · our sponsor |
 | **Composio** | Connected apps — Gmail, Slack, GitHub, and more |
 | **Cua Driver** | Native computer use on your own machine |
 | **ElevenLabs · Fish Audio** | Hosted voices for bots that talk back |
@@ -297,6 +310,20 @@ create and configure bots/channels/tasks, send work, wait for completion, switch
 It does **not** expose approval grants, deletion, arbitrary settings, credentials, or computer lifecycle.
 
 See [MCP server setup and tool reference](docs/mcp-server.md).
+
+### Run it from scripts and CI
+
+The `openmausbot` command drives a running workspace without a screen: set a
+team up from a file, give a bot one job, wait until it and every teammate it
+asked are done, and export what they made. One JSON document with `--json`,
+and exit codes a script can branch on.
+
+```sh
+openmausbot team apply team.yaml
+openmausbot run "Room Lead" "Rehearse the launch of https://example.com" --export ./out
+```
+
+See [Run OpenMausBot from scripts and CI](docs/headless-cli.md).
 
 ## Quick start
 
@@ -382,9 +409,16 @@ pnpm package:win   # Windows installer + zip → release/
 pnpm package:linux # Ubuntu x64 .deb + AppImage → release/
 ```
 
-### Routines and webhook triggers
+### Triggers: schedules and webhooks
 
-Routines can run once, on selected weekdays, or every 5–1,440 minutes, using either a MAUS's configured
+A trigger is "when something happens, a bot does something". Tell a bot "every weekday at 9, send me a summary
+of my inbox" or "whenever our form calls, draft a reply" and it sets the trigger up in that turn with
+`create_trigger` (no confirmation; the chat shows a live card with Edit, Pause and Undo). **Triggers**, first in
+the sidebar, lists every schedule and webhook, with a calendar and the run history. Bots manage them with
+`list_triggers`, `create_trigger` and `manage_trigger`; a webhook a bot makes never shows the bot its secret:
+the person copies the link from the card or the Triggers page.
+
+Schedules (routines) can run once, on selected weekdays, or every 5–1,440 minutes, using either a bot's configured
 model/computer or the Cloud VM runner. Interval schedules stay aligned to their chosen start time and skip
 an occurrence when the previous run is still active, so slow work cannot build an unbounded queue. A
 separate optional Advanced run limit can safely stop stuck work; no timeout is imposed unless one is chosen.
@@ -417,6 +451,12 @@ Users can add their own MCP tool servers with zero code via [`docs/custom-mcp-se
 To run bots on OpenRouter, Fireworks AI, DeepSeek, Cline or your own OpenAI- or Anthropic-compatible provider,
 see [Other model providers](apps/docs/content/docs/providers/model-providers.mdx).
 
+## Privacy
+
+Usage analytics are optional and anonymous: product events and a once-a-day count of what is set up, never keys,
+names, addresses or conversations. Turn them off in Settings → General → Usage analytics;
+[`docs/analytics.md`](docs/analytics.md) lists every event and property.
+
 ## Support the project
 
 OpenMausBot is free and open source. If it does real work for you, you can
@@ -447,6 +487,10 @@ iOS app takes either that or the web link. A browser works on either phone. A ph
 cannot use a localhost link. `--local` ignores saved remote access for one launch;
 `--no-pair` suppresses phone prompts and invitations but does not disable a saved
 remote connection.
+
+The web UI can also be installed from Safari or Chrome as a standalone phone
+app. See [Install the phone web app](docs/phone-web-app.md) for Home Screen
+installation and pairing.
 
 Run `openmausbot setup` to reconfigure without resetting bots or conversations;
 the saved model default applies only to new bots. Native setup confirms provider

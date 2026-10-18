@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { LICENSE_PATH, MAX_GZIP_BYTES, SNAPSHOT_PATH, buildCatalogDocument, serializeCatalog, snapshotProblems, toLf } from "./build-model-catalog.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-// As checked out: CRLF in a Windows working tree written before .gitattributes pinned it.
+// As checked out: a Windows working tree may still hold CRLF.
 const committed = readFileSync(SNAPSHOT_PATH, "utf8");
 const licenseText = toLf(readFileSync(LICENSE_PATH, "utf8"));
 const raw = {

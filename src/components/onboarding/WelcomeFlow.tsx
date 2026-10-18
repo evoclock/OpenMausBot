@@ -1,18 +1,5 @@
-// The welcome flow: one card, one guide, a handful of beats. The card is the
-// same element for the whole flow and morphs between beats with the View
-// Transitions API (the card, the mascot and the title keep their names, so
-// the browser moves and resizes them instead of cross-fading two cards).
-// The guide mascot is mounted once so its face engine carries over; beats
-// borrow it through setMascot/bump rather than rendering their own.
-//
-// Nothing here can brick the app: every beat is skippable, Escape skips the
-// whole tour, and completion is written to the workspace config. A failed
-// write still dismisses this visit, but may require retrying on the next launch.
-//
-// A hosted team workspace gets its own short set (a greeting, then the bot):
-// its organisation assigns the models, and nothing there is installed on,
-// granted to or paired with this computer.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { CloudOffer } from "../../../electron/cloud-home.mjs";
 import { MausAvatar } from "@/components/Avatar";
 import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
 import { setEmailGateDone, track } from "@/lib/analytics";
@@ -20,6 +7,7 @@ import { brand } from "@/lib/brand";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { MausMotion, MausState } from "@/lib/mascot";
+import { detectSetupWithin, localSetupImport, setupImportApi, type SetupImportClient } from "@/lib/setup-import";
 import {
   beatWidth,
   beatsFor,
@@ -27,11 +15,15 @@ import {
   flowDotsShown,
   nextBeat,
   previousBeat,
+  showWelcome,
   type BeatId,
 } from "@/lib/onboarding";
 import { api, useStore, type Bot } from "@/state/store";
+import { CloudBeat, useCloudBeatOffer } from "./beats/CloudBeat";
+import type { SetupDetection, SetupImportResult } from "../../../shared/setup-import";
 import { EnginesBeat } from "./beats/EnginesBeat";
 import { HelloBeat } from "./beats/HelloBeat";
+import { ImportBeat } from "./beats/ImportBeat";
 import { MeetYourBotBeat } from "./beats/MeetYourBotBeat";
 import { PermissionsBeat } from "./beats/PermissionsBeat";
 import { PhoneBeat } from "./beats/PhoneBeat";
@@ -40,14 +32,14 @@ import { withViewTransition } from "./view-transition";
 import { ProgressDots } from "./ProgressDots";
 import { FeatureReel } from "./reel/FeatureReel";
 
-/** The guide's resting face per beat; beats may override it as they learn
- * more (the engines beat looks proud or curious once the harness answers). */
 const MASCOT_FOR_BEAT: Record<BeatId, MausState> = {
   hello: "happy",
   reel: "curious",
   engines: "searching",
+  import: "receiving",
   permissions: "listening",
   phone: "sending",
+  cloud: "working",
   bot: "celebrate",
 };
 
@@ -57,6 +49,8 @@ function beatTitle(beat: BeatId): string | null {
       return t("onboarding.welcome", { app: brand().name });
     case "engines":
       return t("onboarding.engines.title");
+    case "import":
+      return t("onboarding.import.title");
     case "permissions":
       return t("onboarding.perms.title");
     case "bot":
@@ -65,10 +59,15 @@ function beatTitle(beat: BeatId): string | null {
       return t("onboarding.reel.title");
     case "phone":
       return t("onboarding.phone.title");
+    case "cloud":
+      return t("onboarding.cloud.title");
   }
 }
 
 type Motion = Exclude<MausMotion, "none">;
+
+/** Found later than these, the import step would land behind the person, so it is left out. */
+const BEFORE_IMPORT: readonly BeatId[] = ["hello", "reel", "engines"];
 
 export function WelcomeFlow({
   bot,
@@ -81,43 +80,42 @@ export function WelcomeFlow({
   entrance = "arrive",
   hosted = false,
   onOpenOrganisation,
+  cloudOffer,
+  setupImport,
 }: {
-  /** The seeded bot the exit beat names; null when the roster is empty. */
   bot: Bot | null;
   onDone: () => void;
-  /** Replays skip nothing but are tracked separately. */
   replay?: boolean;
-  /** Open on a given beat: the preview, and resuming after the engines beat
-   * sent the person to Settings → Organisation. */
   initialBeat?: BeatId;
-  /** Preview only: fill the parent instead of the viewport. */
   embedded?: boolean;
-  /** The feature reel beat; the preview gallery turns it off. */
   reel?: boolean;
-  /** Preview only: pretend the microphone can be asked for (or not). */
   dictation?: boolean;
-  /** The guide's first motion beat on mount. */
   entrance?: Motion;
-  /** A hosted team workspace: the hosted beat set, no email field. */
   hosted?: boolean;
-  /** The engines beat's organisation row asks for Settings → Organisation. */
   onOpenOrganisation?: () => void;
+  /** The preview's stand-in for the Admin's offer (the Cloud beat); the app reads its own. */
+  cloudOffer?: CloudOffer | null;
+  /** Where the import step looks; the desktop app's own window looks on its own server. `detection` skips the look. */
+  setupImport?: { client: SetupImportClient; detection?: SetupDetection } | null;
 }) {
   const { dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
-  const beats = beatsFor({ dictation: dictation ?? capabilities.dictation.available, reel, hosted });
+  const offer = useCloudBeatOffer(hosted, cloudOffer);
+  const importClient = setupImport === undefined ? (localSetupImport(hosted) ? setupImportApi : null) : setupImport?.client ?? null;
+  const [detection, setDetection] = useState<SetupDetection | null>(setupImport?.detection ?? null);
+  const [importResult, setImportResult] = useState<SetupImportResult | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const beats = beatsFor({ dictation: dictation ?? capabilities.dictation.available, reel, hosted, setupImport: detection !== null, cloud: offer !== null });
   const [beat, setBeat] = useState<BeatId>(() => (initialBeat && beats.includes(initialBeat) ? initialBeat : "hello"));
   const [mascot, setMascot] = useState<MausState>(MASCOT_FOR_BEAT[beat]);
   const [motion, setMotion] = useState<{ kind: Motion; key: number }>({ kind: "blink", key: 0 });
   const cardRef = useRef<HTMLDivElement>(null);
   const finishing = useRef(false);
+  const beatNow = useRef(beat);
 
   const bump = useCallback((kind: Motion) => setMotion((m) => ({ kind, key: m.key + 1 })), []);
 
-  // The entrance waits one frame. A spin issued in the same commit that
-  // mounts the avatar lands before its engine has drawn, and the face never
-  // comes back; the mascot gallery never hits this because its motions are
-  // always triggered on an avatar that is already on screen.
+  // One frame late: a motion issued in the avatar's mounting commit is lost.
   useEffect(() => {
     const frame = requestAnimationFrame(() => bump(entrance));
     return () => cancelAnimationFrame(frame);
@@ -125,12 +123,23 @@ export function WelcomeFlow({
   }, []);
 
   useEffect(() => {
+    beatNow.current = beat;
     track("onboarding_step", { step: beat, replay });
   }, [beat, replay]);
 
-  /** Move to another beat. The View Transitions API snapshots the old card,
-   * applies the state change synchronously, then animates named elements to
-   * their new place; without it (or under reduced motion) the swap is instant. */
+  // A Cloud sheet opened over the welcome never switches the window away from it (CloudAddDialog).
+  useEffect(() => (embedded ? undefined : showWelcome()), [embedded]);
+  // Looked for once, from the first beat; nothing found in time leaves the step out.
+  useEffect(() => {
+    if (!importClient || detection) return;
+    const look = detectSetupWithin(importClient);
+    void look.found.then((found) => {
+      if (found && BEFORE_IMPORT.includes(beatNow.current)) setDetection(found);
+    });
+    return look.cancel;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const go = useCallback(
     (target: BeatId) => {
       withViewTransition(() => {
@@ -147,16 +156,12 @@ export function WelcomeFlow({
       if (finishing.current) return;
       finishing.current = true;
       track("onboarding_completed", { reason, at: beat, replay });
-      // one release of the old browser-side gate, so a downgrade stays quiet
       setEmailGateDone("submitted");
-      // A slow/offline server must not trap the user behind the welcome card.
       onDone();
       try {
         const config = await api("/api/config", { method: "PUT", body: JSON.stringify(completionPatch()), signal: AbortSignal.timeout(10_000) });
         dispatch({ type: "configStatus", config });
       } catch {
-        // offline or a paired client without admin scope: the caller still
-        // closes the tour; it comes back next launch, which is the honest state
       }
     },
     [beat, dispatch, onDone, replay],
@@ -169,7 +174,6 @@ export function WelcomeFlow({
     else void finish("completed");
   }, [next, go, finish]);
 
-  // Escape skips the tour; Tab stays inside the card.
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -194,10 +198,6 @@ export function WelcomeFlow({
     }
   };
 
-  // Keyboard focus lands on the beat's first real control: an autofocused
-  // input where there is one, else the primary button. Never the card
-  // itself, which would draw the focus ring around the whole dialog, and
-  // never "Skip tour", which is first in the DOM but last in intent.
   useEffect(() => {
     const card = cardRef.current;
     if (!card || card.contains(document.activeElement)) return;
@@ -257,16 +257,23 @@ export function WelcomeFlow({
           )}
         </div>
 
-        {/* keyed so a beat's rise-in plays once per visit, never on re-render.
-            The engines list can outgrow a short window; that beat alone may
-            shrink so its list scrolls and the footer stays in view. Other
-            beats keep their height and the card scrolls instead. */}
         <div key={beat} className={cn("flex flex-col", beat === "engines" ? "min-h-0" : "shrink-0")}>
           {beat === "hello" && <HelloBeat {...beatProps} hosted={hosted} />}
           {beat === "reel" && <FeatureReel {...beatProps} />}
           {beat === "engines" && <EnginesBeat {...beatProps} hosted={hosted} onOpenOrganisation={onOpenOrganisation} />}
+          {beat === "import" && detection && importClient && (
+            <ImportBeat
+              {...beatProps}
+              detection={detection}
+              client={importClient}
+              result={importResult}
+              onResult={(result) => setImportResult((stored) => stored ?? result)}
+              onBusy={setImportBusy}
+            />
+          )}
           {beat === "permissions" && <PermissionsBeat {...beatProps} />}
           {beat === "phone" && <PhoneBeat {...beatProps} />}
+          {beat === "cloud" && offer && <CloudBeat {...beatProps} offer={offer} />}
           {beat === "bot" && (
             <MeetYourBotBeat
               bot={bot}
@@ -279,7 +286,7 @@ export function WelcomeFlow({
 
         <div className="mt-6 flex shrink-0 items-center justify-between">
           {previous ? (
-            <QuietButton onClick={() => go(previous)}>{t("onboarding.back")}</QuietButton>
+            <QuietButton onClick={() => go(previous)} disabled={importBusy} className="disabled:opacity-50">{t("onboarding.back")}</QuietButton>
           ) : (
             <span />
           )}

@@ -1,6 +1,3 @@
-// Templates → From {Organization}: the packages an organization's Admin
-// shares with this desktop (server/org-library.ts). Add is one click with no
-// confirmation; Details opens the same preview a shared file gets.
 import { Building2, Check, Loader2 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
@@ -31,7 +28,6 @@ export function OrgLibraryTab({
   onDetails,
 }: {
   listing: OrgLibraryListing & { organization: { id: string; name: string } };
-  /** The package being added or previewed. */
   busy: string | null;
   notice: string;
   error: string;

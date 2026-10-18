@@ -16,6 +16,8 @@
 #                                 bandwidth silently
 #   - assemble-then-publish    -> 0.1.24 sat as an invisible draft; a mac-only
 #                                 publish 404s the README's other buttons
+#   - module-scope gate        -> 0.1.108 would not start under a parent
+#                                 package.json saying "type": "commonjs" (#2770)
 #
 # One-time setup (repo secrets) is documented in docs/releasing.md.
 name: Release
@@ -104,9 +106,11 @@ jobs:
           fi
 
   ci:
-    # Ship only a commit whose own `CI` check (ci.yml's gate) passed. The wait
-    # overlaps the platform builds, so a green commit costs no time; a red or
-    # missing verdict stops the release before any draft exists. Main keeps
+    # Ship only a commit whose code passed `CI` (ci.yml's gate, vitest really
+    # run): its own run, a run on a commit with the same tree, or, for a
+    # version-only bump, its parent's (scripts/release-ci.mjs, docs/ci.md).
+    # The wait overlaps the platform builds, so a green commit costs no time;
+    # a red or missing verdict stops the release before any draft exists. Main keeps
     # one CI run going and one waiting, so a burst of merges can replace the
     # release commit's own run: scripts/release-ci.mjs then runs CI on the
     # commit in its own lane (a release-ci/v<version> branch no merge can
@@ -117,7 +121,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
-      # read CI runs and start CI in the release lane
+      # read CI runs, start CI in the release lane, and re-run jobs that
+      # never got a runner
       actions: write
       # create and delete the release-ci/v<version> branch
       contents: write
@@ -125,7 +130,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: scripts/release-ci.mjs
+          sparse-checkout: |
+            scripts/release-ci.mjs
+            scripts/ci-scope.mjs
           sparse-checkout-cone-mode: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -229,6 +236,7 @@ jobs:
             # regardless of the app binary's arch
             OMB_SMOKE_DIST="$res/server" node scripts/smoke-packaged-server.mjs \
               || { echo "::error::packaged server in $app failed to start"; exit 1; }
+            node scripts/check-module-scopes.mjs "$res" || exit 1
             node --input-type=module - "$res/server" <<'EOF'
           import { existsSync } from "node:fs";
           import { pathToFileURL } from "node:url";
@@ -344,6 +352,8 @@ jobs:
         run: |
           res=release/win-unpacked/resources
           [ -f "$res/server/index.js" ] || { echo "::error::missing server/index.js"; exit 1; }
+          [ -f "$res/server/desktop-entry.mjs" ] || { echo "::error::missing server/desktop-entry.mjs"; exit 1; }
+          node scripts/check-module-scopes.mjs "$res"
           [ -f "$res/ui/index.html" ] || { echo "::error::missing ui/index.html"; exit 1; }
           [ -f "$res/cloudflared/cloudflared.exe" ] || { echo "::error::missing cloudflared.exe"; exit 1; }
           [ -f "$res/licenses/cloudflared-LICENSE.txt" ] || { echo "::error::missing cloudflared license"; exit 1; }
@@ -447,6 +457,8 @@ jobs:
         env:
           OMB_SMOKE_DIST: /opt/OpenMausBot/resources/server
         run: node scripts/smoke-packaged-server.mjs --browser-bundle /opt/OpenMausBot/resources/browser-engine
+      - name: "Gate: packaged server and phone helper load as ES modules"
+        run: node scripts/check-module-scopes.mjs /opt/OpenMausBot/resources
       - name: Smoke the packages
         env:
           OMB_KEEP_SMOKE_DIR: "1"

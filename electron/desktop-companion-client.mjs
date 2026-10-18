@@ -1,9 +1,4 @@
-// Desktop companion client.
-//
-// The remote device credential stays in Electron's OS-encrypted credential
-// document. The renderer talks to this loopback-only relay with ordinary
-// same-origin fetch/EventSource calls; the relay injects the bearer and strips
-// browser-only headers before crossing the existing companion boundary.
+// The device credential stays in Electron's encrypted document; this loopback relay injects the bearer and strips browser-only headers.
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createServer } from "node:http";
@@ -18,9 +13,7 @@ const DEVICE_ID = /^[0-9a-f-]{36}$/i;
 const PAIRING_CODE = /^\d{6}$/;
 const MAX_ERROR_BYTES = 64 * 1024;
 
-/** Keep Electron's trusted-renderer boundary and companion client marker
- * together. The former was added upstream after client mode shipped; losing
- * either argument makes the renderer unsafe or makes a live relay look local. */
+/** Losing either argument makes the renderer unsafe or makes a live relay look local. */
 export function desktopCompanionRendererArguments(localOrigin, remoteAccess) {
   return [
     `--omb-local-origin=${localOrigin}`,
@@ -48,10 +41,10 @@ const cleanLabel = (value, fallback) => {
   return label || fallback;
 };
 
-/** Pairing tokens may travel through a verified OpenMausBot HTTPS endpoint or
- * an explicit Tailscale MagicDNS name. WireGuard protects cleartext HTTP on
- * the latter; accepting LAN IPs there would silently turn the long-lived
- * bearer into plaintext Wi-Fi traffic. */
+/** Only the control plane's `c-<32 hex>` names: any other name in those zones never receives a pairing code. Ship a new domain here first. */
+const MANAGED_COMPANION_HOSTNAME = /^c-[0-9a-f]{32}\.(?:openmausbot\.com|mausbot\.si)$/;
+
+/** HTTPS, or a Tailscale MagicDNS name (WireGuard protects its HTTP); a LAN IP would put the long-lived bearer on Wi-Fi in plaintext. */
 export function normalizeDesktopCompanionEndpoint(value) {
   let raw = String(value ?? "").trim();
   if (!raw) return "";
@@ -67,7 +60,7 @@ export function normalizeDesktopCompanionEndpoint(value) {
   const hostname = parsed.hostname.toLowerCase();
   const tailscaleHttp = parsed.protocol === "http:" && hostname.endsWith(".ts.net");
   const managedHttps =
-    parsed.protocol === "https:" && hostname.endsWith(".openmausbot.com");
+    parsed.protocol === "https:" && MANAGED_COMPANION_HOSTNAME.test(hostname);
   if (
     (!tailscaleHttp && !managedHttps) ||
     parsed.username ||
@@ -84,7 +77,6 @@ export function normalizeDesktopCompanionEndpoint(value) {
   return parsed.origin;
 }
 
-/** Compatibility name for code that labels the Tailscale form explicitly. */
 export const normalizeTailscaleCompanionEndpoint = normalizeDesktopCompanionEndpoint;
 export function desktopCompanionAccess(credentials) {
   const stored = credentials?.[DESKTOP_COMPANION_FIELD];

@@ -142,7 +142,6 @@ describe("organisation sign-in row in the welcome flow", () => {
     expect(html).toContain("Company models: 3");
     expect(html).not.toContain("ABCDE-FGHIJ");
     expect(onConnected).toHaveBeenCalledOnce();
-    // a heartbeat with the same state does not count again
     push(connected);
     expect(onConnected).toHaveBeenCalledOnce();
     expect(fetch).not.toHaveBeenCalled();
@@ -168,7 +167,6 @@ describe("organisation sign-in row in the welcome flow", () => {
     const html = render().html;
     expect(html).toContain("Signed in to Fixture Company");
     expect(html).toContain("No company models are available yet");
-    // already connected when the beat opened: nothing new to count
     expect(onConnected).not.toHaveBeenCalled();
   });
 

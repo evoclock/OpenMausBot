@@ -1,7 +1,4 @@
-// A room turn mounts the same agents server as a 1:1 turn, memory_update
-// included — so its system prompt must give the same write guidance. Pinned
-// against the real server because the two prompts are assembled inline in
-// two different places, and only the assembled bytes prove they agree.
+// Against the real server: the two prompts are assembled in two places, and only the assembled bytes prove they agree.
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";

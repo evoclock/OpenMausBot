@@ -160,4 +160,20 @@ describe("ChatGPT plan accounts over isolated HTTP", () => {
       expect(refused.body).not.toHaveProperty("auth");
     }
   });
+
+  it("renames and removes an added account, but never the built-in one", async () => {
+    const created = await api("POST", "/api/instances/chatgpt-accounts", { displayName: "Side plan" });
+    expect(created.status).toBe(201);
+    const id = created.body.instanceId as string;
+    const renamed = await api("PATCH", `/api/instances/${id}`, { displayName: "Client plan" });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+    expect(renamed.body.instances.find((row: { instanceId: string }) => row.instanceId === id).displayName).toBe("Client plan");
+    expect((await api("PATCH", `/api/instances/${id}`, { configDir: "/elsewhere" })).status).toBe(400);
+    expect((await api("DELETE", "/api/instances/chatgpt")).status).toBe(400);
+    const removed = await api("DELETE", `/api/instances/${id}`);
+    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+    expect(removed.body.instances.some((row: { instanceId: string }) => row.instanceId === id)).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, "config.json"), "utf8")).instances).not.toHaveProperty(id);
+    expect(JSON.parse(readFileSync(join(home, "config.json"), "utf8")).instances).toHaveProperty("chatgpt");
+  });
 });

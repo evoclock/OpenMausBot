@@ -1,16 +1,8 @@
-// Keyboard handling for a hand-rolled modal dialog: focus moves in when it
-// opens (unless a field inside already took it), Tab and Shift-Tab wrap inside
-// it, Escape closes it, and focus goes back to whatever opened it.
-//
-// Keys are heard on the dialog element itself, so an Escape the dialog uses
-// never reaches a page-level shortcut handler; one a field inside it already
-// handled (a picker closing its own list) is left alone.
 import { useEffect, useRef, type RefObject } from "react";
 
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/** The dialog element should carry `tabIndex={-1}` so it can take focus when
- * it has no field to start in. Bind it for as long as the dialog is mounted. */
+/** The dialog element needs `tabIndex={-1}` so it can take focus when it has no field to start in. */
 export function useModalDialog(dialogRef: RefObject<HTMLElement | null>, onClose: () => void) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;

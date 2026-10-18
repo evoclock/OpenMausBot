@@ -119,7 +119,6 @@ describe("Antigravity sign-in lifecycle", () => {
     try {
       await expect(instance.installRuntime!()).rejects.toThrow("fixture failure");
       expect(await instance.snapshot()).toEqual({ state: "unavailable", reason: "Antigravity initialization timed out: fixture failure" });
-      // Independent refreshes (including reopening the card) keep the cause.
       expect((await instance.snapshot()).reason).toContain("fixture failure");
       // A manual/shared install can recover without this instance retrying.
       copyFileSync(fake.executable, custom);
@@ -168,8 +167,7 @@ describe("Antigravity sign-in lifecycle", () => {
     }
   });
 
-  // Google's server announces the link on stderr, never stdout — a fake that
-  // prints to stdout passes against code that cannot sign in at all.
+  // Google's server announces the link on stderr, never stdout.
   it.each(["cancel", "provider failure"])("contains %s after handing the browser a sign-in URL", async (ending) => {
     const fake = fakeRuntime();
     const url = "https://accounts.google.com/o/oauth2/v2/auth?response_type=code&state=fixture&redirect_uri=http%3A%2F%2F127.0.0.1%3A54321%2F";
@@ -219,8 +217,7 @@ describe("stopping the runtime before touching its files", () => {
   }, 20_000);
 
   it("ends the runtime's input and lets it exit by itself before any forced stop", async () => {
-    // On Windows a forced stop skips the runtime's own cleanup of the
-    // 0.34-1.26 GB it unpacked. An exit of its own removes them.
+    // On Windows a forced stop skips the runtime's cleanup of what it unpacked; its own exit removes them.
     const fake = fakeRuntime();
     const runtime = await resolveAntigravityRuntime(fake.executable);
     const profile = await prepareAntigravityProfile({ instanceId: "graceful-close", runtime, baseDir: fake.directory });
@@ -265,7 +262,6 @@ describe("stopping the runtime before touching its files", () => {
     expect(client.child.exitCode).toBeNull();
     expect(await client.closeAndWait()).toBe(true);
     expect(client.child.exitCode !== null || client.child.signalCode !== null).toBe(true);
-    // idempotent, and immediate the second time
     expect(await client.closeAndWait(100)).toBe(true);
   });
 });
@@ -281,12 +277,6 @@ describe("official Antigravity runtime", () => {
     expect(asset.archiveBytes).toBeGreaterThan(100_000_000);
   });
 
-  /**
-   * Verifies that isValidAntigravityInitializeResult correctly validates initialization
-   * responses from official Google Antigravity releases and rejects invalid responses.
-   *
-   * @returns {void}
-   */
   function testValidatesAcpInitializeResults() {
     const basePayload = {
       protocolVersion: 1,
@@ -299,50 +289,41 @@ describe("official Antigravity runtime", () => {
       authMethods: [{ id: "oauth-personal" }],
     };
 
-    // Standard semver version from official agent.json manifest
     expect(isValidAntigravityInitializeResult(basePayload, "agy_acp_server_1.1.1")).toBe(true);
     expect(isValidAntigravityInitializeResult(basePayload, "1.1.1")).toBe(true);
 
-    // With binary release tag as version
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentInfo: { name: "antigravity-acp", version: "agy_acp_server_1.1.1" },
     }, "agy_acp_server_1.1.1")).toBe(true);
 
-    // With official display name from manifest
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentInfo: { name: "Google Antigravity", version: "1.1.1" },
     }, "agy_acp_server_1.1.1")).toBe(true);
 
-    // Rejects mismatched protocol version
     expect(isValidAntigravityInitializeResult({ ...basePayload, protocolVersion: 2 }, "1.1.1")).toBe(false);
 
-    // Rejects unexpected agent name
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentInfo: { name: "rogue-agent", version: "1.1.1" },
     }, "1.1.1")).toBe(false);
 
-    // Rejects mismatched version
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentInfo: { name: "antigravity-acp", version: "2.0.0" },
     }, "1.1.1")).toBe(false);
 
-    // Rejects missing required capabilities
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentCapabilities: { loadSession: false, sessionCapabilities: { resume: true }, auth: { logout: true } },
     }, "1.1.1")).toBe(false);
 
-    // Rejects missing oauth-personal auth method
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       authMethods: [{ id: "api-key" }],
     }, "1.1.1")).toBe(false);
 
-    // Rejects non-string versions
     expect(isValidAntigravityInitializeResult({
       ...basePayload,
       agentInfo: { name: "antigravity-acp", version: 1 },
@@ -352,15 +333,13 @@ describe("official Antigravity runtime", () => {
       agentInfo: { name: "antigravity-acp", version: null },
     }, "1.1.1")).toBe(false);
 
-    // Handles null / undefined gracefully
     expect(isValidAntigravityInitializeResult(null, "1.1.1")).toBe(false);
     expect(isValidAntigravityInitializeResult(undefined, "1.1.1")).toBe(false);
   }
 
   it("validates ACP initialize results from official Antigravity releases", testValidatesAcpInitializeResults);
 
-  // Captured from the SHA-256-pinned Google 1.1.1 macOS arm64 binary in an
-  // isolated, unauthenticated profile. Optional operations are objects, not true.
+  // Captured from the SHA-256-pinned Google 1.1.1 macOS arm64 binary, unauthenticated: optional operations are objects.
   const officialInitialize = {
     protocolVersion: 1,
     agentInfo: { name: "antigravity-acp", title: "Google Antigravity", version: "agy_acp_server_1.1.1" },
@@ -575,9 +554,7 @@ describe("official Antigravity runtime", () => {
     expect(first.environment.TMP).toBe(expected);
     expect(Object.keys(first.environment).filter((key) => /^(?:temp|tmp)$/iu.test(key)).sort()).toEqual(["TEMP", "TMP"]);
     expect(statSync(expected).isDirectory()).toBe(true);
-    // Stable across launches: the pool's spawn contract hashes this environment.
     expect(again.environment).toEqual(first.environment);
-    // Beside the profile, never inside it (Windows paths stop at 260 characters).
     expect(expected.startsWith(join(fake.directory, "tmp", "agy"))).toBe(true);
     expect(expected.startsWith(first.directory)).toBe(false);
     const other = await prepareAntigravityProfile({ ...input, instanceId: "personal" });
@@ -661,8 +638,6 @@ describe("Antigravity OAuth validation", () => {
   });
 
   it("reads the sign-in link from either announcement Google makes", () => {
-    // The $BROWSER helper re-emits the link JSON-encoded behind this marker;
-    // the plain notice is what a terminal user would have read.
     expect(authorizationUrlFromLine(`__OPENMAUS_ANTIGRAVITY_AUTH_URL__${JSON.stringify(authorizationUrl)}`))
       .toBe(authorizationUrl);
     expect(authorizationUrlFromLine(`${ANTIGRAVITY_AUTH_PREFIX}${authorizationUrl}`)).toBe(authorizationUrl);
@@ -704,6 +679,7 @@ describe("Antigravity driver over shared ACP", () => {
     expect(antigravityPermissionMode(false, "ask")).toBe("default");
     expect(antigravityPermissionMode(false, "auto")).toBe("default");
     expect(antigravityPermissionMode(false, "edits")).toBe("auto_edit");
+    expect(antigravityPermissionMode(false, "full")).toBe("yolo");
     expect(antigravityPermissionMode(true)).toBe("yolo");
     expect(antigravityPermissionMode(true, "edits")).toBe("yolo");
   });
@@ -754,8 +730,6 @@ describe("Antigravity driver over shared ACP", () => {
     expect(dumpState.env.GEMINI_HOME).toBe(antigravityProfileDirectory(instanceId));
     expect(dumpState.env.GEMINI_API_KEY).toBeUndefined();
     expect(dumpState.env.GOOGLE_API_KEY).toBeUndefined();
-    // Nothing yet says this account offers the model, so the session is
-    // not started on it: the switch is what checks it.
     expect(dumpState.env.AGY_ACP_DEFAULT_MODEL).toBeUndefined();
     const calls = JSON.parse(readFileSync(`${dump}.config.json`, "utf8"));
     expect(calls).toEqual([
@@ -764,16 +738,11 @@ describe("Antigravity driver over shared ACP", () => {
     ]);
     const mcp = JSON.parse(readFileSync(`${dump}.mcp.json`, "utf8"));
     expect(mcp).toEqual([{ name: "docs", command: "docs-mcp", args: ["serve"], env: [{ name: "TOKEN", value: "scoped" }] }]);
-    // The real launch path on Windows unpacks into OMB's own folder. Checked
-    // on every OS, so the macOS and Linux runs prove the dump carries TEMP.
+    // Checked on every OS, so the macOS and Linux runs prove the dump carries TEMP.
     const expectedTemp = process.platform === "win32" ? antigravityTempDir(DATA_DIR, instanceId) : fake.directory;
     expect([dumpState.env.TEMP, dumpState.env.TMP]).toEqual([expectedTemp, expectedTemp]);
   });
 
-  // Google's server reads AGY_ACP_DEFAULT_MODEL for a new session (checked
-  // against agy_acp_server 1.1.1). Without it every new conversation paid a
-  // model switch that re-fetches the account's models: 1.3-1.8 s measured.
-  // An approval change used to respawn the process: 7-10 s on a Mac.
   it("keeps one process across approval and model changes, starting on OMB's model", async () => {
     ensureDirs();
     const fake = fakeRuntime();
@@ -819,10 +788,6 @@ describe("Antigravity driver over shared ACP", () => {
     ]);
   });
 
-  // Measured on agy_acp_server 1.1.1: any id in AGY_ACP_DEFAULT_MODEL is
-  // taken unchecked (even "bogus-model-xyz"), while the model switch refuses
-  // one the account cannot use with -32602. Starting sessions on a saved
-  // model the account never offered skipped that check.
   it("never starts a session on a model this account has not offered", async () => {
     ensureDirs();
     const fake = fakeRuntime();
@@ -858,7 +823,6 @@ describe("Antigravity driver over shared ACP", () => {
       expect(events.find((event) => event.type === "runtime.error")).toMatchObject({ message: expect.stringContaining(model) });
       expect(events.some((event) => event.type === "item.completed" && event.itemType === "assistant_text")).toBe(false);
     }
-    // an offered one still starts on the session's own model
     expect((await run("thread-offered", "gemini-3.8-flash-low")).done).toMatchObject({ ok: true });
     expect(JSON.parse(readFileSync(dump, "utf8")).env.AGY_ACP_DEFAULT_MODEL).toBe("gemini-3.8-flash-low");
   });
@@ -896,10 +860,6 @@ describe("Antigravity driver over shared ACP", () => {
     )).toBe(true);
   });
 
-  // An approval change keeps the pooled process (sessionScopedApproval), so
-  // the permission mode has to come from each turn: a resumed session must
-  // never run under a looser mode an earlier turn left on it. The fake
-  // records the mode each prompt actually ran under.
   it("runs each turn of a pooled, resumed session under that turn's own permission mode", async () => {
     ensureDirs();
     const fake = fakeRuntime();
@@ -922,7 +882,6 @@ describe("Antigravity driver over shared ACP", () => {
         FAKE_ACP_LAUNCH_COUNT_FILE: launches,
       },
       enabled: true,
-      // the legacy instance flag must never outrank a turn's own mode
       config: { cli: fake.executable, fullAuto: true },
     });
     recorder = recordEvents(instance.adapter);
@@ -939,8 +898,7 @@ describe("Antigravity driver over shared ACP", () => {
         approvalMode,
         model: "gemini-3.8-flash-high",
         cwd: fake.directory,
-        // The harness mints fresh MCP credentials every turn, so each later
-        // turn resumes the recorded session on the pooled process.
+          // The harness mints fresh MCP credentials every turn, so later turns resume on the pooled process.
         ...(index ? { resumeCursor: "fake-acp-session" } : {}),
         integrations: { agents: { command: "agents-mcp", args: [], env: { TOKEN: `turn-${index}` } } },
       });
@@ -948,7 +906,6 @@ describe("Antigravity driver over shared ACP", () => {
       expect(promptModes()).toHaveLength(index + 1);
       expect([approvalMode, promptModes().at(-1)]).toEqual([approvalMode, native]);
     }
-    // one process throughout, each later turn resumed on it
     expect(Number(readFileSync(launches, "utf8"))).toBe(1);
     expect((JSON.parse(readFileSync(rpcDump, "utf8")) as string[]).filter((method) => method === "session/resume"))
       .toHaveLength(sequence.length - 1);
@@ -1002,15 +959,11 @@ describe("Antigravity driver over shared ACP", () => {
       // The owner switches to Ask; the runtime does not confirm the switch.
       writeFileSync(modeAck, answer);
       expect(await run("ask", 1)).toMatchObject({ ok: false });
-      // nothing ran under the looser mode the session still holds
       expect(promptModes()).toEqual(["yolo"]);
       writeFileSync(modeAck, "");
-      // and that process is gone: the next turn gets a fresh one
       expect(await run("ask", 2)).toMatchObject({ ok: true });
       expect(promptModes()).toEqual(["yolo", "default"]);
       expect(Number(readFileSync(launches, "utf8"))).toBe(2);
-      // With automatic recovery on, the harness gets the turn back unstarted
-      // and retries it on a fresh process instead of a failed reply.
       expect(await run("full", 3)).toMatchObject({ ok: true });
       writeFileSync(modeAck, answer);
       await expect(turn("ask", 4, true)).rejects.toBeInstanceOf(TurnNotStartedError);
@@ -1023,12 +976,17 @@ describe("Antigravity driver over shared ACP", () => {
   );
 
   it.each([
-    ["question", undefined],
-    ["question", "full"],
-    ["permission", "full"],
-  ] as const)("keeps Antigravity %s requests interactive with mode %s", async (requestKind, approvalMode) => {
+    ["question", undefined, undefined],
+    ["question", "full", undefined],
+    ["permission", "full", undefined],
+    ["permission", "ask", "CommandLine"],
+    ["permission", "ask", "conflicting commands"],
+  ] as const)("keeps Antigravity %s requests interactive with mode %s and input %s", async (requestKind, approvalMode, commandInput) => {
     ensureDirs();
     const fake = fakeRuntime();
+    const command = "  printf 'synthetic permission'\n  pwd  ";
+    const commandCwd = join(fake.directory, "native-shell");
+    if (commandInput) mkdirSync(commandCwd);
     const instanceId = "antigravity-question";
     const tokenDirectory = join(antigravityProfileDirectory(instanceId), "antigravity-acp");
     mkdirSync(tokenDirectory, { recursive: true });
@@ -1042,6 +1000,12 @@ describe("Antigravity driver over shared ACP", () => {
         FAKE_ACP_AUTH_METHOD: "oauth-personal",
         FAKE_ACP_MODELS: "gemini-3.8-flash-high",
         FAKE_ACP_MODES: "default,yolo",
+        ...(commandInput ? { FAKE_ACP_PERMISSION_TOOL_CALL: JSON.stringify({
+          kind: "execute", title: "Truncated command preview", rawInput: {
+            CommandLine: command, Cwd: commandCwd,
+            ...(commandInput === "conflicting commands" ? { command: "different command" } : {}),
+          },
+        }) } : {}),
       },
       enabled: true,
       config: { cli: fake.executable, fullAuto: true },
@@ -1050,6 +1014,7 @@ describe("Antigravity driver over shared ACP", () => {
     await instance.adapter.sendTurn({ threadId: "thread-question", text: "ask me", cwd: fake.directory, approvalMode });
     const opened = await recorder.until((event) => event.type === "request.opened");
     expect(opened).toMatchObject({ requestType: requestKind });
+    if (commandInput) expect(opened).toHaveProperty("command", commandInput === "CommandLine" ? { command, cwd: commandCwd } : undefined);
     if (requestKind === "question") expect(opened).toMatchObject({ summary: "Which color?", choices: ["Blue", "Green"] });
     await instance.adapter.respondToRequest("thread-question", (opened as { requestId: string }).requestId, {
       behavior: requestKind === "question" ? "answer" : "allow",

@@ -53,7 +53,6 @@ describe("pinned attention panel", () => {
     expect(markup).toContain("Review permission");
     expect(markup).toContain("Atlas");
     expect(markup).toContain('data-testid="sidebar-attention-panel"');
-    // the inline section reuses the popover rows, labels and all
     const label = t("attention.item", { title: "Review permission", name: "Atlas", status: t("task.waiting") });
     expect(markup).toContain('aria-label="' + label + '"');
   });

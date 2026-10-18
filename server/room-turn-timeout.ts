@@ -1,22 +1,46 @@
+import {
+  MAX_ROOM_TURN_TIMEOUT_MINUTES,
+  MIN_ROOM_TURN_TIMEOUT_MINUTES,
+} from "./config.ts";
+
 export function roomTurnTimeoutMs(minutes: number): number {
   return minutes * 60_000;
 }
 
-/**
- * One room turn's slice of the configured room ceiling.
- *
- * Counts work, not wall time: the clock holds while the turn is parked on
- * an approval or question card (request.opened → request.resolved) —
- * waiting on a person is not work, and stopping the turn under an open
- * card manufactures the stranded-approval state the harness otherwise has
- * to repair after the fact. Streaming, tool runs, and provider latency
- * still burn the budget normally; a turn that goes silent entirely is
- * separately caught by the stall watchdog.
- *
- * Requests pair opened→resolved per thread, but resolves can also arrive
- * for cards this turn never opened (stale cleanup after an interrupt), so
- * the count clamps at zero instead of trusting perfect pairing.
- */
+export function parseConversationTurnTimeout(
+  value: unknown,
+): { ok: true; minutes: number | null } | { ok: false; error: string } {
+  if (value === null) return { ok: true, minutes: null };
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < MIN_ROOM_TURN_TIMEOUT_MINUTES ||
+    value > MAX_ROOM_TURN_TIMEOUT_MINUTES
+  ) {
+    return {
+      ok: false,
+      error: "Turn limit must be a whole number from 1 to 1,440, or null to use the group default.",
+    };
+  }
+  return { ok: true, minutes: value };
+}
+
+export function effectiveRoomTurnTimeoutMinutes(
+  globalMinutes: number,
+  override: number | null | undefined,
+): number {
+  if (
+    typeof override === "number" &&
+    Number.isInteger(override) &&
+    override >= MIN_ROOM_TURN_TIMEOUT_MINUTES &&
+    override <= MAX_ROOM_TURN_TIMEOUT_MINUTES
+  ) {
+    return override;
+  }
+  return globalMinutes;
+}
+
+/** Counts work, not wall time: the clock holds while the turn waits on a card, and stray resolves clamp the count at zero. */
 export class RoomTurnDeadline {
   private remainingMs: number;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -26,20 +50,16 @@ export class RoomTurnDeadline {
   private armedAt = 0;
   private fire: () => void;
 
-  // plain field assignments, not parameter properties — the server runs
-  // under Node's type-stripping, which cannot transform the latter
+  // No parameter properties: Node's type-stripping cannot transform them.
   constructor(minutes: number, fire: () => void) {
     this.remainingMs = roomTurnTimeoutMs(minutes);
     this.fire = fire;
   }
 
-  /** Begin counting down the budget. */
   start(): void {
     this.arm();
   }
 
-  /** request.opened → true (a person is deciding; hold however long they take),
-   * request.resolved → false (the budget resumes where it left off). */
   setWaitingOnHuman(waiting: boolean): void {
     if (this.stopped || this.fired) return;
     if (waiting) {
@@ -52,7 +72,6 @@ export class RoomTurnDeadline {
     }
   }
 
-  /** The turn settled — cancel whatever remains. Idempotent. */
   stop(): void {
     this.stopped = true;
     if (this.timer !== null) {
@@ -66,8 +85,7 @@ export class RoomTurnDeadline {
     this.remainingMs -= Date.now() - this.armedAt;
     clearTimeout(this.timer);
     this.timer = null;
-    // A delayed event loop can deliver the card event after the deadline
-    // already passed; a person's wait must not extend an exhausted budget.
+    // A delayed event loop can deliver the card event after the deadline: a person's wait must not extend an exhausted budget.
     if (this.remainingMs <= 0) this.expired();
   }
 
@@ -91,7 +109,6 @@ export class RoomTurnDeadline {
   }
 }
 
-/** Completes the active room turn when its activity watchdog stalls. */
 export class RoomTurnStallRegistry {
   private handlers = new Map<string, () => void>();
 

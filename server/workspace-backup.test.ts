@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gzipSync } from "node:zlib";
 import { Header } from "tar";
+import { openRuntimeStore } from "./runtime/store.ts";
+import type { Assignment } from "./runtime/types.ts";
 import { SessionRegistry } from "./sessions.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -15,6 +17,21 @@ import {
 
 const PASSWORD = "correct horse battery staple";
 const AVATAR_BYTES = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+const RUNTIME_ROW: Assignment = {
+  id: "handoff", rootId: "handoff", depth: 0,
+  origin: { kind: "person", source: "chat", quote: "Ship it" },
+  requester: { kind: "person", threadId: "thread" },
+  assignee: { botId: "bot", destination: { kind: "standing_thread", threadId: "thread" } },
+  mode: "work", reply: "resume", brief: "Ship it", status: "completed", outcome: "done", level: "ask", levelSource: "own",
+  executions: 1, restarts: 0, createdAt: 1_000, lastActivityAt: 2_000, finishedAt: 2_000, result: "Built", rework: false, version: 1,
+};
+const RUNTIME_LIVE_ROW: Assignment = {
+  ...RUNTIME_ROW, id: "live", rootId: "live", status: "running", executions: 1, restarts: 0, restart: "rerun", result: "",
+  question: undefined, createdAt: 3_000, lastActivityAt: 3_000, startedAt: 3_000,
+};
+delete (RUNTIME_LIVE_ROW as { outcome?: unknown }).outcome;
+delete (RUNTIME_LIVE_ROW as { finishedAt?: unknown }).finishedAt;
+delete (RUNTIME_LIVE_ROW as { question?: unknown }).question;
 const scratch: string[] = [];
 function directory(): string {
   const path = mkdtempSync(join(tmpdir(), "omb-workspace-backup-"));
@@ -30,12 +47,17 @@ function fixture(root: string): DatabaseSync {
   mkdirSync(join(root, "task-workspaces", "bot", "thread"), { recursive: true });
   writeFileSync(join(root, "task-workspaces", "bot", "thread", "binary.bin"), Buffer.alloc(2 * 1024 * 1024, 0xa5));
   json(join(root, "config.json"), { language: "ja", instances: { custom: { driver: "claudeAgent", config: { configDir: join(root, "providers", "account") } } }, apiKey: "private-key-in-config" });
-  json(join(root, "bots.json"), [{ id: "bot", threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread"), soul: `Do not rewrite this prose mentioning ${root}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle", voice: "source-provider-voice", tasks: [{ threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread") }] }]);
+  json(join(root, "bots.json"), [{ id: "bot", threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread"), soul: `Each morning read ${root}/notes.md.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle", voice: "source-provider-voice", tasks: [{ threadId: "thread", cwd: join(root, "task-workspaces", "bot", "thread") }] }]);
   json(join(root, "groups.json"), [{ id: "room", memberIds: ["bot"], cwd: "/external/project" }]);
   json(join(root, "routines.json"), { version: 1, routines: [{ id: "routine", enabled: true }], runs: [{ id: "waiting", status: "queued" }, { id: "historical", status: "completed" }] });
   json(join(root, "webhooks.json"), { version: 1, webhooks: [{ id: "hook", endpointId: "endpoint", enabled: true, secretHash: "a".repeat(64) }], deliveries: [{ id: "delivery" }] });
   json(join(root, "calendar-calls.json"), { version: 1, calls: [{ id: "call", nextRunAt: 100 }] });
   json(join(root, "delegations.json"), { thread: [{ id: "pending" }] });
+  const runtime = openRuntimeStore(join(root, "runtime.db"));
+  try {
+    runtime.insert(RUNTIME_ROW, { kind: "enqueued", at: RUNTIME_ROW.createdAt });
+    runtime.insert(RUNTIME_LIVE_ROW, { kind: "started", at: RUNTIME_LIVE_ROW.createdAt });
+  } finally { runtime.close(); }
   json(join(root, "delegation-receipts.json"), [{ id: "receipt" }]);
   json(join(root, "sessions.json"), { identity: "source-session" });
   json(join(root, "cloud-owner.json"), { identity: "source-owner-record" });
@@ -44,6 +66,8 @@ function fixture(root: string): DatabaseSync {
   writeFileSync(join(root, "tools", "downloaded"), "reinstallable");
   mkdirSync(join(root, "decider-log"));
   writeFileSync(join(root, "decider-log", "2026-09.ndjson"), '{"seam":"roomRouting"}\n');
+  mkdirSync(join(root, "evidence", "thread", "turn-0001"), { recursive: true });
+  writeFileSync(join(root, "evidence", "thread", "turn-0001", "step-000001.jpg"), "a page screenshot");
   const db = new DatabaseSync(join(root, "messages.db"));
   db.exec("PRAGMA journal_mode=WAL; CREATE TABLE messages(thread_id TEXT, id TEXT, text TEXT, json TEXT, PRIMARY KEY(thread_id,id)); CREATE TABLE thread_state(thread_id TEXT PRIMARY KEY, active_leaf_id TEXT);");
   const message = {
@@ -77,18 +101,38 @@ function tarEntry(path: string, type: "File" | "Directory" | "SymbolicLink" | "L
   const body = Buffer.from(content);
   return Buffer.concat([block, body, Buffer.alloc((512 - body.length % 512) % 512)]);
 }
+function caseSensitiveTempFolder(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), "omb-case-probe-"));
+  try {
+    writeFileSync(join(probe, "probe"), "");
+    return !existsSync(join(probe, "PROBE"));
+  } finally { rmSync(probe, { recursive: true, force: true }); }
+}
 afterEach(() => { for (const root of scratch.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("encrypted full workspace backups", () => {
+  it("leaves Sync with My Cloud's own records out of a backup", async () => {
+    const source = directory();
+    mkdirSync(join(source, "sync", "trash"), { recursive: true });
+    writeFileSync(join(source, "sync", "folders.json"), "[]");
+    writeFileSync(join(source, "notes.md"), "kept");
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    const manifest = readJson(join(target, ".backups", staged.id, "staged", "manifest.json"));
+    expect(manifest.entries.some((entry: { path: string }) => entry.path === "sync" || entry.path.startsWith("sync/"))).toBe(false);
+    expect(manifest.entries.some((entry: { path: string }) => entry.path === "notes.md")).toBe(true);
+  });
+
   it("round-trips WAL conversations, binary files, drafts and IDs; preserves destination identity and connections", async () => {
     const source = directory();
     const db = fixture(source);
-    // Production closes its sole live message handle after draining writes,
-    // while the maintenance gate is held. No server mutation can reopen it.
+    // Production closes its sole message handle after draining writes, while the maintenance gate is held.
     db.close();
     try {
       json(join(source, "team-computers.json"), { version: 1, environmentId: "source-environment", computers: [{ id: "source-computer", name: "Source desktop", section: "Design" }] });
       const originalDb = readFileSync(join(source, "messages.db"));
+      const originalRuntimeDb = readFileSync(join(source, "runtime.db"));
       const exported = await createWorkspaceBackup(source, {
         password: PASSWORD, appVersion: "test",
         clientState: { "omb-drafts": '{"thread":"unsent"}', "omb-draft-attachments": JSON.stringify({ thread: [{ kind: "file", path: join(source, "attachments", "image.png") }] }) },
@@ -99,6 +143,7 @@ describe("encrypted full workspace backups", () => {
       expect(encrypted.includes(Buffer.from("private-secret"))).toBe(false);
       expect(encrypted.includes(Buffer.from("private-key-in-config"))).toBe(false);
       expect(readFileSync(join(source, "messages.db"))).toEqual(originalDb);
+      expect(readFileSync(join(source, "runtime.db"))).toEqual(originalRuntimeDb);
       const target = directory();
       const connections = { xai: { key: "destination-key", url: "https://destination.example" }, instances: { local: { driver: "claudeAgent", config: { configDir: join(target, "providers", "local") } } } };
       json(join(target, "config.json"), { ...connections, language: "en" });
@@ -118,6 +163,7 @@ describe("encrypted full workspace backups", () => {
       const data = join(target, ".backups", staged.id, "staged", "data");
       expect(existsSync(join(data, "team-computers.json"))).toBe(false);
       expect(existsSync(join(data, "bots.json"))).toBe(true);
+      expect(existsSync(join(data, "runtime.db"))).toBe(true);
       expect(existsSync(join(data, "cloud-owner.json"))).toBe(false);
       expect(readJson(join(data, "config.json"))).toEqual({ language: "ja" });
       expect(readJson(join(data, "webhooks.json")).webhooks[0]).not.toHaveProperty("secretHash");
@@ -126,14 +172,13 @@ describe("encrypted full workspace backups", () => {
       const result = applyPendingWorkspaceRestore(target);
       expect(result).toMatchObject({ restored: true, id: staged.id });
       const restoredBot = readJson(join(target, "bots.json"))[0];
-      expect(restoredBot).toMatchObject({ id: "bot", cwd: join(target, "task-workspaces", "bot", "thread"), soul: `Do not rewrite this prose mentioning ${source}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle" });
+      expect(restoredBot).toMatchObject({ id: "bot", cwd: join(target, "task-workspaces", "bot", "thread"), soul: `Each morning read ${join(target, "notes.md")}.`, avatarUrl: "/api/attachments/avatar.png", avatarCrop: "circle" });
       expect(restoredBot).not.toHaveProperty("voice");
       expect(readFileSync(join(target, restoredBot.avatarUrl.slice("/api/".length)))).toEqual(AVATAR_BYTES);
       expect(readJson(join(target, "groups.json"))[0].cwd).toBe("/external/project");
       expect(readJson(join(target, "config.json"))).toEqual({ ...connections, language: "ja" });
       expect(readFileSync(join(target, "task-workspaces", "bot", "thread", "binary.bin"))).toEqual(Buffer.alloc(2 * 1024 * 1024, 0xa5));
       expect(readJson(join(target, "sessions.json"))).toEqual({ identity: "target-session" });
-      // A Cloud home's record of its owner is this machine's: never carried, kept in place.
       expect(readJson(join(target, "cloud-owner.json"))).toEqual({ identity: "target-owner-record" });
       expect(readJson(join(target, "team-computers.json"))).toEqual(targetComputers);
       expect(readFileSync(join(target, "environment-id"), "utf8")).toBe("target-environment");
@@ -141,8 +186,8 @@ describe("encrypted full workspace backups", () => {
       expect(existsSync(join(target, "messages.db-wal"))).toBe(false);
       expect(readFileSync(join(result.safetyCopyPath!, "data", "messages.db-wal"), "utf8")).toBe("old database WAL must not enter the new DB");
       expect(existsSync(join(target, "tools"))).toBe(false);
-      // this machine's decision-model log stays on this machine
       expect(existsSync(join(target, "decider-log"))).toBe(false);
+      expect(existsSync(join(target, "evidence"))).toBe(false);
       expect(readJson(join(result.safetyCopyPath!, "data", "bots.json"))).toEqual([{ id: "old" }]);
       const restoredDb = new DatabaseSync(join(target, "messages.db"), { readOnly: true });
       try {
@@ -167,6 +212,16 @@ describe("encrypted full workspace backups", () => {
       expect(readJson(join(target, "webhooks.json")).webhooks[0].secretHash).not.toBe("a".repeat(64));
       expect(readJson(join(target, "calendar-calls.json")).calls[0].nextRunAt).toBeNull();
       expect(readJson(join(target, "delegations.json"))).toEqual({});
+      expect(existsSync(join(target, "runtime.db-wal"))).toBe(false);
+      const restoredRuntime = new DatabaseSync(join(target, "runtime.db"), { readOnly: true });
+      try {
+        const rows = restoredRuntime.prepare("SELECT json FROM assignments ORDER BY created_at").all().map((row) => JSON.parse(String(row.json)));
+        expect(rows[0]).toEqual(RUNTIME_ROW);
+        expect(rows[1]).toMatchObject({ id: "live", status: "failed", outcome: "interrupted", result: "Not resumed after workspace restore." });
+        expect(rows[1]).not.toHaveProperty("restart");
+        expect(restoredRuntime.prepare("SELECT status FROM assignments WHERE id = 'live'").get()).toEqual({ status: "failed" });
+        expect(restoredRuntime.prepare("SELECT kind FROM assignment_events ORDER BY id").all().map((row) => row.kind)).toEqual(["enqueued", "started", "settled"]);
+      } finally { restoredRuntime.close(); }
       expect(readJson(join(target, "delegation-receipts.json"))).toEqual([{ id: "receipt" }]);
       const receipt = readLastWorkspaceRestore(target)!;
       expect(receipt.id).toBe(staged.id);
@@ -193,6 +248,67 @@ describe("encrypted full workspace backups", () => {
         { id: "pending", status: "interrupted" }, { id: "dispatching", status: "interrupted" }, { id: "cancelled", status: "cancelled" },
       ]);
     } finally { db.close(); }
+  });
+
+  // A Windows PC moves to a Linux Cloud; restored on Windows, its paths are this computer's own and are kept.
+  it.skipIf(process.platform === "win32")("brings a Windows computer's data folder over wherever it is written, and clears and lists the folders and files left on that PC", async () => {
+    const source = directory();
+    const windows = "C:\\Users\\Ada\\.openmausbot", site = "C:\\Users\\Ada\\Projects\\site";
+    const soul = `Read ${windows}\\files\\brief.md before you start.`;
+    json(join(source, "bots.json"), [
+      { id: "bot", threadId: "thread", cwd: site, soul, tasks: [
+        { threadId: "thread", cwd: "c:\\users\\ada\\.openmausbot\\task-workspaces\\bot\\thread", resumeCursors: { claude: "kept" } },
+        { threadId: "other", cwd: site, resumeCursors: { claude: "only-on-that-pc" } },
+      ] },
+      { id: "helper", threadId: "helper-thread", soul: "No paths here.", tasks: [{ threadId: "helper-thread", cwd: null }] },
+    ]);
+    json(join(source, "groups.json"), [{ id: "room", memberIds: ["bot"], cwd: "C:\\Users\\Ada\\Shared", bulletin: `Shared notes live in ${windows}\\files.` }]);
+    const prompt = `Each morning read ${windows}\\files\\brief.md, compare it with C:\\Users\\Ada\\Desktop\\x.docx, and save ${windows}\\files\\out\\report.md.`;
+    json(join(source, "routines.json"), { version: 1, routines: [{ id: "routine", botId: "bot", enabled: true, prompt }], runs: [] });
+    mkdirSync(join(source, "workspaces", "bot", "memory"), { recursive: true });
+    writeFileSync(join(source, "workspaces", "bot", "MEMORY.md"),
+      "- The brief: c:\\users\\ada\\.openmausbot\\files\\brief.md\n- Drafts go to C:/Users/Ada/.openmausbot/files/drafts/\n- C:\\Users\\Ada\\.openmausbot-old\\notes.md is an old copy\n");
+    writeFileSync(join(source, "workspaces", "bot", "memory", "people.md"), "Ada prefers short replies.\n");
+    mkdirSync(join(source, "bots", "bot"), { recursive: true });
+    writeFileSync(join(source, "bots", "bot", "SOUL.md"), soul);
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    const manifest = join(target, ".backups", staged.id, "staged", "manifest.json");
+    json(manifest, { ...readJson(manifest), sourceDataDir: windows });
+    commitPendingWorkspaceRestore(target, staged.id);
+    const result = applyPendingWorkspaceRestore(target);
+
+    const [bot, helper] = readJson(join(target, "bots.json"));
+    expect(bot).not.toHaveProperty("cwd");
+    expect(bot.soul).toBe(`Read ${target}/files/brief.md before you start.`);
+    expect(bot.tasks).toEqual([
+      { threadId: "thread", cwd: join(target, "task-workspaces", "bot", "thread"), resumeCursors: { claude: "kept" } },
+      { threadId: "other", resumeCursors: {} },
+    ]);
+    expect(helper).toEqual({ id: "helper", threadId: "helper-thread", soul: "No paths here.", tasks: [{ threadId: "helper-thread", cwd: null }] });
+    expect(readJson(join(target, "groups.json"))).toEqual([{ id: "room", memberIds: ["bot"], bulletin: `Shared notes live in ${target}/files.` }]);
+    expect(readJson(join(target, "routines.json")).routines[0].prompt)
+      .toBe(`Each morning read ${target}/files/brief.md, compare it with C:\\Users\\Ada\\Desktop\\x.docx, and save ${target}/files/out/report.md.`);
+    expect(readFileSync(join(target, "workspaces", "bot", "MEMORY.md"), "utf8"))
+      .toBe(`- The brief: ${target}/files/brief.md\n- Drafts go to ${target}/files/drafts/\n- C:\\Users\\Ada\\.openmausbot-old\\notes.md is an old copy\n`);
+    expect(readFileSync(join(target, "workspaces", "bot", "memory", "people.md"), "utf8")).toBe("Ada prefers short replies.\n");
+    expect(readFileSync(join(target, "bots", "bot", "SOUL.md"), "utf8")).toBe(bot.soul);
+    const leftBehind = { bots: 1, paths: [site, "C:\\Users\\Ada\\Shared", "C:\\Users\\Ada\\.openmausbot-old\\notes.md", "C:\\Users\\Ada\\Desktop\\x.docx"] };
+    expect(result.leftBehind).toEqual(leftBehind);
+    expect(readLastWorkspaceRestore(target)!.leftBehind).toEqual(leftBehind);
+    expect(readLastWorkspaceRestore(target)!.pathsRewritten).toBe(true);
+  });
+
+  it("lists nothing left behind, and keeps outside folders, when both computers write paths the same way", async () => {
+    const source = directory();
+    fixture(source).close();
+    const exported = await createWorkspaceBackup(source, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    commitPendingWorkspaceRestore(target, staged.id);
+    expect(applyPendingWorkspaceRestore(target)).not.toHaveProperty("leftBehind");
+    expect(readJson(join(target, "groups.json"))[0].cwd).toBe("/external/project");
   });
 
   it("authenticates before extraction and leaves the existing workspace unchanged for wrong passwords or damaged ciphertext", async () => {
@@ -222,6 +338,8 @@ describe("encrypted full workspace backups", () => {
       "caddy/data/private.key", "chrome-profile/Cookies", ".agent-browser/auth.json",
       "vm-home/.browser-profiles/chrome/Cookies", "vm-homes/abc/.browser-profiles/chromium/Cookies",
       "tmp/omb-mcp-123/mcp.json", ".tmp/secret",
+      "logins.json.enc", "logins-key", "logins.json.enc.123.05a7b3e0-1234.tmp",
+      "highlevel.json.enc", "highlevel-key", "connected-apps-installation.json",
     ];
     for (const root of [source, target]) {
       for (const path of authPaths) {
@@ -251,7 +369,6 @@ describe("encrypted full workspace backups", () => {
     expect(readFileSync(join(target, "attachments", "user-note.txt"), "utf8")).toBe("A user-pasted secret is not silently redacted.");
     expect(readJson(join(target, "config.json"))).toEqual({ xai: { key: "DESTINATION_SAVED_SECRET", url: "https://destination.example" }, language: "ja" });
     expect(readJson(join(target, "webhooks.json")).webhooks[0]).toMatchObject({ secretHash: "b".repeat(64), enabled: false, verificationPending: false });
-    // Export is read-only: the original login stores and webhook hash remain.
     for (const path of authPaths) expect(readFileSync(join(source, path), "utf8")).toBe("SOURCE_SAVED_SECRET");
     expect(readJson(join(source, "webhooks.json")).webhooks[0].secretHash).toBe("a".repeat(64));
   });
@@ -296,10 +413,8 @@ describe("encrypted full workspace backups", () => {
   it("leaves the destination's session open-marker in place, so a crash before a restore still ends account sign-ins", async () => {
     const source = directory(), target = directory();
     json(join(source, "bots.json"), [{ id: "bot" }]);
-    // The source is running: its marker exists, and is never exported.
     writeFileSync(join(source, "sessions.json.open"), "Session registry is open.\n");
     const exported = await createWorkspaceBackup(source, { password: PASSWORD });
-    // The destination crashed with an account session saved.
     const sessions = new SessionRegistry({ file: join(target, "sessions.json") });
     sessions.issue({ label: "Member", scopes: ["client"], userId: "user-1" });
     expect(existsSync(join(target, "sessions.json.open"))).toBe(true);
@@ -446,6 +561,34 @@ describe("encrypted full workspace backups", () => {
     expect(readdirSync(join(root, ".backups"))).toEqual([]);
   });
 
+  it.skipIf(process.platform === "win32").each([
+    ["notes/report-2026-10-16T04:00:00Z.md", "notes/report-2026-10-16T04:00:00Z.md"],
+    ["repo/aux/readme.txt", "repo/aux"],
+  ])("names the work file %s that Windows cannot restore, instead of failing anonymously (Windows cannot create it)", async (file, named) => {
+    const root = directory();
+    const work = join(root, "task-workspaces", "bot", "thread");
+    mkdirSync(join(work, file, ".."), { recursive: true });
+    writeFileSync(join(work, file), "x");
+    await expect(createWorkspaceBackup(root, { password: PASSWORD })).rejects.toThrow(`task-workspaces/bot/thread/${named}`);
+    expect(readdirSync(join(root, ".backups"))).toEqual([]);
+    rmSync(join(work, file));
+    rmSync(join(work, named), { recursive: true, force: true });
+    writeFileSync(join(work, "report.md"), "x");
+    expect((await createWorkspaceBackup(root, { password: PASSWORD })).summary.files).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!caseSensitiveTempFolder())("names both work files whose names differ only by letter case (needs a case-sensitive file system)", async () => {
+    const root = directory();
+    const repo = join(root, "task-workspaces", "bot", "thread", "repo");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "README.md"), "upper");
+    writeFileSync(join(repo, "readme.md"), "lower");
+    const failure = createWorkspaceBackup(root, { password: PASSWORD });
+    await expect(failure).rejects.toThrow("task-workspaces/bot/thread/repo/README.md");
+    await expect(failure).rejects.toThrow("task-workspaces/bot/thread/repo/readme.md");
+    expect(readdirSync(join(root, ".backups"))).toEqual([]);
+  });
+
   it("refuses external and arbitrary internal symlinks while reporting omitted managed discovery links", async () => {
     const root = directory();
     const outside = directory();
@@ -467,8 +610,6 @@ describe("encrypted full workspace backups", () => {
     expect(exported.summary.warnings.some((warning) => warning.includes("1 managed skill"))).toBe(true);
   });
 
-  // A client's export failed on task-workspaces/<bot>/<thread>/node_modules, a
-  // link an agent made to another checkout's install.
   it("leaves out node_modules and links in conversation work folders, and says so", async () => {
     const root = directory();
     const outside = directory();
@@ -491,9 +632,66 @@ describe("encrypted full workspace backups", () => {
     expect(existsSync(join(data, "task-workspaces", "bot", "thread", "node_modules"))).toBe(false);
     expect(existsSync(join(data, "task-workspaces", "bot", "thread", "linked-secret"))).toBe(false);
     expect(existsSync(join(data, "workspaces", "bot", "project", "node_modules"))).toBe(false);
-    // Outside a work folder, a link out of the workspace still stops the export.
     symlinkSync(join(outside, "secret"), join(root, "workspaces", "bot", "external"));
     await expect(createWorkspaceBackup(root, { password: PASSWORD })).rejects.toThrow(/outside the workspace/);
+  });
+
+  it("counts the app's skill links in work folders as managed, not as outside data", async () => {
+    const root = directory();
+    const outside = directory();
+    const skill = join(root, "workspaces", "bot", "skills", "example");
+    mkdirSync(skill, { recursive: true });
+    writeFileSync(join(skill, "SKILL.md"), "# Example");
+    const kind = process.platform === "win32" ? "junction" : "dir";
+    for (const family of [".claude", ".agents", ".grok"]) {
+      const native = join(root, "task-workspaces", "bot", "thread", family, "skills");
+      mkdirSync(native, { recursive: true });
+      symlinkSync(skill, join(native, "example"), kind);
+    }
+    // Same place and name, but another bot's store or outside: an agent's link.
+    mkdirSync(join(root, "workspaces", "other", "skills", "theirs"), { recursive: true });
+    symlinkSync(join(root, "workspaces", "other", "skills", "theirs"), join(root, "task-workspaces", "bot", "thread", ".claude", "skills", "theirs"), kind);
+    symlinkSync(outside, join(root, "task-workspaces", "bot", "thread", ".agents", "skills", "away"), kind);
+    const exported = await createWorkspaceBackup(root, { password: PASSWORD });
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("3 managed skill discovery link(s)"))).toBe(true);
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("2 symbolic link(s) in conversation work folders"))).toBe(true);
+  });
+
+  it("leaves out the link to the person's own Claude Code skills, which the app makes again on each turn", async () => {
+    const root = directory();
+    const outside = directory();
+    writeFileSync(join(outside, "SKILL.md"), "the person's own skill");
+    mkdirSync(join(root, "claude-user-skills", ".claude"), { recursive: true });
+    symlinkSync(outside, join(root, "claude-user-skills", ".claude", "skills"), process.platform === "win32" ? "junction" : "dir");
+    json(join(root, "bots.json"), []);
+    const exported = await createWorkspaceBackup(root, { password: PASSWORD });
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    expect(existsSync(join(target, ".backups", staged.id, "staged", "data", "claude-user-skills"))).toBe(false);
+  });
+
+  it("carries the skills brought in from this computer, and counts task folder links to them as the app's", async () => {
+    const root = directory();
+    const copy = join(root, "imported-skills", "pdf");
+    mkdirSync(join(copy, "scripts"), { recursive: true });
+    // Read-only as the app writes them; on Windows it keeps them writable.
+    const readOnly = (mode: number) => (process.platform === "win32" ? {} : { mode });
+    writeFileSync(join(copy, "SKILL.md"), "# pdf", readOnly(0o400));
+    writeFileSync(join(copy, "scripts", "run.sh"), "echo run\n", readOnly(0o500));
+    const kind = process.platform === "win32" ? "junction" : "dir";
+    const task = join(root, "task-workspaces", "bot", "thread");
+    for (const family of [".claude", ".agents", ".grok"]) mkdirSync(join(task, family, "skills"), { recursive: true });
+    symlinkSync(copy, join(task, ".claude", "skills", "pdf"), kind);
+    symlinkSync(copy, join(task, ".agents", "skills", "pdf"), kind);
+    // Under another name it is not the app's link.
+    symlinkSync(copy, join(task, ".grok", "skills", "renamed"), kind);
+    const exported = await createWorkspaceBackup(root, { password: PASSWORD });
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("2 managed skill discovery link(s)"))).toBe(true);
+    expect(exported.summary.warnings.some((warning) => warning.startsWith("1 symbolic link(s) in conversation work folders"))).toBe(true);
+    const target = directory();
+    const staged = await stageWorkspaceBackup(target, exported.path, { password: PASSWORD });
+    const data = join(target, ".backups", staged.id, "staged", "data");
+    expect(readFileSync(join(data, "imported-skills", "pdf", "scripts", "run.sh"), "utf8")).toBe("echo run\n");
   });
 
   it("recovers an interrupted top-level swap before any application state is loaded", async () => {

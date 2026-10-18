@@ -1,9 +1,3 @@
-// The vendored electron-updater bundle is a build artifact, but it is also the
-// code that actually runs in the packaged app. An AppImage update must land on
-// the path the user launches and wait for the old desktop to exit before it
-// starts the replacement.
-//
-// See scripts/patch-appimage-updater.mjs for the reasoning.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -38,15 +32,13 @@ test("the vendored bundle still contains the AppImage installer we patch", () =>
 });
 
 test("the install stages the replacement instead of deleting first", () => {
-  // Upstream's unlinkSync(appImageFile) runs before the download is even
-  // validated. Nothing may remove the running file ahead of the rename.
+  // Upstream unlinks the AppImage before the download is validated; nothing may remove the running file ahead of the rename.
   assert.doesNotMatch(bundle, /unlinkSync\)\(appImageFile\)/);
   assert.match(bundle, /renameSync\)\(stagedDestination, destination\)/);
 });
 
 test("an AppImage update can never be written to a different filename", () => {
-  // Upstream renames when the running file has a version in its name, which
-  // orphans every .desktop entry, symlink and dock pin pointing at it.
+  // Upstream renames a versioned running file, orphaning every .desktop entry, symlink and dock pin pointing at it.
   assert.doesNotMatch(bundle, renamePattern);
 });
 
@@ -85,8 +77,6 @@ test("the patch tolerates esbuild renaming the path import", () => {
 });
 
 test("the patch fails closed when upstream's shape moves", () => {
-  // A silent no-op here would ship the launcher-breaking rename again, or
-  // reinstate the delete that can cost a user their application.
   for (const [label, mutated] of [
     ["no rename branch", UPSTREAM.replace(/destination = path2\.join[^;]+;/, "destination = elsewhere;")],
     ["no early unlink", UPSTREAM.replace("        (0, fs_1.unlinkSync)(appImageFile);\n", "")],
@@ -216,10 +206,7 @@ test("the running AppImage is never removed before its replacement is in place",
     else process.env.APPIMAGE = previous;
   });
 
-  // A staged download that is not there stands in for every way the move can
-  // fail — a full disk, a cross-filesystem copy cut short, a revoked mount.
-  // Upstream unlinks the running file first, so any of those left the user
-  // with no application at all.
+  // A missing staged download stands in for every way the move can fail (full disk, cut-short copy, revoked mount).
   assert.throws(() =>
     AppImageUpdater.prototype.doInstall.call(
       {
@@ -276,8 +263,7 @@ test("Electron relaunch waits for deferred cleanup and the replacement acquires 
     })().catch(error => { writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ error: error.message })); process.exitCode = 1; });
   `;
   writeFileSync(launched, "old AppImage", { mode: 0o755 });
-  // A disposable executable substitutes for the AppImage payload, not for
-  // Electron's native relauncher or the vendored install/quit methods.
+  // A disposable executable substitutes for the AppImage payload, not for Electron's relauncher or the vendored methods.
   writeFileSync(staged, `#!${process.execPath}\n${replacement}`, { mode: 0o755 });
   writeFileSync(fixture, `
     const { app, autoUpdater } = require("electron");
@@ -318,21 +304,16 @@ test("Electron relaunch waits for deferred cleanup and the replacement acquires 
   delete env.ELECTRON_RUN_AS_NODE;
   const run = xvfb ? [xvfb, "-a", electron, ...args] : [electron, ...args];
   const launch = process.env.DBUS_SESSION_BUS_ADDRESS || !dbusRunSession ? run : [dbusRunSession, "--", ...run];
-  // The launcher leads its own process group, and a stuck run kills the whole
-  // group. On headless Linux the launcher is a wrapper (dbus-run-session →
-  // xvfb-run → Xvfb and Electron, plus the session's dbus-daemon): killing the
-  // wrapper alone orphaned the rest, which kept the output pipes open, so
-  // "close" never came, the test timed out, and the orphans held `node --test`
-  // open until the CI job's cap cancelled it with no result.
+  // The launcher leads its own process group: on headless Linux it wraps dbus-run-session, xvfb-run, Xvfb and Electron,
+  // and killing only the wrapper leaves orphans holding the output pipes open.
   const child = spawn(launch[0], launch.slice(1), { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   let output = "";
   child.stdout.on("data", chunk => { output += chunk; });
   child.stderr.on("data", chunk => { output += chunk; });
   const killLaunch = () => {
-    try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group already exited */ }
+    try { process.kill(-child.pid, "SIGKILL"); } catch {}
   };
-  // Passing runs have taken 1 to 9.5 s on hosted Ubuntu runners, so the old
-  // 10 s cap sat inside the normal range.
+  // Passing runs take 1 to 9.5 s on hosted Ubuntu runners.
   const timeout = setTimeout(killLaunch, 30_000);
   const code = await new Promise((resolve, reject) => {
     child.once("error", reject);

@@ -4,10 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppSettingsSection } from "@/state/store";
 import { SettingsModal } from "./SettingsModal";
 
-// Every main window of the packaged app has the read-only plan bridge
-// (cloudPlan), on any server it opens. Settings → OMB Cloud shows it only on
-// an OMB Cloud home: on a VPS, a hosted workspace or someone else's server
-// there is no plan of this person's to show, and main would refuse it.
 const fixture = vi.hoisted(() => ({ section: "cloudAccount" as AppSettingsSection, config: undefined as { cloudHome?: boolean } | undefined, advanced: false }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: vi.fn() }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: {} }) }));

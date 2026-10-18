@@ -1,5 +1,3 @@
-// Automatic recall: the query, the two-term rule, which files are never
-// recalled, and the block's shape (rule first, numbered, fenced, capped).
 import { rmSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,6 +7,19 @@ import { buildRecall, enoughMatches, memoryPassages, RECALL_CLOSE, RECALL_OPEN, 
 import { appendMemoryLog, searchMemoryFiles, writeMemoryFile, writeMemoryTopic, WORKSPACES_DIR } from "./workspace.ts";
 
 const BOT = "bot-recall-test";
+
+it("keeps a matching answer late in a named topic instead of replacing it with the introduction", () => {
+  writeMemoryTopic(BOT, "tapa.md", `---\ntitle: Tapa\n---\n${"Earlier draft background. ".repeat(40)}\nThe approved amber test is version SEVEN.\n`);
+  const result = buildRecall({ botId: BOT, message: "Tapa approved amber test", threadIds: [], label: () => "", author: () => "" });
+  expect(result?.text).toContain("SEVEN");
+});
+
+it("keeps a named topic's matching answer when better-ranked matches fill the recall budget", () => {
+  writeMemoryTopic(BOT, "tapa.md", `---\ntitle: Tapa\n---\n${"Earlier draft background. ".repeat(40)}\nThe approved amber test is version SEVEN.\n`);
+  for (let n = 0; n < 5; n++) writeMemoryTopic(BOT, `decoy-${n}.md`, `- Tapa approved amber test, Tapa amber test ${n}\n`);
+  const result = buildRecall({ botId: BOT, message: "Tapa approved amber test", threadIds: [], label: () => "", author: () => "" });
+  expect(result?.text).toContain("SEVEN");
+});
 
 describe("recall terms and query", () => {
   it("keeps signs, symbols and versions, drops filler and punctuation", () => {
@@ -94,7 +105,6 @@ describe("recall from memory files", () => {
     expect(topicPassages(BOT, "where can I get bhel?").map((p) => p.label)).toEqual(["memory/Dining.md"]);
     expect(topicPassages(BOT, "an Irani cafe nearby").map((p) => p.label)).toEqual(["memory/Dining.md"]);
     expect(topicPassages(BOT, "is my family visiting?").map((p) => p.label)).toEqual(["memory/family.md"]);
-    // word matching has a limit: nothing here says "restaurant"
     expect(topicPassages(BOT, "suggest a restaurant")).toEqual([]);
   });
 

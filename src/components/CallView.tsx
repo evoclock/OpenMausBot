@@ -1,32 +1,17 @@
-// Call mode — the bot on the line.
-//
-// The loop is deliberately HALF-DUPLEX: the microphone is live only when
-// the bot is not speaking. The dictation helper is Apple's SFSpeechRecognizer
-// running on raw AVAudioEngine input with no acoustic echo cancellation, so
-// a mic left open through playback transcribes the bot's own voice back into
-// the conversation and the two of them talk forever. Interrupting is a tap
-// or Escape instead, which is honest and cannot feed back. (Full-duplex
-// barge-in needs AEC on the capture path — a follow-up, not a footnote.)
-//
-// Turn-taking uses a small silence endpointer in the native helper. Apple's
-// buffer-backed recognizer does not finalize on silence by itself: the helper
-// has to end the audio stream, which then produces the final transcript.
-//
-// The other half of making a call bearable is narration. An agent turn is
-// 5-60 seconds of tool calls; silence that long reads as a dropped call. So
-// every activity chip the harness narrates (`tool.spoken`) is read aloud as
-// it happens, which is why waiting feels like listening to someone work
-// rather than listening to nothing.
+// Half-duplex: the dictation helper is Apple's SFSpeechRecognizer on raw AVAudioEngine input with no echo cancellation,
+// so a mic open during playback transcribes the bot's own voice back. The buffer-backed recognizer does not finalize on
+// silence; the helper ends the stream.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { AudioLines, Check, ChevronDown, Loader2, Phone, PhoneOff, X } from "lucide-react";
 
-import { useStore, visibleMessages, type Bot } from "@/state/store";
+import { useShowThreads } from "@/lib/thread-preferences";
+import { openBot, useStore, visibleMessages, type Bot } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { currentCall, deferCallCleanup, endCall, startCall, useOnCall } from "@/lib/call";
 import { CALL_MODES, callModeHint, effectiveCallMode, setCallMode, useCallMode, type CallMode } from "@/lib/call-mode";
 import { NO, YES } from "../../shared/call-consent";
-import { dismissKeyPrompt, hangUpLiveCall, isLiveCallRunning, startLiveCall, useLiveMedia } from "@/lib/live-call-media";
+import { dismissStartPrompt, hangUpLiveCall, isLiveCallRunning, startLiveCall, useLiveMedia } from "@/lib/live-call-media";
 import { t } from "@/lib/i18n";
 import { speaker } from "@/lib/tts";
 import { localSystemVoiceActive } from "@/lib/local-voice";
@@ -35,25 +20,28 @@ import { usePushToTalk } from "@/lib/push-to-talk";
 import { BotAvatar } from "./Avatar";
 import { navigateThreadMenu } from "./BotProjects";
 import { LiveKeySetup } from "./LiveKeySetup";
+import { LiveProPrompt } from "./ProIntroduction";
 import { liveLineHeldElsewhere } from "./LiveCallBar";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
-import { track } from "@/lib/analytics";
+import { callStarted } from "@/lib/product-events";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp, type CallCapabilityHelp } from "@/lib/call-capability";
+import { onCallStartRequest } from "@/lib/call-start-request";
 import { VoiceSetupDialog } from "./VoiceSetupDialog";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 type Phase = "listening" | "sending" | "working" | "speaking";
 const CALL_ENDPOINT_MS = 850;
 
-/** Where a call button sits: the header's icon row (rooms), or the composer's
- * action row (a bot's chat), where it is a filled circle the size of Send and
- * its help opens upward, away from the bottom edge of the window. */
 export type CallButtonPlacement = "header" | "composer";
 
-export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?: CallButtonPlacement }) {
+/** `fill` (Simple composer): a round button in that colour, with no chevron; the + menu picks the call mode. */
+export function CallButton({ bot, placement = "header", fill }: { bot: Bot; placement?: CallButtonPlacement; fill?: string }) {
+  const { state } = useStore();
   return (
     <CallTargetButton
       placement={placement}
+      fill={fill}
       targetId={bot.id}
       targetName={bot.name}
       threadId={bot.threadId}
@@ -61,7 +49,7 @@ export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?
       setupBotId={bot.id}
       requireExplicitVoices={false}
       liveCapable
-      onStart={(mode) => track("call_started", { driver: bot.modelSelection?.instanceId, mode })}
+      onStart={(mode) => callStarted(state.instances, bot.modelSelection?.instanceId, mode)}
     />
   );
 }
@@ -76,43 +64,31 @@ export function CallTargetButton({
   liveCapable = false,
   onStart,
   placement = "header",
+  fill,
 }: {
   placement?: CallButtonPlacement;
+  fill?: string;
   targetId: string;
   targetName: string;
-  /** The thread a Live call joins (the chat on screen). Live needs it. */
   threadId?: string;
   voices: Array<string | undefined>;
-  /** The agent whose voice the set-up pop-up edits when voice is missing
-   * (rooms choose a member). */
   setupBotId?: string;
-  /** Rooms cannot rely on one workspace fallback for multiple speakers. */
   requireExplicitVoices: boolean;
-  /** One-to-one calls can also run as a Live (GPT-Live) call, which needs
-   * neither on-device dictation nor a configured voice. */
   liveCapable?: boolean;
-  /** A call started, in this mode (analytics). The call itself is started
-   * here: Take turns opens the overlay, Live goes to the call bar. */
   onStart: (mode: CallMode) => void;
 }) {
   const { state, dispatch } = useStore();
+  const showThreads = useShowThreads();
   const { capabilities, ready: capabilitiesReady } = useDesktopCapabilities();
   const media = useLiveMedia();
   const liveThreadId = liveCapable ? threadId : undefined;
   const canLive = liveThreadId !== undefined;
-  // This window's Live call with this target. The media module also marks
-  // the target as on a call (startCall), so check Live first.
+  // Check Live first: startCall also marks the target as on a call.
   const liveRunning = isLiveCallRunning(media.phase);
   const onLiveCall = canLive && liveRunning && media.botId === targetId;
-  // One call at a time: a Live call with someone else blocks this button
-  // (a second Live call cannot start, and Take turns would talk over it).
   const liveElsewhere = liveRunning && media.botId !== targetId;
   const onCall = useOnCall() === targetId;
   const active = onCall || onLiveCall;
-  // Paired to another computer, the voice engine and its key stay on the
-  // host, and the pairing takes agent changes only through the profile route
-  // the remote agent settings save with. There, voice set-up opens those
-  // settings, as it always did, instead of the pop-up.
   const remoteClient = globalThis.window?.ogb?.remoteClient?.active === true;
   const capabilityHelp = capabilitiesReady
     ? callCapabilityHelp(capabilities, Boolean(window.ogb?.speechStart))
@@ -124,41 +100,34 @@ export function CallTargetButton({
   const voiceReady =
     localVoice ||
     (configured && (requireExplicitVoices ? everyTargetHasVoice : Boolean(state.config?.tts?.ready || everyTargetHasVoice)));
-  // Taking turns listens on this device, which only the Mac app's own page
-  // can do. Elsewhere (a browser, the Windows or Linux app, My Cloud) the
-  // one-to-one call is Live, and Take turns says where it works instead.
-  // Until the device is known, the picked mode holds.
   const turnsHere = !capabilitiesReady || capabilities.dictation.available;
   const mode = effectiveCallMode(useCallMode(), { turnsHere, canLive });
   const liveMode = canLive && mode === "live";
   const turnsReady = capabilitiesReady && supported && voiceReady;
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
+  const lineHeldElsewhere = liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall);
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
-  // On the person's Cloud, the Live key is saved there, not on this computer.
   const cloudHome = state.config?.cloudHome === true;
   const [helpOpen, setHelpOpen] = useState(false);
-  // Voice set-up opens over the chat instead of the bot's full settings.
   const [voiceSetupOpen, setVoiceSetupOpen] = useState(false);
-  // In a room the pop-up moves on to the next member without a voice; once
-  // every member has one it stays on the last, instead of jumping back to
-  // the first member (the room's fallback).
   const [voiceSetupBotId, setVoiceSetupBotId] = useState(setupBotId);
   if (voiceSetupRequired && setupBotId !== voiceSetupBotId) setVoiceSetupBotId(setupBotId);
   const shownSetupBotId = voiceSetupRequired ? setupBotId : voiceSetupBotId;
   const setupBot = shownSetupBotId ? state.bots.find((candidate) => candidate.id === shownSetupBotId) : undefined;
   const helpMotion = useMenuMotion(Boolean(unavailable && helpOpen));
   const [menuOpen, setMenuOpen] = useState(false);
-  // The harness answered "no key" to this window's call attempt: ask for it
-  // here. A Live call always asks for the microphone first, so a page that
-  // can't have one says so before anyone pastes a key it can't use.
   const keyPopover = canLive && !active && media.needsKey && media.botId === targetId;
+  const proPopover = canLive && !active && media.needsPro && media.botId === targetId;
+  const startPrompt = keyPopover || proPopover;
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
   const keyRef = useRef<HTMLDivElement>(null);
+  const proRef = useRef<HTMLDivElement>(null);
   const helpId = useId();
   const menuId = useId();
   const keyId = useId();
+  const proId = useId();
   const elsewhereName = liveElsewhere ? state.bots.find((candidate) => candidate.id === media.botId)?.name : undefined;
   const composer = placement === "composer";
   const label = active
@@ -192,16 +161,11 @@ export function CallTargetButton({
   const closePopovers = useCallback(() => {
     setHelpOpen(false);
     setMenuOpen(false);
-    dismissKeyPrompt(targetId);
+    dismissStartPrompt(targetId);
   }, [targetId]);
 
-  // The "no key" answer belongs to this chat's call attempt: leaving the
-  // chat drops it, so it never reopens (and takes focus) on a later visit.
-  useEffect(() => () => dismissKeyPrompt(targetId), [targetId]);
+  useEffect(() => () => dismissStartPrompt(targetId), [targetId]);
 
-  /** Start a call in this mode. Live never opens the overlay: the media
-   * module marks the call and the call bar shows it. A Live call with no key
-   * yet asks for the microphone, then for the key (the harness's needsKey). */
   const start = (next: CallMode) => {
     setHelpOpen(false);
     setMenuOpen(false);
@@ -218,7 +182,18 @@ export function CallTargetButton({
     startCall(targetId);
   };
 
-  const popoverOpen = helpOpen || menuOpen || keyPopover;
+  // The Simple composer's + menu: the same choice as this button's own call-mode menu, which it replaces there.
+  const requestedStart = useRef<(next: CallMode) => void>(() => {});
+  requestedStart.current = (next) => {
+    // Hidden below while Live's line is held on another device: the + menu must not start a second call either.
+    if (active || liveElsewhere || (next === "live" && !canLive) || lineHeldElsewhere) return;
+    closePopovers();
+    setCallMode(next);
+    start(next);
+  };
+  useEffect(() => onCallStartRequest(targetId, (next) => requestedStart.current(next)), [targetId]);
+
+  const popoverOpen = helpOpen || menuOpen || startPrompt;
   useEffect(() => {
     if (!popoverOpen) return;
     const closeOnOutsideClick = (event: PointerEvent) => {
@@ -237,23 +212,22 @@ export function CallTargetButton({
     };
   }, [popoverOpen, menuOpen, closePopovers]);
 
-  // Keyboard users land in the key field when the prompt opens, not when a
-  // prompt that was already open is shown again.
   const keyShown = useRef(keyPopover);
   useEffect(() => {
     const opened = keyPopover && !keyShown.current;
     keyShown.current = keyPopover;
     if (opened) keyRef.current?.querySelector<HTMLInputElement>("input")?.focus();
   }, [keyPopover]);
+  const proShown = useRef(proPopover);
+  useEffect(() => {
+    const opened = proPopover && !proShown.current;
+    proShown.current = proPopover;
+    if (opened) proRef.current?.focus();
+  }, [proPopover]);
 
-  // Another device (a phone, another window) holds the one Live line: no
-  // button that would start a Live call here, as on the iPhone. The remote
-  // bar in that call's chat says who is on the line and can hang up. Take
-  // turns never uses the Live line, so its call, and the Hang up of one
-  // already running, stay.
-  if (liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall)) return null;
+  if (lineHeldElsewhere) return null;
   return (
-    <div ref={rootRef} className="relative flex items-center">
+    <div ref={rootRef} className="relative flex items-center gap-0.5">
       <button
         ref={buttonRef}
         disabled={liveElsewhere || (onLiveCall && media.phase === "ending")}
@@ -263,7 +237,7 @@ export function CallTargetButton({
             return;
           }
           if (onCall) return endCall(targetId);
-          if (keyPopover) {
+          if (startPrompt) {
             closePopovers();
             return;
           }
@@ -274,23 +248,27 @@ export function CallTargetButton({
           }
           start(liveMode ? "live" : "turns");
         }}
-        aria-expanded={unavailable ? helpOpen : keyPopover ? true : undefined}
-        aria-controls={unavailable ? helpId : keyPopover ? keyId : undefined}
+        aria-expanded={unavailable ? helpOpen : startPrompt ? true : undefined}
+        aria-controls={unavailable ? helpId : keyPopover ? keyId : proPopover ? proId : undefined}
         aria-label={label}
         title={label}
         data-call-button={placement}
+        style={fill && !active ? { backgroundColor: fill } : undefined}
         className={cn(
-          "relative flex shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-60",
+          "relative flex shrink-0 items-center justify-center disabled:opacity-60",
+          fill ? "rounded-full transition-[color,background,filter]" : "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
+            : fill
+              ? "text-white hover:brightness-110"
             : composer
               ? unavailable
                 ? "bg-control text-ink-tertiary hover:text-ink-secondary"
-                : "bg-control text-ink hover:bg-raised"
+                : "bg-control text-ink hover:bg-raised-hover"
               : unavailable
-                ? "text-ink-tertiary hover:bg-raised hover:text-ink-secondary"
-                : "text-ink-secondary hover:bg-raised hover:text-ink",
+                ? "text-ink-tertiary hover:bg-raised-hover hover:text-ink-secondary"
+                : "text-ink-secondary hover:bg-raised-hover hover:text-ink",
         )}
       >
         {active
@@ -300,11 +278,10 @@ export function CallTargetButton({
           <span className="absolute right-1 top-1 size-1.5 rounded-full bg-warning ring-2 ring-app" aria-hidden="true" />
         )}
       </button>
-      {canLive && (
+      {canLive && !fill && (
         <button
           ref={chevronRef}
           type="button"
-          // a mode is picked before a call, not during one
           disabled={active || liveElsewhere}
           onClick={() => {
             const opening = !menuOpen;
@@ -316,7 +293,12 @@ export function CallTargetButton({
           aria-controls={menuOpen ? menuId : undefined}
           aria-label={t("call.mode.menu")}
           title={t("call.mode.menu")}
-          className={cn("-ml-1 flex w-4 items-center justify-center rounded-full text-ink-secondary transition-colors hover:text-ink disabled:opacity-40", composer ? "h-8" : "h-9")}
+          className={cn(
+              "grid place-content-center",
+              "bg-control w-8 hover:bg-raised-hover text-ink-secondary hover:text-ink disabled:opacity-40 transition-colors",
+              "rounded-l-lg rounded-r-3xl active:rounded-3xl transition-[color,background,border-radius]",
+              composer ? "h-8" : "h-9"
+            )}
         >
           <ChevronDown size={13} className={cn("transition-transform", menuOpen && "rotate-180")} />
         </button>
@@ -331,7 +313,6 @@ export function CallTargetButton({
           cloudHome={cloudHome}
           onClose={closePopovers}
           onChoose={(next) => {
-            // picking a mode remembers it and starts a call in it
             setCallMode(next);
             start(next);
           }}
@@ -347,9 +328,19 @@ export function CallTargetButton({
           <LiveKeySetup
             key={`${targetId}:${liveThreadId}`}
             compact
-            // the press that asked for the key already counted as a call
             onSaved={() => void startLiveCall({ botId: targetId, threadId: liveThreadId })}
           />
+        </div>
+      )}
+
+      {proPopover && (
+        <div
+          ref={proRef}
+          id={proId}
+          tabIndex={-1}
+          className={cn("animate-pop-in absolute right-0 z-30 w-[340px] max-w-[90vw] rounded-xl shadow-2xl outline-none", composer ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+        >
+          <LiveProPrompt />
         </div>
       )}
 
@@ -383,9 +374,8 @@ export function CallTargetButton({
               onClick={() => {
                 setHelpOpen(false);
                 if (remoteClient) {
-                  // In a room the agent is a member: open its chat first.
-                  if (setupBot.id !== targetId) dispatch({ type: "select", id: setupBot.id });
-                  dispatch({ type: "toggleSettings", open: true, section: "voice" });
+                  if (setupBot.id !== targetId) openBot(dispatch, setupBot, showThreads);
+                  openBotSettings(dispatch, "voice");
                   return;
                 }
                 setVoiceSetupOpen(true);
@@ -415,22 +405,16 @@ export function CallTargetButton({
   );
 }
 
-/** The menu under the call button's chevron: Take turns or Live. Where this
- * page can't take turns, Take turns stays in the menu, can't be picked, and
- * says why. */
 export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header", cloudHome = false, turnsUnavailable = null }: {
   id: string;
   mode: CallMode;
-  /** Why this page can't take turns; null where it can. */
   turnsUnavailable?: CallCapabilityHelp | null;
   placement?: CallButtonPlacement;
-  /** On the person's Cloud: the Live hint says the key stays there. */
   cloudHome?: boolean;
   onChoose: (mode: CallMode) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  // keyboard users land on the current mode
   useEffect(() => {
     ref.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
   }, []);
@@ -444,7 +428,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
         if (event.key === "Tab") onClose();
         else navigateThreadMenu(event);
       }}
-      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
+      className={cn("animate-pop-in absolute right-0 z-30 w-[280px] rounded-xl border border-hairline bg-panel p-1.5 text-left shadow-2xl space-y-1", placement === "composer" ? "bottom-full mb-1.5" : "top-full mt-1.5")}
     >
       {CALL_MODES.map((entry) => {
         const unavailable = entry.id === "turns" ? turnsUnavailable : null;
@@ -454,7 +438,7 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
             type="button"
             role="menuitemradio"
             aria-checked={mode === entry.id}
-            // not `disabled`: the arrow keys still reach it, so its reason is read out
+            // aria-disabled, not disabled: arrow keys skip a disabled item, so its reason would never be read out.
             aria-disabled={unavailable ? true : undefined}
             onClick={() => {
               if (!unavailable) onChoose(entry.id);
@@ -481,7 +465,6 @@ export function CallModeMenu({ id, mode, onChoose, onClose, placement = "header"
 export function CallOverlay({ bot }: { bot: Bot }) {
   const active = useOnCall() === bot.id;
   const media = useLiveMedia();
-  // A Live call lives in the call bar; only Take turns uses the overlay.
   const onLiveCall = media.botId === bot.id && isLiveCallRunning(media.phase);
   if (!active || onLiveCall) return null;
   return (
@@ -513,8 +496,6 @@ function Call({ bot }: { bot: Bot }) {
       !message.card.dismissed,
   );
 
-  // Everything already on screen when the call starts has been read or
-  // ignored — a call must not open by reciting the backlog.
   const spokenIds = useRef<Set<string>>(new Set());
   const started = useRef(false);
   if (!started.current) {
@@ -522,8 +503,6 @@ function Call({ bot }: { bot: Bot }) {
     for (const m of messages) spokenIds.current.add(m.id);
   }
 
-  // the approval we last asked about aloud, so a card that stays open
-  // while the user thinks is not re-read every render
   const askedApproval = useRef<{
     requestId: string;
     routine: boolean;
@@ -535,9 +514,7 @@ function Call({ bot }: { bot: Bot }) {
   const alive = useRef(true);
   const sayGeneration = useRef(0);
 
-  /** Change the rendered phase and the synchronous phase used by native
-   * callbacks together. React state alone is too late: the helper can exit
-   * in the same tick as a final transcript or an intentional mute. */
+  /** React state alone is too late: the helper can exit in the same tick as a final transcript or a mute. */
   const move = useCallback((next: Phase) => {
     phaseRef.current = next;
     if (alive.current) setPhase(next);
@@ -559,14 +536,12 @@ function Call({ bot }: { bot: Bot }) {
     });
   }, [bot.id, move]);
 
-  /** Speak, with the microphone closed for the duration (see the header
-   * comment — an open mic during playback is a feedback loop). */
   const say = useCallback(
     async (text: string) => {
       if (!alive.current || currentCall() !== bot.id) return false;
       const mine = ++sayGeneration.current;
-      // Move first. stopSpeech() finishes asynchronously, and its close must
-      // never observe an old "listening" phase and reopen the mic.
+      // Move first: stopSpeech() closes asynchronously and must never observe an old "listening" phase and reopen the
+      // mic.
       move("speaking");
       hush();
       await speaker.speak(text, { botId: bot.id, voiceId: bot.voice });
@@ -583,22 +558,16 @@ function Call({ bot }: { bot: Bot }) {
     [listen, say],
   );
 
-  // Navigating away from this bot hangs up. Without ownership checking, the
-  // overlay disappeared but `currentCall()` remained set and auto-speak was
-  // permanently disabled for a call nobody could see.
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
       sayGeneration.current += 1;
-      // StrictMode immediately remounts effects once in development. A
-      // microtask distinguishes that probe from real navigation: the probe
-      // has set alive=true again before this runs; a genuine unmount has not.
+      // StrictMode remounts effects once in development; a microtask tells that probe from real navigation.
       deferCallCleanup(bot.id, () => alive.current);
     };
   }, [bot.id]);
 
-  // ── the microphone ───────────────────────────────────────────────────
   useEffect(() => {
     const bridge = window.ogb;
     if (!bridge) return;
@@ -611,7 +580,6 @@ function Call({ bot }: { bot: Bot }) {
       if (typeof line.text !== "string") return;
       setHeard(line.text);
       if (line.partial !== false) return;
-      // final result — Apple's recognizer decided the turn ended
       const said = line.text.trim();
       if (!said) return listen();
 
@@ -629,9 +597,8 @@ function Call({ bot }: { bot: Bot }) {
             void sayThenListen("Open this chat to review the complete skill before enabling it. You can say no now to deny it.");
             return;
           }
-          // Keep this request claimed until the server's durable card patch
-          // arrives. Clearing it here lets a render in that network gap read
-          // and submit the same approval again.
+          // Stay claimed until the server's card patch arrives, or a render in that gap submits the same approval
+          // again.
           open.submitted = true;
           move("working");
           hush();
@@ -660,8 +627,6 @@ function Call({ bot }: { bot: Bot }) {
           });
           return;
         }
-        // not a decision — leave the card up and say so rather than
-        // guessing consent from an ambiguous sentence
         void sayThenListen("Sorry — is that a yes or a no?");
         return;
       }
@@ -695,8 +660,6 @@ function Call({ bot }: { bot: Bot }) {
         );
         return;
       }
-      // the helper exits after every final result; if we are still meant
-      // to be listening, that means the user's turn ended — start the next
       if (phaseRef.current === "listening") listen();
     });
     if (bot.busy && !approval && !question) move("working");
@@ -706,16 +669,11 @@ function Call({ bot }: { bot: Bot }) {
       offEnd();
       void window.ogb?.speechStop();
     };
-    // busy/approval are intentionally initial snapshots. Their live changes
-    // are handled below without tearing down native event listeners.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bot.id, bot.threadId, dispatch, hush, listen, move, sayThenListen]);
 
-  // ── narrate the work, speak the answer, read the approvals ───────────
   useEffect(() => {
-    // The request may be resolved from the normal approval UI or by another
-    // client while this call is open. Do not keep treating future speech as
-    // an answer to a card that no longer exists.
+    // The card may be resolved elsewhere (the approval UI, another client) while this call is open.
     let resumeAfterRoutine = false;
     if (askedApproval.current && approval?.requestId !== askedApproval.current.requestId) {
       resumeAfterRoutine = askedApproval.current.routine && askedApproval.current.submitted;
@@ -765,8 +723,6 @@ function Call({ bot }: { bot: Bot }) {
     }
     const fresh = messages.filter((m) => !spokenIds.current.has(m.id));
     if (!fresh.length) return;
-    // only the newest of each kind matters: a burst of tool chips should
-    // not queue thirty seconds of narration behind the actual answer
     const reply = [...fresh].reverse().find((m) => m.role === "bot" && m.kind === "text" && m.text?.trim());
     const chip = [...fresh].reverse().find((m) => m.kind === "activity" && m.tool?.spoken);
     for (const m of fresh) spokenIds.current.add(m.id);
@@ -780,11 +736,9 @@ function Call({ bot }: { bot: Bot }) {
     }
   }, [messages, approval, question, phase, bot.busy, bot.name, hush, listen, move, say, sayThenListen]);
 
-  // busy is the harness's word for "a turn is running"
   useEffect(() => {
     if (bot.busy) {
-      // An open approval deliberately keeps the mic live for yes/no. Every
-      // other busy phase is half-duplex and must close capture.
+      // An open approval keeps the mic live for yes/no; every other busy phase is half-duplex and must close capture.
       if (phaseRef.current !== "speaking" && !askedApproval.current && !askedQuestion.current) {
         move("working");
         hush();
@@ -795,13 +749,10 @@ function Call({ bot }: { bot: Bot }) {
       !askedQuestion.current &&
       !speaker.isSpeaking()
     ) {
-      // A failed/cancelled turn may have no reply to trigger the normal
-      // speak-then-listen path. Recover the call instead of staying stuck.
       listen();
     }
   }, [bot.busy, hush, listen, move]);
 
-  // Escape hangs up; space interrupts whatever is being said
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -851,7 +802,6 @@ function Call({ bot }: { bot: Bot }) {
         </div>
       </div>
 
-      {/* one line, whichever is current: what you're saying, or what it is */}
       <div className="min-h-[3.5rem] max-w-[560px] px-6 text-center text-[15px] leading-relaxed text-ink">
         {phase === "listening" ? (
           heard || (

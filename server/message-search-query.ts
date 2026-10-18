@@ -6,24 +6,16 @@ export interface SearchHit {
   at: number;
   role: string;
   kind: string;
-  /** the matched text, trimmed to a window around the first hit */
   snippet: string;
-  /** where the match sits inside `snippet`, for highlighting */
   matchStart: number;
   matchLength: number;
-  /** room messages: which member said it */
   from?: string;
 }
 
-/** Shared query and snippet logic; the worker never calls the write-side open(). */
 export function searchMessagesInDatabase(database: DatabaseSync, query: string, limit = 40, threadId?: string): SearchHit[] {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
-  // escape LIKE wildcards so a literal % or _ in the query stays literal
   const pattern = `%${needle.replace(/([\\%_])/g, "\\$1")}%`;
-  // text messages by their text; activity chips by the tool name — "which
-  // bot ran that migration" is a tool-name question. The chip's name lives
-  // in the row's json; a JSON1 extract keeps this one query.
   const scope = threadId ? "thread_id = ? AND " : "";
   const statement = database.prepare(
     "SELECT thread_id, id, at, role, kind, text, json_extract(json, '$.tool.name') AS tool_name, json_extract(json, '$.from.name') AS from_name FROM messages " +
@@ -51,7 +43,6 @@ export function searchMessagesInDatabase(database: DatabaseSync, query: string, 
     const head = start > 0 ? "…" : "";
     const body = haystack.slice(start, end).replace(/\s+/g, " ").trim();
     const snippet = head + body + (end < haystack.length ? "…" : "");
-    // whitespace folding can shift the offset; find the match again inside
     const folded = needle.replace(/\s+/g, " ");
     const matchStart = snippet.toLowerCase().indexOf(folded);
     return {
@@ -62,7 +53,6 @@ export function searchMessagesInDatabase(database: DatabaseSync, query: string, 
       kind: row.kind,
       snippet,
       matchStart: matchStart < 0 ? head.length : matchStart,
-      // A defensive fallback must not mark arbitrary snippet text as the hit.
       matchLength: matchStart < 0 ? 0 : folded.length,
       ...(row.from_name ? { from: row.from_name } : {}),
     };

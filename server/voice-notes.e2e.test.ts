@@ -1,14 +1,11 @@
-// End-to-end coverage for the send_voice_note slice (#1742): the tool a real
-// agents proxy advertises, the harness route that synthesizes and parks the
-// clip, the attachment that lands on the settling reply, and the cancel path
-// that must leave no orphan audio behind. The TTS provider is a loopback
-// Chatterbox stub so no external service is reached.
+// The TTS provider is a loopback Chatterbox stub, so no external service is reached.
 import { createServer, type Server } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { request } from "../scripts/mcp-server.ts";
+import { listSystemVoices } from "./tts/system-voices.ts";
 
 const MP3 = Buffer.from("ID3 fake mp3 for the voice note fixture");
 
@@ -48,7 +45,7 @@ async function withVoiceFixture(test: (f: any) => Promise<void>, options?: { fai
         ? readFileSync(planPath + ".evidence.jsonl", "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
         : [],
       messages: async (threadId: string) => (await api("/api/threads/" + threadId + "/messages")).messages,
-      serveTts: async (options?: { holdUntil?: string }) => {
+      serveTts: async (options?: { holdUntil?: string; audio?: { mime: string; bytes: Buffer } }) => {
         const server = createServer((req, res) => {
           let raw = "";
           req.on("data", (chunk: Buffer) => { raw += chunk; });
@@ -60,9 +57,10 @@ async function withVoiceFixture(test: (f: any) => Promise<void>, options?: { fai
             }
             const body = JSON.parse(raw);
             seen.push({ input: String(body.input ?? ""), voice: String(body.voice ?? "") });
+            const { mime, bytes } = options?.audio ?? { mime: "audio/mpeg", bytes: MP3 };
             const finish = () => {
-              res.writeHead(200, { "content-type": "audio/mpeg", "content-length": String(MP3.byteLength) });
-              res.end(MP3);
+              res.writeHead(200, { "content-type": mime, "content-length": String(bytes.byteLength) });
+              res.end(bytes);
             };
             const holdUntil = options?.holdUntil;
             if (!holdUntil) return finish();
@@ -108,15 +106,12 @@ it("advertises send_voice_note to a ready bot and attaches the clip to the settl
   expect(step.response.result.isError).toBeFalsy();
   expect(step.response.result.content[0].text).toContain("Voice note recorded");
 
-  // The note is synthesized verbatim (outer trim only) with the configured voice.
   expect(f.seen).toEqual([{ input: note, voice: "voice-a" }]);
 
   const messages = await f.messages(bot.activeTaskId);
   const withAudio = messages.filter((m: any) => (m.attachments ?? []).some((a: any) => a.kind === "audio"));
   expect(withAudio).toHaveLength(1);
   expect(withAudio[0].role).toBe("bot");
-  // The written reply stays and the note rides along as the visible
-  // transcript; the audio attachment itself carries no text on the wire.
   expect(withAudio[0].text).toBe("The summary you can also listen to.\n\n" + note);
   const audio = withAudio[0].attachments.find((a: any) => a.kind === "audio");
   expect(audio.mime).toBe("audio/mpeg");
@@ -125,10 +120,44 @@ it("advertises send_voice_note to a ready bot and attaches the clip to the settl
   expect(files).toHaveLength(1);
   expect(audio.path.endsWith(files[0])).toBe(true);
   const stored = join(f.attachmentsDir(), files[0]);
-  // Windows cannot represent a POSIX owner-only mode; writeFileAtomic's 0600
-  // is enforced where it exists, like every other attachment-mode assertion.
+  // Windows cannot represent a POSIX owner-only mode.
   if (process.platform !== "win32") expect(statSync(stored).mode & 0o777).toBe(0o600);
   expect(readFileSync(stored).equals(MP3)).toBe(true);
+}), 60_000);
+
+async function sendWavNote(f: any): Promise<Buffer> {
+  const bot = (await f.cli("new-bot", "--name", "WAV voice bot")).bot;
+  f.savePlan({ [bot.id]: { steps: [{ tool: "send_voice_note", arguments: { text: "A WAV note." } }], reply: "Sent." } });
+  await f.cli("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Send a voice note.");
+  const waited = await f.cli("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30");
+  const step = f.evidence().find((entry: any) => entry.botId === bot.id).evidence.find((entry: any) => entry.step);
+  expect(step.response.result.content[0].text).toContain("Voice note recorded");
+  expect(waited.status).toBe("settled");
+
+  const messages = await f.messages(bot.activeTaskId);
+  const audio = messages.flatMap((m: any) => m.attachments ?? []).find((a: any) => a.kind === "audio");
+  expect(audio?.mime).toBe("audio/wav");
+  const name = audio.path.split(/[\\/]/).pop();
+  expect(name).toMatch(/^[\w-]+\.wav$/);
+  const res = await fetch(f.session.info.url + "/api/attachments/" + name);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toBe("audio/wav");
+  return Buffer.from(await res.arrayBuffer());
+}
+
+it("delivers a WAV voice note from a provider that answers in WAV", async () => withVoiceFixture(async (f) => {
+  const wav = Buffer.from("RIFF\0\0\0\0WAVE fake wav for the voice note fixture", "latin1");
+  const baseUrl = await f.serveTts({ audio: { mime: "audio/wav", bytes: wav } });
+  await f.api("/api/config", { tts: { provider: "chatterbox", baseUrl, voice: "voice-a" } }, "PUT");
+  expect((await sendWavNote(f)).equals(wav)).toBe(true);
+}), 60_000);
+
+it.runIf(process.platform === "darwin")("delivers a voice note spoken by the built-in Mac voices", async () => withVoiceFixture(async (f) => {
+  const [voice] = await listSystemVoices();
+  await f.api("/api/config", { tts: { provider: "system", voice: voice!.id } }, "PUT");
+  const served = await sendWavNote(f);
+  expect(served.subarray(0, 4).toString("latin1")).toBe("RIFF");
+  expect(served.subarray(8, 12).toString("latin1")).toBe("WAVE");
 }), 60_000);
 
 it("makes the note text the visible transcript when the turn writes no reply", async () => withVoiceFixture(async (f) => {
@@ -164,7 +193,6 @@ it("hides the tool and refuses the call when no voice is configured", async () =
   const listed = turn.evidence[0].result.tools.map((tool: any) => tool.name);
   expect(listed).not.toContain("send_voice_note");
   const step = turn.evidence.find((entry: any) => entry.step);
-  // Refused as an unmounted tool (or a tool error), never a failed turn.
   expect(Boolean(step.response.error || step.response.result?.isError)).toBe(true);
   const messages = await f.messages(bot.activeTaskId);
   expect(messages.some((m: any) => m.text === "Done without a note.")).toBe(true);
@@ -221,15 +249,12 @@ it("attaches a parked voice note to a room post and delivers it exactly once", a
   expect(post.response.result.isError).toBeFalsy();
   expect(post.response.result.content[0].text).toContain("with the voice note attached");
 
-  // The room message carries the audio; the post text stands as its caption.
   const roomMessages = await f.messages(room.activeTaskId);
   const posted = roomMessages.find((m: any) => m.text === "Deploy status: green.");
   expect(posted).toBeTruthy();
   const audio = (posted.attachments ?? []).find((a: any) => a.kind === "audio");
   expect(audio?.mime).toBe("audio/mpeg");
 
-  // Delivered once: the settling reply in the bot's own thread has none,
-  // and exactly one clip exists on disk — the posted one.
   const own = await f.messages(bot.activeTaskId);
   expect(own.some((m: any) => (m.attachments ?? []).some((a: any) => a.kind === "audio"))).toBe(false);
   expect(f.mp3Files()).toHaveLength(1);
@@ -282,19 +307,14 @@ it("keeps the parked note when the room-post append fails, so a retry can attach
   const posts = f.evidence().find((entry: any) => entry.botId === bot.id).evidence
     .filter((entry: any) => entry.step?.tool === "post_to_room");
   expect(posts).toHaveLength(2);
-  // The faulted append surfaces as a tool error — but never the
-  // "no voice note to attach" refusal, which would mean the parked clip
-  // was consumed by a post that never landed.
   const failed = posts[0].response;
   expect(Boolean(failed.error || failed.result?.isError)).toBe(true);
   expect(String(failed.result?.content?.[0]?.text ?? failed.error ?? "")).not.toContain("no voice note to attach");
-  // The retry attaches the very same parked clip.
   const retried = posts[1].response;
   expect(Boolean(retried.error || retried.result?.isError)).toBe(false);
   expect(retried.result.content[0].text).toContain("with the voice note attached");
 
-  // Only the retried text is in the room (different text, so the room's
-  // duplicate-post budget does not swallow the retry) and it carries audio.
+  // Different text, so the room's duplicate-post budget does not swallow the retry.
   const roomMessages = await f.messages(room.activeTaskId);
   expect(roomMessages.some((m: any) => m.text === "Deploy status: green.")).toBe(false);
   const posted = roomMessages.find((m: any) => m.text === "Deploy status: green, retried.");
@@ -302,8 +322,6 @@ it("keeps the parked note when the room-post append fails, so a retry can attach
   const audio = (posted.attachments ?? []).find((a: any) => a.kind === "audio");
   expect(audio?.mime).toBe("audio/mpeg");
 
-  // Delivered once, nothing orphaned: the settling reply carries no second
-  // copy and exactly the one posted clip exists on disk.
   const own = await f.messages(bot.activeTaskId);
   expect(own.some((m: any) => (m.attachments ?? []).some((a: any) => a.kind === "audio"))).toBe(false);
   expect(f.mp3Files()).toHaveLength(1);
@@ -323,7 +341,6 @@ it("deletes a parked voice note when the turn is cancelled mid-flight", async ()
     },
   });
   await f.cli("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Send a note, then hold.");
-  // The clip is synthesized and parked while the fixture turn waits on its gate.
   await expect.poll(() => f.mp3Files().length, { timeout: 20_000 }).toBe(1);
   await f.api("/api/bots/" + bot.id + "/interrupt", { threadId: bot.activeTaskId });
   await expect.poll(() => f.mp3Files(), { timeout: 20_000 }).toEqual([]);
@@ -341,14 +358,11 @@ it("leaves no file and no later-turn attachment when the turn dies mid-synthesis
     },
   });
   await f.cli("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Send a note, slowly.");
-  // Synthesis is in flight: the provider has the request, the bytes are held.
   await expect.poll(() => f.seen.length, { timeout: 20_000 }).toBe(1);
   await f.api("/api/bots/" + bot.id + "/interrupt", { threadId: bot.activeTaskId });
-  // The failed settle must land before the provider bytes arrive, so the
-  // park attempt meets a fully dead turn instead of racing the cleanup.
+  // The failed settle lands before the provider bytes arrive, so the park meets a fully dead turn instead of racing the cleanup.
   await f.cli("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30").catch(() => undefined);
   writeFileSync(hold, "release");
-  // A later turn in the same thread must not inherit the dead note either.
   f.savePlan({ [bot.id]: { steps: [], reply: "Follow-up without a note." } });
   await f.cli("send", "--bot", bot.id, "--task", bot.activeTaskId, "--text", "Just reply in text.");
   expect((await f.cli("wait", "--bot", bot.id, "--task", bot.activeTaskId, "--timeout", "30")).status).toBe("settled");

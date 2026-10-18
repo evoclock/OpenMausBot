@@ -19,12 +19,7 @@ function harness() {
   const cancelled: Array<{ id: string; message: string }> = [];
   const emitted: unknown[] = [];
   const posted: Array<{ botId: string; threadId: string; text: string }> = [];
-  // Mirrors index.ts's resolvePostThread: create-on-first-use, reused
-  // forever after via the manager's own trigger.resultsThreadId
-  // bookkeeping. `postThreadCreations` records only the *new* allocations
-  // (this fake's stand-in for a real server's store.createTask calls) so a
-  // test can prove the destination is minted once and reused thereafter,
-  // even though the resolver itself is invoked on every dispatch.
+  // Mirrors index.ts's resolvePostThread (create on first use, then reuse); postThreadCreations records only new allocations.
   const postThreads = new Map<string, string>();
   const postThreadCreations: string[] = [];
   const options: WebhookManagerOptions = {
@@ -96,6 +91,31 @@ describe("WebhookManager", () => {
     expect(reloaded.listAttempts()).toEqual([]);
   });
 
+  it("refuses to overwrite a webhooks file it could not read", () => {
+    const h = harness();
+    create(h.manager);
+    const corrupt = readFileSync(h.file, "utf8").slice(0, 100);
+    writeFileSync(h.file, corrupt);
+    const reloaded = new WebhookManager(h.options);
+    expect(reloaded.list()).toEqual([]);
+    expect(() => create(reloaded)).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(h.file, "utf8")).toBe(corrupt);
+  });
+
+  it("refuses to overwrite a webhooks file with a row the schema rejects", () => {
+    const h = harness();
+    create(h.manager);
+    create(h.manager);
+    const disk = JSON.parse(readFileSync(h.file, "utf8")) as { webhooks: Array<Record<string, unknown>> };
+    disk.webhooks[0].runOn = "future-engine";
+    const damaged = JSON.stringify(disk);
+    writeFileSync(h.file, damaged);
+    const reloaded = new WebhookManager(h.options);
+    expect(reloaded.list()).toEqual([]);
+    expect(() => create(reloaded)).toThrow(expect.objectContaining({ status: 503 }));
+    expect(readFileSync(h.file, "utf8")).toBe(damaged);
+  });
+
   it("stores only a secret digest and exposes the secret once", () => {
     const h = harness();
     const created = create(h.manager);
@@ -159,7 +179,6 @@ describe("WebhookManager", () => {
     expect(h.queued).toHaveLength(0);
     expect(h.posted).toEqual([{ botId: "maus-1", threadId: "post-thread-1", text: "Morning brief: two calls today." }]);
     expect(h.manager.list()[0]).toMatchObject({ delivery: "post", deliveryCount: 1, resultsThreadId: "post-thread-1" });
-    // a repeat of the same delivery id is deduplicated like any other webhook
     expect(h.manager.receive(webhook.endpointId, secret, { payload: { text: "again" }, deliveryId: "evt-post-1" })).toMatchObject({ duplicate: true });
     expect(h.posted).toHaveLength(1);
   });
@@ -184,10 +203,6 @@ describe("WebhookManager", () => {
     expect(h.posted).toHaveLength(0);
   });
 
-  // OpenMausBot#2071: a delivery:"post" webhook used to land in
-  // bot.threadId, the bot's CURRENTLY SELECTED task -- so a background
-  // brief/alert could land inside whatever live conversation the owner (or
-  // another automation) happened to have open at delivery time.
   it("gives a delivery:\"post\" webhook one stable dedicated thread, independent of the bot's live selection, and it survives a restart (OpenMausBot#2071)", () => {
     const h = harness();
     const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
@@ -195,21 +210,12 @@ describe("WebhookManager", () => {
     h.manager.receive(webhook.endpointId, secret, { payload: { text: "first" }, deliveryId: "evt-a" });
     h.manager.receive(webhook.endpointId, secret, { payload: { text: "second" }, deliveryId: "evt-b" });
 
-    // resolvePostThread is invoked on every dispatch (mirroring routines'
-    // resolveResultsThread, called on every run) but only ever MINTS one
-    // destination for this trigger -- the second delivery reuses
-    // trigger.resultsThreadId, the same guarantee a real server gets from
-    // never calling store.createTask twice for the same webhook. Nothing
-    // here reads or depends on the bot's currently-selected thread at all.
     expect(h.postThreadCreations).toEqual(["post-thread-1"]);
     expect(h.posted).toEqual([
       { botId: "maus-1", threadId: "post-thread-1", text: "first" },
       { botId: "maus-1", threadId: "post-thread-1", text: "second" },
     ]);
 
-    // A server restart re-hydrates the trigger from webhooks.json; the
-    // destination is read back from the persisted resultsThreadId, never
-    // recomputed.
     const reloaded = new WebhookManager(h.options);
     reloaded.receive(webhook.endpointId, secret, { payload: { text: "third" }, deliveryId: "evt-c" });
     expect(h.postThreadCreations).toEqual(["post-thread-1"]);
@@ -274,8 +280,6 @@ describe("WebhookManager", () => {
     expect(h.manager.list()).toHaveLength(0);
   });
 
-  // MOCA-93: three was a code constant; a webhook fanning out a project
-  // manager's events got 429 from the fourth unfinished task on.
   it("lets a webhook set how many unfinished tasks it may hold", () => {
     const h = harness();
     const { webhook, secret } = h.manager.create({ name: "PM events", prompt: "Handle it", botId: "maus-1", maxPendingRuns: 5 });
@@ -289,11 +293,9 @@ describe("WebhookManager", () => {
       expect((error as { status?: number }).status).toBe(429);
     }
 
-    // Editing other settings keeps it; null goes back to the default of 3.
     expect(h.manager.update(webhook.id, { name: "Renamed" })?.maxPendingRuns).toBe(5);
     const reset = h.manager.update(webhook.id, { maxPendingRuns: null });
     expect(reset).not.toHaveProperty("maxPendingRuns");
-    // Lowered below what is already unfinished: say both numbers.
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "default" })).toThrow("already has 5 unfinished tasks (its limit is 3)");
     h.setPending(3);
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "default" })).toThrow("already has 3 unfinished tasks (its limit is 3)");
@@ -301,7 +303,6 @@ describe("WebhookManager", () => {
     h.setPending(1);
     expect(() => h.manager.receive(webhook.endpointId, secret, { payload: {}, deliveryId: "one" })).toThrow("already has 1 unfinished task (its limit is 1)");
 
-    // Survives a restart.
     expect(new WebhookManager(h.options).list().find((candidate) => candidate.id === webhook.id)?.maxPendingRuns).toBe(1);
   });
 

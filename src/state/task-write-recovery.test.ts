@@ -3,8 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { initialState, MESSAGE_PAGE_SIZE, StoreProvider, useStore, type Action, type BotAnnouncement } from "./store";
 
-/** The snapshot path the store reconciles against: a bounded page, so a
- * settings recovery never pulls every transcript with it. */
 const SNAPSHOT = `/api/bots?messages=${MESSAGE_PAGE_SIZE}`;
 
 const bot: BotAnnouncement = {
@@ -21,8 +19,7 @@ const deferred = () => {
 };
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 
-// Exercise the real StoreProvider dispatch and write promises. Server rendering
-// avoids mounting live event effects; every HTTP request is an offline fixture.
+// Server rendering avoids mounting live event effects; every HTTP request is an offline fixture.
 function mount(request: typeof fetch) {
   vi.useFakeTimers();
   vi.stubGlobal("fetch", request);
@@ -103,7 +100,6 @@ describe("thread setting save recovery", () => {
     expect(requests.mock.calls.map(([path]) => path)).toEqual(["/api/bots/bot/tasks/thread", SNAPSHOT]);
     reconcile.resolve(response({ bots: [bot] }));
     await flush();
-    // The failed send is never silently retried using a different model.
     expect(requests).toHaveBeenCalledTimes(2);
     controls.send();
     await flush();
@@ -144,8 +140,6 @@ describe("thread setting save recovery", () => {
     expect(requests.mock.calls.some(([path]) => path === "/api/bots/bot/messages")).toBe(false);
     nextWrite.resolve(response({ bot }));
     await flush();
-    // This send still belonged to the failed batch; only a fresh send after
-    // the newer settings settle may run.
     expect(requests.mock.calls.some(([path]) => path === "/api/bots/bot/messages")).toBe(false);
     controls.send();
     await flush();

@@ -1,18 +1,9 @@
 import { useSyncExternalStore } from "react";
 
-// Simple vs Advanced. Simple is the app a non-technical person meets first;
-// Advanced shows every technical control. This only hides controls: no
-// setting, conversation or server configuration changes with it.
+import { hasPriorRun } from "./prior-run";
+
 export const ADVANCED_MODE_KEY = "omb-advanced-mode";
 
-// Keys an earlier run of this app has written. With no explicit choice
-// stored, their presence means "existing install", which keeps Advanced so an
-// update never hides a control someone already uses. Must be read before
-// main.tsx's first-paint writes (applySkin stamps omb-skin on every boot).
-const PRIOR_RUN_KEYS = ["omb-skin", "omb-installed", "omb-email-gate", "omb-drafts", "omb-show-threads"];
-
-// Keep a session choice even if private/blocked storage rejects reads or
-// writes; another window's storage event can supersede that choice.
 let sessionChoice: boolean | undefined;
 const listeners = new Set<() => void>();
 
@@ -31,20 +22,16 @@ export function readAdvancedMode(): boolean {
     const stored = store?.getItem(ADVANCED_MODE_KEY);
     if (stored === "1") return true;
     if (stored === "0") return false;
-    return PRIOR_RUN_KEYS.some((key) => store?.getItem(key) != null);
+    return hasPriorRun(store);
   } catch {
     return false;
   }
 }
 
-/** Store the computed default once, before anything else writes its own
- * first-run keys — otherwise every fresh install would look like an old one
- * by the second launch. */
 export function settleAdvancedModeDefault(): void {
   try {
     if (storage()?.getItem(ADVANCED_MODE_KEY) == null) setAdvancedMode(readAdvancedMode());
   } catch {
-    // Storage blocked: the hook falls back to Simple for this session.
   }
 }
 
@@ -77,7 +64,6 @@ export function setAdvancedMode(enabled: boolean): void {
   try {
     storage()?.setItem(ADVANCED_MODE_KEY, enabled ? "1" : "0");
   } catch {
-    // The switch still takes effect for this session when storage is full.
   }
   notify();
 }

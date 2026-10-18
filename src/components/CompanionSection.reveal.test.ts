@@ -2,8 +2,7 @@ import { createElement, type EffectCallback } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, expect, it, vi } from "vitest";
 
-// Connect your phone on this computer: the phone flow reveals itself once the
-// companion's state is read, once per request. React's hooks are replayed by hand.
+// React's hooks are replayed by hand.
 const f = vi.hoisted(() => ({ values: [] as unknown[], index: 0, effects: [] as EffectCallback[], revealed: [] as unknown[], state: null as object | null }));
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),

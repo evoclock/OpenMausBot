@@ -1,17 +1,12 @@
-// The agents tools' only way to the harness: JSON over HTTP to the
-// loopback-only /api/internal/* routes, carrying the capability token the
-// harness minted for this turn (or the standing one of an external runtime).
-// The harness authenticates and scopes every call; nothing here decides what
-// a bot may do.
+// The agents tools' only way to the harness: loopback /api/internal/* with this turn's capability token;
+// the harness authenticates and scopes every call.
 
 export type Json = Record<string, unknown>;
 
 export interface HarnessClient {
-  /** The route's JSON body. A refusal is thrown as an Error carrying the
-   * route's own `error` sentence. */
+  /** The route's JSON body; a refusal throws an Error carrying the route's `error` sentence. */
   api(path: string, init?: RequestInit): Promise<Json>;
-  /** Like api, but a refusal comes back as its body instead of an Error —
-   * for the tools whose refusals carry more than a sentence. */
+  /** Like api, but a refusal comes back as its body. */
   apiResponse(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; body: Json }>;
 }
 

@@ -1,6 +1,4 @@
-// Qwen Code — Alibaba's `qwen --acp` CLI. Custom-only in OpenMausBot:
-// the official pane has no Qwen Cloud catalog; live local hosts land in
-// Custom and are written into ~/.qwen/settings.json modelProviders.
+// Qwen Code (`qwen --acp`), custom-only: live local hosts are written into ~/.qwen/settings.json modelProviders.
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -112,9 +110,7 @@ export function ensureQwenInjectModel(
   if (existsSync(path)) {
     try {
       settings = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    } catch {
-      // Malformed user config — inject into a fresh object rather than fail the turn.
-    }
+    } catch {}
   }
   const keyName = envKeyFor(inject.host);
   const key = hostApiKey(host, env);
@@ -150,9 +146,7 @@ export function ensureQwenInjectModel(
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
   try {
     chmodSync(path, 0o600);
-  } catch {
-    // Windows ignores POSIX modes; keep the inject even if chmod is unsupported.
-  }
+  } catch {}
   return inject.model;
 }
 
@@ -202,12 +196,8 @@ export function qwenDebugLogPath(env: Record<string, string | undefined>, sessio
   return join(base, "debug", `${sessionId}.txt`);
 }
 
-/** Qwen Code's own approval ladder, passed through (qwen --help, 0.24):
- * `--approval-mode default` asks, `auto-edit` approves file edits, `auto`
- * runs Qwen's LLM classifier that approves safe actions and blocks risky
- * ones, and `--yolo` approves everything. Ask sends nothing, so an older
- * CLI without the flag keeps working at the level it always had; the ACP
- * client still answers residual permission asks itself under Full. */
+/** Qwen Code's approval ladder (qwen --help, 0.24): `--approval-mode default` asks, `auto-edit` approves
+ * edits, `auto` runs Qwen's LLM classifier, `--yolo` approves everything. Ask sends nothing, for older CLIs. */
 export function qwenApprovalArgs(fullAuto: boolean, approvalMode: string | undefined): string[] {
   if (fullAuto) return ["--yolo"];
   if (approvalMode === "auto") return ["--approval-mode", "auto"];
@@ -233,20 +223,16 @@ const support: AcpSupport = {
     },
     docsUrl: "https://qwenlm.github.io/qwen-code-docs/en/users/overview/",
   },
-  // A raw -m only changes the model within the saved provider. ACP switches
-  // the complete route and confirms it before any prompt leaves OMB.
+  // A raw -m changes the model only within the saved provider; ACP switches and confirms the whole route.
   spawnArgs: (config, turn) => ["--acp", ...qwenApprovalArgs(config.fullAuto, turn.approvalMode)],
-  // Qwen's live session/load returns its cached MCP clients, ignoring fresh
-  // credentials. Cold-load the same conversation when those inputs change.
+  // Qwen's live session/load returns its cached MCP clients, ignoring fresh credentials.
   restartOnMcpChange: true,
   selectModel: { configId: "model" },
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: () => true,
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
-  // Qwen says nothing over ACP while it retries a rate limit or compresses
-  // its history, but its debug log does. Turn the log on (unless the person
-  // turned it off) and read it while a prompt is quiet.
+  // Qwen says nothing over ACP while it retries or compresses, but its debug log does.
   transformEnv: (env) => {
     if (env.QWEN_DEBUG_LOG_FILE === undefined) env.QWEN_DEBUG_LOG_FILE = "1";
   },

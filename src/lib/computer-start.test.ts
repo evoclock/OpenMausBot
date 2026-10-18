@@ -1,4 +1,3 @@
-// The one progress line a chat shows while a bot's computer starts.
 import { describe, expect, it } from "vitest";
 
 import { computerStartLine } from "./computer-start";

@@ -1,10 +1,3 @@
-// Beat 1: who you are. Name and email go to the workspace profile (the
-// sidebar footer reads them back) and to analytics identity. Both optional;
-// "Maybe later" moves on without either.
-//
-// A hosted team workspace asks for neither: its profile is shared by
-// everyone who signs in there, and the email field is a mailing-list offer
-// for people installing the app. It only says what the workspace is.
 import { useRef, useState } from "react";
 import { identifyEmail, track } from "@/lib/analytics";
 import { t } from "@/lib/i18n";
@@ -26,8 +19,6 @@ export function HelloBeat({ onNext, onSkip, hosted = false }: BeatProps & { host
     setSaving(true);
     setFailed(false);
     const trimmedEmail = email.trim().toLowerCase();
-    // persisted server-side (~/.openmausbot/config.json); the response is
-    // the fresh config status, folded straight into the store
     try {
       const config = await api("/api/config", {
         method: "PUT",

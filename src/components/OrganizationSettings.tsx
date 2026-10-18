@@ -7,7 +7,7 @@ import { CompanyModels } from "./CompanyModels";
 const providerNames: Record<string, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
 const DEFAULT_PORTAL_ORIGIN = "https://admin.openmausbot.com";
 
-/** Only the trusted desktop bridge can enroll this computer or hold its token. */
+/** Security: only the trusted desktop bridge can enroll this computer or hold its token. */
 export function OrganizationSettings() {
   const bridge = window.ogb?.remoteClient?.active ? undefined : window.ogb?.organization;
   const [connection, setConnection] = useState<ManagedDesktopState | null>(null);
@@ -24,16 +24,13 @@ export function OrganizationSettings() {
     const changed = status.current !== next.status;
     status.current = next.status;
     setConnection(next);
-    // Heartbeats republish every minute; keep an action error visible until
-    // the connection actually changes state. Keep this outside React's state
-    // updater: updaters must stay pure and can run during rendering.
+    // Outside React's state updater: updaters must stay pure and can run during rendering.
     if (changed) setError("");
     if (next.status !== "connected" && next.status !== "reauth-required") setConfirmDisconnect(false);
   };
 
   useEffect(() => {
-    // This acknowledges only the rendered destination, never enrollment.
-    // Failure leaves the native restart intent available on the next launch.
+    // Acknowledges only the rendered destination, never enrollment.
     void bridge?.settingsOpened?.().catch(() => {});
     const current = ++generation.current;
     const initialRevision = revision.current;
@@ -73,11 +70,7 @@ export function OrganizationSettings() {
   };
 
   if (!bridge) return <p className="text-[13px] text-ink-secondary">{t("organization.desktopOnly")}</p>;
-  // Unavailable can still hold a saved grant; let the person clear it before
-  // reconnecting even while the Admin portal or local runtime is offline.
   const enrolled = connection?.status === "connected" || connection?.status === "reauth-required" || connection?.status === "unavailable" || connection?.status === "license-expired";
-  // A lapsed Admin licence is the organisation's billing matter, not a sign-in
-  // problem: say so, keep the connection, and offer no reconnect loop.
   const licenseExpired = connection?.status === "license-expired" || connection?.notice === "license-expired";
   const expiry = connection?.enrollment?.expiresAt ?? connection?.expiresAt;
   const date = typeof expiry === "number" && Number.isFinite(expiry) ? new Date(expiry) : null;
@@ -118,7 +111,6 @@ export function OrganizationSettings() {
           <code dir="ltr" className="mt-1 block w-fit select-all rounded-lg bg-inset px-3 py-2 text-base tracking-widest text-ink">{connection.enrollment.userCode}</code>
         </details>}
         <div className="flex flex-wrap gap-2">
-          {/* A closed browser tab: reopen this attempt's own page, nothing else. */}
           {connection.enrollment && bridge.reopen && <button type="button" disabled={busy} className="ui-button" onClick={() => void perform(() => bridge.reopen!())}>{t("organization.reopen")}</button>}
           <button type="button" disabled={busy} className="ui-button" onClick={() => void perform(() => bridge.cancelEnrollment())}>{t("organization.cancel")}</button>
         </div>

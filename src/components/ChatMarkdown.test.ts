@@ -1,23 +1,33 @@
+// @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { act, createElement } from "react";
 import * as React from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 import {
   ChatMarkdown,
   CodeBlock,
   HIGHLIGHT_CACHE_MAX,
   HIGHLIGHT_CACHE_MAX_CHARS,
+  HIGHLIGHT_MAX_CHARS,
   samePeers,
   chatUrlTransform,
-  markdownImageName,
-  markdownImageOpenUrl,
   localFilePath,
   normalizeMathDelimiters,
   textDirection,
+  ensureChatKatex,
+  messageNeedsKatex,
 } from "./ChatMarkdown";
+import { getSnippetFileName, parseFenceInfo } from "@/lib/code-block";
+import { markdownImageName, markdownImageOpenUrl } from "@/lib/markdown-image";
 import { StoreProvider } from "@/state/store";
+import { setLocale } from "@/lib/i18n";
 import { ThreadRefsContext } from "./ThreadRefs";
 import * as AttachmentPreview from "./AttachmentPreview";
 
@@ -25,6 +35,21 @@ vi.mock("react", async (importOriginal) => {
   const react = await importOriginal<typeof React>();
   return { ...react, useEffect: vi.fn(react.useEffect) };
 });
+
+// The highlighter is created once per page, so tests replace what that instance calls rather than swapping the module.
+const shiki = vi.hoisted(() => ({
+  codeToHtml: vi.fn(async (_code: string, _options: unknown) => "<pre></pre>"),
+  loadLanguage: vi.fn(async (_grammar: unknown) => undefined),
+}));
+vi.mock("shiki/core", () => ({
+  createHighlighterCore: async () => ({
+    codeToHtml: (code: string, options: unknown) => shiki.codeToHtml(code, options),
+    loadLanguage: (grammar: unknown) => shiki.loadLanguage(grammar),
+  }),
+}));
+vi.mock("shiki/engine/javascript", () => ({
+  createJavaScriptRegexEngine: () => ({}),
+}));
 
 describe("mention highlighting", () => {
   const mentionPeers = [{ name: "Atlas" }, { name: "調査担当" }];
@@ -61,7 +86,29 @@ describe("mention highlighting", () => {
   });
 });
 
+describe("math before katex loads", () => {
+  it("keeps the formula as source until katex is loaded, then typesets it", async () => {
+    expect(messageNeedsKatex("Inline $x$.")).toBe(true);
+    expect(messageNeedsKatex("Jan −$3,000 · Feb −$2,000")).toBe(false);
+    expect(messageNeedsKatex("`const price = '$5'`\n\nUnclosed \\(x")).toBe(false);
+    expect(messageNeedsKatex("```tex\n\\(not rendered\\)\n```")).toBe(false);
+    expect(messageNeedsKatex("\\(x^2\\)")).toBe(true);
+    expect(messageNeedsKatex("Plans: US$5, or $x$ per seat.")).toBe(true);
+    const before = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(before).not.toContain('class="katex"');
+    expect(before).toContain("x");
+    await ensureChatKatex();
+    const after = renderToStaticMarkup(createElement(ChatMarkdown, { text: "Inline $x$." }));
+    expect(after).toContain('class="katex"');
+    expect(after).toContain("<mi>x</mi>");
+  });
+});
+
 describe("math rendering", () => {
+  beforeAll(async () => {
+    await ensureChatKatex();
+  });
+
   it.each([
     "\\(x% comment\r\n+y\\)\n\nAfter",
     "> Before \\(x% comment\n> +y\\)\n\nAfter",
@@ -207,7 +254,7 @@ describe("math rendering", () => {
       text: `Inline $${"abcdefghijklmnopqrstuvwxyz".repeat(3)}$.`,
     }));
     expect(html.match(/class="katex"/g)).toHaveLength(1);
-    const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../styles.css"), "utf8");
     const rule = css.match(/\.chat-md :not\(\.katex-display\) > \.katex \{([^}]*)\}/)?.[1];
     expect(rule).toContain("max-width: 100%");
     expect(rule).toContain("overflow-x: auto");
@@ -246,8 +293,6 @@ describe("math rendering", () => {
     const text = `Price R$ 120; \\( x^2 \\) and \`$5\`.\n\n${image}\n\nPay $10.\n\n${image}`;
     const preview = vi.spyOn(AttachmentPreview, "MarkdownImagePreview");
     try {
-      // the second render reads the message's normalized text from the cache;
-      // its image offsets must still point into the stored text
       for (const _render of ["first", "cached"]) {
         preview.mockClear();
         const html = renderToStaticMarkup(createElement(ChatMarkdown, {
@@ -279,7 +324,7 @@ describe("repaired tables", () => {
     }));
     expect(html).toContain('font-semibold">Pros | Cons</div>');
     expect(html.match(/<table\b/g)).toHaveLength(1);
-    expect(html).toContain(">a | b</th>");
+    expect(html).toContain(">a | b</span>");
     expect(html.match(/<th\b/g)).toHaveLength(2);
   });
 
@@ -317,8 +362,6 @@ describe("repaired tables", () => {
     expect(html).toContain("Lead-in prose");
   });
   it("keeps a message holding an image byte-for-byte, offsets intact", () => {
-    // MarkdownImagePreview resolves the attachment by source offset, so the
-    // repair must not move it; the broken table stays broken by design.
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: "![shot](https://example.test/a.png)\n\n| A | B | C |\n|---|---|\n| 1 | 2 | 3 |",
     }));
@@ -330,26 +373,22 @@ it("requests both code palettes for skin-aware highlighting", async () => {
   const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
   const effects: React.EffectCallback[] = [];
   const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
-  const codeToHtml = vi.fn().mockResolvedValue("<pre>dual palette</pre>");
-  vi.doMock("shiki", () => ({ codeToHtml }));
+  shiki.codeToHtml.mockResolvedValue("<pre>dual palette</pre>");
   const cleanup: ReturnType<React.EffectCallback>[] = [];
-  // effects stay captured, so each static render is a fresh first frame
   const fence = createElement(ChatMarkdown, { text: "```text\nPalette regression sample\n```" });
   try {
     expect(renderToStaticMarkup(fence)).not.toContain("dual palette");
     for (const callback of effects.splice(0)) cleanup.push(callback());
-    await vi.waitFor(() => expect(codeToHtml).toHaveBeenCalledWith("Palette regression sample", {
+    await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledWith("Palette regression sample", {
       lang: "text",
       themes: { light: "github-light-default", dark: "github-dark-default" },
       defaultColor: "light-dark()",
     }));
-    // a remount (revisiting the thread) paints the cached highlight at once,
-    // never plain text first
     await vi.waitFor(() => expect(renderToStaticMarkup(fence)).toContain("dual palette"));
   } finally {
     for (const close of cleanup) if (typeof close === "function") close();
     effect.mockImplementation(originalUseEffect);
-    vi.doUnmock("shiki");
+    shiki.codeToHtml.mockReset();
   }
 });
 
@@ -357,46 +396,38 @@ it("keeps the newest highlighted code within both the count and the size bound",
   const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
   const effects: React.EffectCallback[] = [];
   const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
-  // each block's highlighted HTML is padded to the size the step needs
   let htmlChars = 0;
-  const codeToHtml = vi.fn(async (code: string) => `<pre class="cache-probe">${code}</pre>`.padEnd(htmlChars, " "));
-  vi.doMock("shiki", () => ({ codeToHtml }));
+  shiki.codeToHtml.mockImplementation(async (code: string) => `<pre class="cache-probe">${code}</pre>`.padEnd(htmlChars, " "));
   const cleanup: ReturnType<React.EffectCallback>[] = [];
   const block = (code: string) => createElement(CodeBlock, { code, lang: "text" });
-  // a cached block paints highlighted in its first frame
   const painted = (code: string) => {
     const html = renderToStaticMarkup(block(code));
     effects.length = 0;
     return html.includes('class="cache-probe"');
   };
-  // mount a block and let its highlight settle
   const highlight = async (code: string) => {
-    const calls = codeToHtml.mock.results.length;
+    const calls = shiki.codeToHtml.mock.results.length;
     renderToStaticMarkup(block(code));
     for (const callback of effects.splice(0)) cleanup.push(callback());
-    await vi.waitFor(() => expect(codeToHtml.mock.results.length).toBe(calls + 1), { interval: 1 });
-    await codeToHtml.mock.results[calls]!.value;
+    await vi.waitFor(() => expect(shiki.codeToHtml.mock.results.length).toBe(calls + 1), { interval: 1 });
+    await shiki.codeToHtml.mock.results[calls]!.value;
     await new Promise((resolve) => setTimeout(resolve, 0));
   };
   try {
-    // past the count, the oldest block goes
     const small = Array.from({ length: HIGHLIGHT_CACHE_MAX + 1 }, (_, i) => `small block ${i}`);
     for (const code of small) await highlight(code);
     expect(painted(small[0]!)).toBe(false);
     expect(small.slice(1).every(painted)).toBe(true);
 
-    // four quarter-size blocks fill the size bound, pushing the small ones out
     htmlChars = Math.floor(HIGHLIGHT_CACHE_MAX_CHARS / 4);
     const big = Array.from({ length: 5 }, (_, i) => `big block ${i}`);
     for (const code of big.slice(0, 4)) await highlight(code);
     expect(small.some(painted)).toBe(false);
     expect(big.slice(0, 4).every(painted)).toBe(true);
-    // past the size, the oldest block goes
     await highlight(big[4]!);
     expect(painted(big[0]!)).toBe(false);
     expect(big.slice(1).every(painted)).toBe(true);
 
-    // a block bigger than the whole bound is not kept and pushes nothing out
     htmlChars = HIGHLIGHT_CACHE_MAX_CHARS + 1;
     await highlight("huge block");
     expect(painted("huge block")).toBe(false);
@@ -404,7 +435,73 @@ it("keeps the newest highlighted code within both the count and the size bound",
   } finally {
     for (const close of cleanup) if (typeof close === "function") close();
     effect.mockImplementation(originalUseEffect);
-    vi.doUnmock("shiki");
+    shiki.codeToHtml.mockReset();
+  }
+});
+
+it("leaves a block past the highlight bound as plain text and never tokenizes it", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  shiki.codeToHtml.mockReset();
+  shiki.codeToHtml.mockImplementation(async (code: string) => `<pre class="highlighted">${code.length}</pre>`);
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const paint = (code: string) => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, { code, lang: "json" }));
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+    return html;
+  };
+  try {
+    const atBound = "1".repeat(HIGHLIGHT_MAX_CHARS);
+    paint(atBound);
+    await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(paint(atBound)).toContain('class="highlighted"'));
+
+    shiki.codeToHtml.mockClear();
+    const past = `${"2".repeat(HIGHLIGHT_MAX_CHARS)}x`;
+    const html = paint(past);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
+    expect(html).not.toContain('class="highlighted"');
+    expect(html).toContain(past);
+    expect(paint(past)).not.toContain('class="highlighted"');
+    expect(shiki.codeToHtml).not.toHaveBeenCalled();
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    shiki.codeToHtml.mockReset();
+  }
+});
+
+it("loads a curated grammar once and leaves an unbundled language plain", async () => {
+  const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+  const effects: React.EffectCallback[] = [];
+  const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+  shiki.codeToHtml.mockResolvedValue("<pre>typed</pre>");
+  shiki.loadLanguage.mockClear();
+  const cleanup: ReturnType<React.EffectCallback>[] = [];
+  const paint = (text: string) => {
+    renderToStaticMarkup(createElement(ChatMarkdown, { text }));
+    for (const callback of effects.splice(0)) cleanup.push(callback());
+  };
+  try {
+    paint("```ts\nconst a = 1\n```");
+    await vi.waitFor(() => expect(shiki.loadLanguage).toHaveBeenCalledTimes(1));
+    const grammar = shiki.loadLanguage.mock.calls[0]?.[0] as unknown as { name?: string }[];
+    expect(grammar[0]?.name).toBe("typescript");
+    expect(shiki.codeToHtml).toHaveBeenCalledWith("const a = 1", expect.objectContaining({ lang: "typescript" }));
+    paint("```ts\nconst b = 2\n```");
+    await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledWith("const b = 2", expect.objectContaining({ lang: "typescript" })));
+    expect(shiki.loadLanguage).toHaveBeenCalledTimes(1);
+    const before = shiki.codeToHtml.mock.calls.length;
+    paint("```zig\nfn main() void {}\n```");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(shiki.codeToHtml.mock.calls.length).toBe(before);
+  } finally {
+    for (const close of cleanup) if (typeof close === "function") close();
+    effect.mockImplementation(originalUseEffect);
+    shiki.codeToHtml.mockReset();
+    shiki.loadLanguage.mockReset();
   }
 });
 
@@ -428,7 +525,6 @@ describe("#Title thread links in markdown", () => {
     const markup = render("`#QA PR 245` in code, [#QA PR 245](https://example.test) as a link, #123 an issue\n\n# QA PR 245\n\nplain");
     expect(markup).not.toContain("data-thread-link");
     expect(markup).toContain("<code");
-    // the heading survives as a heading (this renderer draws it as a div), unlinked
     expect(markup).toContain('font-semibold">QA PR 245</div>');
   });
 
@@ -493,7 +589,6 @@ describe("message-scoped file targets", () => {
     expect(chatUrlTransform("file:///Users/milind/report.md")).toBe("file:///Users/milind/report.md");
     expect(chatUrlTransform("C:/Users/Maus/report.md")).toBe("C:/Users/Maus/report.md");
     expect(chatUrlTransform("\\\\server\\share\\report.md")).toBe("\\\\server\\share\\report.md");
-    // What rendering hands over for C:\Users\Maus\release notes.md.
     expect(chatUrlTransform("C:%5CUsers%5CMaus%5Crelease%20notes.md")).toBe("C:\\Users\\Maus\\release%20notes.md");
     expect(chatUrlTransform("javascript:alert(1)")).toBe("");
     expect(chatUrlTransform("https://example.test/report.md")).toBe("https://example.test/report.md");
@@ -529,6 +624,35 @@ describe("ChatMarkdown attachments", () => {
     expect(html).toContain('title="Save a copy"');
     expect(html).not.toContain("/Users/milind/report.md");
     expect(html).not.toContain("C:/Users/Maus/report.md");
+  });
+
+  it("says an image with no source is unavailable in the person's language", () => {
+    setLocale("de");
+    try {
+      expect(renderToStaticMarkup(createElement(ChatMarkdown, { text: "![Sideboard]()" }))).toContain("Bild nicht verfügbar");
+    } finally {
+      setLocale("en");
+    }
+  });
+
+  it("keeps delivered-file downloads scoped alongside GitHub reference pills", () => {
+    const save = vi.spyOn(AttachmentPreview, "useLocalFileSave");
+    const message = { threadId: "thread-1", messageId: "message-1" };
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "See https://github.com/a/app/pull/7 and [report.pdf](/work/report.pdf).",
+        message,
+        delivered: { "report.pdf": "/store/delivered-report.pdf" },
+      }));
+      expect(html).toContain('data-github-ref="pull"');
+      expect(html).toContain("<span>#7</span>");
+      expect(html).toContain('title="Save a copy"');
+      expect(save).toHaveBeenCalledWith("/store/delivered-report.pdf", "report.pdf", message);
+      expect(html).not.toContain("/store/delivered-report.pdf");
+      expect(html).not.toContain("/work/report.pdf");
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("routes a backslash Windows path through the scoped file handlers, every backslash intact", () => {
@@ -572,6 +696,99 @@ describe("ChatMarkdown attachments", () => {
     expect(html).toContain("Unavailable legacy file reference");
     expect(html).not.toContain("href=\"/workspace/final-report.pdf\"");
     expect(html).not.toContain("type=\"button\"");
+  });
+
+  it("lists the files of a linked folder under the link", () => {
+    const save = vi.spyOn(AttachmentPreview, "useLocalFileSave").mockReturnValue({
+      state: "idle",
+      reason: "",
+      savedTo: "",
+      outsideWorkspace: false,
+      folder: {
+        name: "04_post",
+        entries: [{ name: "cover.png", bytes: 2048, mime: "image/png" }],
+        truncated: false,
+      },
+      save: vi.fn(async () => undefined),
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "[post](Instagram/04_post/)", message: { threadId: "thread-1", messageId: "message-1" },
+      }));
+      expect(html).toContain("aria-label=\"Files in 04_post\"");
+      expect(html).toContain("cover.png");
+      expect(html).toContain("2 KB");
+    } finally {
+      save.mockRestore();
+    }
+  });
+
+  describe("a file link outside the conversation's workspace", () => {
+    const filePath = "C:\\Users\\Maus\\_draft\\ollama-gen.js";
+    const render = (outsideWorkspace: boolean, href = filePath) => {
+      const save = vi.spyOn(AttachmentPreview, "useLocalFileSave").mockReturnValue({
+        state: "failed",
+        reason: "the linked file is outside this conversation's workspace",
+        savedTo: "",
+        outsideWorkspace,
+        folder: null,
+        save: vi.fn(async () => undefined),
+      });
+      try {
+        return renderToStaticMarkup(createElement(ChatMarkdown, {
+          text: `[ollama-gen.js](${href})`, message: { threadId: "thread-1", messageId: "message-1" },
+        }));
+      } finally {
+        save.mockRestore();
+      }
+    };
+    const revealInFolder = vi.fn(async () => "shown" as const);
+
+    it("offers Show in folder in the local desktop app, without printing the path", () => {
+      vi.stubGlobal("window", { ogb: { revealInFolder, remoteClient: { active: false } } });
+      try {
+        const html = render(true);
+        expect(html).toContain("This file is outside this chat&#x27;s working folder, so it can&#x27;t be saved from here");
+        expect(html).not.toContain("the linked file is outside");
+        expect(html).toContain("Show in folder");
+        expect(html).not.toContain("<code");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("shows the full path as selectable text to a remote client instead", () => {
+      vi.stubGlobal("window", { ogb: { revealInFolder, remoteClient: { active: true } } });
+      try {
+        const html = render(true);
+        expect(html).not.toContain("Show in folder");
+        expect(html).toMatch(/<code[^>]*select-all[^>]*>C:\\Users\\Maus\\_draft\\ollama-gen\.js<\/code>/);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not offer a retry for a refusal that happens on every try", () => {
+      expect(render(true)).not.toContain("lucide-rotate-ccw");
+      expect(render(true, "file:///Users/maus/Desktop/designs/Posts/2026-10-08_News")).not.toContain("lucide-rotate-ccw");
+      expect(render(false)).toContain("lucide-rotate-ccw");
+    });
+
+    it("shows the path in a browser, which has no desktop bridge", () => {
+      expect(render(true)).toContain(`>${filePath}</code>`);
+    });
+
+    it("leaves other failures alone", () => {
+      vi.stubGlobal("window", { ogb: { revealInFolder, remoteClient: { active: false } } });
+      try {
+        const html = render(false);
+        expect(html).toContain("the linked file is outside this conversation&#x27;s workspace");
+        expect(html).not.toContain("Show in folder");
+        expect(html).not.toContain(filePath);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   it("makes a message-authorized file link downloadable", () => {
@@ -683,6 +900,138 @@ describe("ChatMarkdown code blocks", () => {
   });
 });
 
+describe("a fence's wrap directive", () => {
+  it("a fence with a trailing wrap token opens wrapped on first render", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "```text wrap\nalpha beta gamma\n```",
+    }));
+
+    expect(html).toContain("whitespace-pre-wrap break-words overflow-x-hidden");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).not.toContain("overflow-x-auto");
+  });
+
+  it("a fence with a leading wrap token opens wrapped and keeps the real language", async () => {
+    const originalUseEffect = (await vi.importActual<typeof React>("react")).useEffect;
+    const effects: React.EffectCallback[] = [];
+    const effect = vi.mocked(React.useEffect).mockImplementation((callback) => { effects.push(callback); });
+    shiki.codeToHtml.mockResolvedValue("<pre></pre>");
+    const cleanup: ReturnType<React.EffectCallback>[] = [];
+    try {
+      const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+        text: "```wrap text\nalpha beta\n```",
+      }));
+
+      expect(html).toContain("whitespace-pre-wrap break-words overflow-x-hidden");
+      expect(html).toContain('aria-pressed="true"');
+      expect(html).toContain('title="Text"');
+      expect(html).not.toContain('title="Wrap"');
+      for (const callback of effects.splice(0)) cleanup.push(callback());
+      await vi.waitFor(() => expect(shiki.codeToHtml).toHaveBeenCalledWith(
+        "alpha beta",
+        expect.objectContaining({ lang: "text" }),
+      ));
+    } finally {
+      for (const close of cleanup) if (typeof close === "function") close();
+      effect.mockImplementation(originalUseEffect);
+      shiki.codeToHtml.mockReset();
+    }
+  });
+
+  it("the fence info parser is order independent and case insensitive", () => {
+    expect(parseFenceInfo("wrap", "text")).toEqual({ lang: "text", wrap: true });
+    expect(parseFenceInfo("text", "wrap")).toEqual({ lang: "text", wrap: true });
+    expect(parseFenceInfo("text", "WRAP")).toEqual({ lang: "text", wrap: true });
+    expect(parseFenceInfo("wrap", undefined)).toEqual({ lang: "", wrap: true });
+    expect(parseFenceInfo("text", undefined)).toEqual({ lang: "text", wrap: false });
+  });
+
+  it("a fence without a token opens unwrapped", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "```ts\nconst x = 1;\n```",
+    }));
+
+    expect(html).toContain("overflow-x-auto");
+    expect(html).not.toContain("whitespace-pre-wrap");
+    expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("a mermaid fence carrying a wrap token still renders the diagram", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, {
+      text: "```mermaid wrap\nflowchart LR\n  Ship-->Sea\n```",
+    }));
+
+    expect(html).toContain('title="Mermaid diagram"');
+    expect(html).toContain("flowchart LR");
+    expect(html).not.toContain('aria-label="Wrap long lines"');
+    expect(html).not.toContain('aria-label="Download snippet as file"');
+    expect(html).not.toContain('aria-label="Copy code to clipboard"');
+  });
+
+  it("the Save filename derives from the resolved language", () => {
+    expect(getSnippetFileName(parseFenceInfo("wrap", "text").lang)).toBe("snippet.text");
+    expect(getSnippetFileName(parseFenceInfo("text", "wrap").lang)).toBe("snippet.text");
+  });
+
+  const wrapButton = (host: HTMLElement) =>
+    host.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+
+  it("a block already on screen opens wrapped when the fence gains a wrap token", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text\nalpha beta\n```" })));
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("false");
+      expect(host.innerHTML).toContain("overflow-x-auto");
+
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text wrap\nalpha beta\n```" })));
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("true");
+      expect(host.innerHTML).toContain("whitespace-pre-wrap break-words overflow-x-hidden");
+      expect(host.innerHTML).not.toContain("overflow-x-auto");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("a block already on screen unwraps when the fence loses its wrap token", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text wrap\nalpha beta\n```" })));
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("true");
+
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text\nalpha beta\n```" })));
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("false");
+      expect(host.innerHTML).toContain("overflow-x-auto");
+      expect(host.innerHTML).not.toContain("whitespace-pre-wrap break-words overflow-x-hidden");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
+  it("a code-only update keeps the Wrap toggle the person chose", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text wrap\nalpha\n```" })));
+      await act(async () => wrapButton(host).click());
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("false");
+
+      await act(async () => root.render(createElement(ChatMarkdown, { text: "```text wrap\nalpha beta gamma\n```" })));
+      expect(wrapButton(host).getAttribute("aria-pressed")).toBe("false");
+      expect(host.innerHTML).toContain("overflow-x-auto");
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+});
+
 describe("bidi: message content carries its own direction", () => {
   const ARABIC = "مرحبا بالعالم";
 
@@ -690,24 +1039,20 @@ describe("bidi: message content carries its own direction", () => {
     expect(textDirection("مرحبا")).toBe("rtl");
     expect(textDirection("hello")).toBe("ltr");
     expect(textDirection("")).toBe("ltr");
-    // digits, punctuation and emoji are directionally weak — keep scanning
     expect(textDirection("  «2024» — مرحبا hello")).toBe("rtl");
     expect(textDirection("🎉 42. hello مرحبا")).toBe("ltr");
     expect(textDirection("שלום")).toBe("rtl");
-    // the ranges have to hold for every RTL script, not a maintained list:
-    // these span all four blocks Unicode reserves for right-to-left letters
-    expect(textDirection("\u0780")).toBe("rtl"); // Thaana
-    expect(textDirection("\u07CA")).toBe("rtl"); // N'Ko
-    expect(textDirection("\uFB2E")).toBe("rtl"); // Hebrew presentation form
-    expect(textDirection("\u{10D00}")).toBe("rtl"); // Hanifi Rohingya
-    expect(textDirection("\u{10E80}")).toBe("rtl"); // Yezidi
-    expect(textDirection("\u{10D50}")).toBe("rtl"); // Garay (10D40 is a digit)
-    expect(textDirection("\u{10F70}")).toBe("rtl"); // Old Uyghur
-    expect(textDirection("\u{1E900}")).toBe("rtl"); // Adlam
-    // and must not swallow the LTR scripts that sit near those blocks
-    expect(textDirection("\u{11000}\u{11005}")).toBe("ltr"); // Brahmi
-    expect(textDirection("\u0915")).toBe("ltr"); // Devanagari
-    expect(textDirection("\u4E2D")).toBe("ltr"); // Han
+    expect(textDirection("\u0780")).toBe("rtl");
+    expect(textDirection("\u07CA")).toBe("rtl");
+    expect(textDirection("\uFB2E")).toBe("rtl");
+    expect(textDirection("\u{10D00}")).toBe("rtl");
+    expect(textDirection("\u{10E80}")).toBe("rtl");
+    expect(textDirection("\u{10D50}")).toBe("rtl");
+    expect(textDirection("\u{10F70}")).toBe("rtl");
+    expect(textDirection("\u{1E900}")).toBe("rtl");
+    expect(textDirection("\u{11000}\u{11005}")).toBe("ltr");
+    expect(textDirection("\u0915")).toBe("ltr");
+    expect(textDirection("\u4E2D")).toBe("ltr");
   });
 
   it("gives every block its own direction instead of the UI's", () => {
@@ -738,8 +1083,6 @@ describe("bidi: message content carries its own direction", () => {
   });
 
   it("keeps a table on one direction so columns and cells stay aligned", () => {
-    // cells must NOT resolve individually: an Arabic header over a Latin
-    // column would hang off the opposite edge from its own data
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `| ${ARABIC} | ms |\n| --- | --- |\n| buildIndex | 340 |`,
     }));
@@ -763,7 +1106,7 @@ describe("bidi: message content carries its own direction", () => {
     expect(html).toContain("list-disc space-y-1 ps-5");
     expect(html).toContain("list-decimal space-y-1 ps-5");
     expect(html).toContain("border-s-2 border-hairline ps-3");
-    expect(html).toContain("px-2 py-1.5 text-start font-semibold");
+    expect(html).toContain('scope="col"');
     expect(html).not.toMatch(/class="[^"]*\bpl-5\b/);
     expect(html).not.toMatch(/class="[^"]*\bborder-l-2\b/);
     expect(html).not.toMatch(/class="[^"]*\btext-left\b/);
@@ -784,9 +1127,6 @@ describe("bidi: message content carries its own direction", () => {
   });
 
   it("lets an inline span break, so a long path cannot leave the bubble", () => {
-    // an unbreakable token wider than the bubble has nowhere to go but
-    // outside it, and in an RTL paragraph that is off the left edge, where
-    // the line ends — the direction that reads as text escaping the message
     const html = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `${ARABIC} \`dist/{download,privacy,terms,license,support,presskit,changelogs,docs,about,feedback}\` ${ARABIC}`,
     }));
@@ -795,23 +1135,16 @@ describe("bidi: message content carries its own direction", () => {
   });
 
   it("gives links a base direction, not isolation alone", () => {
-    // isolate keeps a link from disturbing the sentence around it, but the
-    // link's own contents still lay out along its inherited direction — a URL
-    // in an RTL paragraph needs an LTR base of its own.
     const url = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `${ARABIC} <https://example.test/a/b?x=1> ${ARABIC}`,
     }));
     expect(url).toContain('dir="auto"');
 
-    // an Arabic label must not be pinned LTR, which is why the anchor
-    // resolves rather than hard-coding a direction
     const labelled = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `[${ARABIC}](https://example.test/a)`,
     }));
     expect(labelled).toContain('dir="auto"');
 
-    // a local path is always left-to-right, so that root is pinned. It needs
-    // a message context: without one the link degrades to a plain label.
     const path = renderToStaticMarkup(createElement(ChatMarkdown, {
       text: `${ARABIC} [report](/Users/maus/out/report.md) ${ARABIC}`,
       message: { threadId: "thread-1", messageId: "message-1" },
@@ -824,10 +1157,6 @@ describe("mention roster comparison", () => {
   const roster = [{ name: "Eve" }, { name: "Scout", color: "teal" as const }];
 
   it("treats a rebuilt array with the same roster as unchanged", () => {
-    // The reducer rebuilds state.bots with .map() on every bot patch, so the
-    // bubble's useMemo hands ChatMarkdown a fresh array that renders
-    // identically. Reference equality said "changed" and re-parsed the whole
-    // transcript; this is the regression guard for that.
     expect(samePeers(roster, roster.map((peer) => ({ ...peer })))).toBe(true);
   });
 
@@ -888,9 +1217,6 @@ it("renders mermaid strictly and serves repeat views from cache", async () => {
     }));
     expect(render).toHaveBeenCalledWith(expect.any(String), "flowchart LR\n  Ship-->Sea");
 
-    // a settled remount (revisiting the thread, a skin flip) re-renders from
-    // cache: the diagram is in its first frame, and still exactly one real
-    // mermaid render for this source
     expect(renderToStaticMarkup(createElement(ChatMarkdown, { text: fence }))).toContain("<svg>sea lanes</svg>");
     for (const callback of effects.splice(0)) cleanup.push(callback());
     await Promise.resolve();

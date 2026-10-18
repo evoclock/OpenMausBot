@@ -1,6 +1,4 @@
-// Real HTTP/auth/maintenance and disposable files; archive work is mocked so
-// revocation can be held at a deterministic boundary. The archive/restart
-// workflow is covered separately by workspace-backup-workflow.test.ts.
+// Archive work is mocked so revocation can be held at a deterministic boundary.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
@@ -156,8 +154,7 @@ it("accepts drafts between 1 and 2 MiB and enforces the preference cap in UTF-8 
   const clientState = { "omb-drafts": "a".repeat(1536 * 1024) };
   expect((await post("/api/workspace-backup/export", { password: PASSWORD, clientState })).status).toBe(200);
   expect(archive.create.mock.calls[0][1].clientState).toEqual(clientState);
-  // Fits the request framing allowance but exceeds the preference byte cap;
-  // JavaScript string.length alone would accept it.
+  // Fits the request framing allowance but exceeds the preference byte cap; string.length alone would accept it.
   const tooLarge = { "omb-drafts": "é".repeat(1024 ** 2) };
   const rejected = await post("/api/workspace-backup/export", { password: PASSWORD, clientState: tooLarge });
   expect(rejected.status).toBe(413);

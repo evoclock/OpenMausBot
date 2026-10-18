@@ -75,6 +75,7 @@ describe("Tailscale from a shell-less standalone macOS app", () => {
     fixture.calls = [];
     control = createControlServer({
       devices: new DeviceRegistry(),
+      controlToken: () => "fixture-control-token",
       companionPort: 8787,
       discovery: () => ({ advertising: false, name: "Fixture" }),
       hostedUrl: () => "https://fixture.openmausbot.com",
@@ -82,7 +83,7 @@ describe("Tailscale from a shell-less standalone macOS app", () => {
     });
     await new Promise<void>((resolve) => control!.listen(0, "127.0.0.1", resolve));
     const { port } = control.address() as { port: number };
-    const response = await fetch(`http://127.0.0.1:${port}/tailscale/refresh`, { method: "POST" });
+    const response = await fetch(`http://127.0.0.1:${port}/tailscale/refresh`, { method: "POST", headers: { "x-openmausbot-control-token": "fixture-control-token" } });
     const state = await response.json() as ReturnType<typeof companionState>;
     expect(response.status).toBe(200);
     expect(state.tailnetName).toBe("fixture.tail1234.ts.net");

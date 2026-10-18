@@ -49,10 +49,14 @@ describe("buildBotOverview", () => {
     facts.bot.chiefOfStaff = false;
     expect(buildBotOverview(facts).reaches.join(" ")).not.toContain("Engineering");
   });
-  it("yields all six wont lines in order and no does lines for a fresh bot", () => {
-    const overview = buildBotOverview(baseFacts());
+  it("yields all six wont lines in order and no does lines for a bot on Ask", () => {
+    const overview = buildBotOverview(baseFacts({ bot: { ...baseFacts().bot, approvalMode: "ask" } }));
     expect(overview.wont).toEqual(WONT_ORDER);
     expect(overview.does).toEqual([]);
+  });
+
+  it("describes a fresh bot at the default level, Full access", () => {
+    expect(buildBotOverview(baseFacts()).wont).toEqual(WONT_ORDER.slice(1, -1));
   });
 
   it("drops the first wont line when autoApprove is on", () => {
@@ -108,13 +112,11 @@ describe("buildBotOverview", () => {
     });
     const overview = buildBotOverview(facts);
     expect(overview.does).toHaveLength(1);
-    // Prose, not the approval card's exact form: no anchor instant, no timezone name.
     expect(overview.does[0]).toMatch(/^Every 5 minutes: Triage Discord\./);
     expect(overview.does[0]).not.toContain("UTC");
     expect(overview.does[0]).not.toContain("anchored");
     expect(overview.does[0]).toContain("Last run completed at");
     expect(overview.does[0]).toContain("Next run");
-    // Won't-act-on-a-schedule should not appear since an enabled routine exists.
     expect(overview.wont).not.toContain("Won't act on a schedule.");
   });
 
@@ -132,7 +134,6 @@ describe("buildBotOverview", () => {
     });
     const overview = buildBotOverview(facts);
     expect(overview.does).toEqual(["Paused: Nightly Backup."]);
-    // A paused-only routine set still has no enabled routine.
     expect(overview.wont).toContain("Won't act on a schedule.");
   });
 
@@ -262,7 +263,6 @@ describe("soulLead", () => {
   it("cuts at 240 characters", () => {
     const long = "A".repeat(300);
     const result = soulLead(long);
-    // Cut at 240 characters, with an ellipsis so the card says it is a cut.
     expect(result).toBe(`${"A".repeat(240)}…`);
   });
 
@@ -310,7 +310,6 @@ describe("grantsSummary", () => {
       slack: { tools: "*" },
       gmail: { tools: ["GMAIL_SEND_EMAIL", "GMAIL_FETCH_EMAILS"] },
     });
-    // sorted by slug, so the order both clients render is deterministic
     expect(grants).toEqual([
       { slug: "gmail", level: "partial", toolCount: 2 },
       { slug: "slack", level: "all", toolCount: 0 },
@@ -336,7 +335,6 @@ describe("setupSteps", () => {
       ["folder", false],
       ["schedule", false],
     ]);
-    // no apps step: this bot's engine has no connected-apps tools
     expect(steps.find((step) => step.id === "apps")).toBeUndefined();
     expect(steps.every((step) => step.section)).toBe(true);
   });

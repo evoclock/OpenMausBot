@@ -1,7 +1,3 @@
-// Waiting for a cloud computer to be ready ends inside its budget, even when
-// the relay accepts a request and then never answers it. Before each poll had
-// a deadline, one stalled read held the turn's start until the 20-minute
-// watchdog.
 import { createHash } from "node:crypto";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -21,10 +17,10 @@ describe("waiting for a cloud computer", () => {
       req.resume();
       req.on("end", () => {
         res.setHeader("content-type", "application/json");
-        if (path === "/api/box/v1/boxes") {
-          res.end(JSON.stringify({ ok: true, boxes: [{ id: "bx_23456789", name, state: "archived" }] }));
-        } else if (path === "/api/box/v1/boxes/bx_23456789" && stall === "resume") {
-          res.end(JSON.stringify({ ok: true, box: { id: "bx_23456789", name, state: "archived" } }));
+        if (path === "/api/v1/sandboxes") {
+          res.end(JSON.stringify({ ok: true, type: "sandbox.list", sandboxes: [{ id: "bx_23456789", name, state: "archived" }] }));
+        } else if (path === "/api/v1/sandboxes/bx_23456789" && stall === "resume") {
+          res.end(JSON.stringify({ ok: true, sandbox: { id: "bx_23456789", name, state: "archived" } }));
         } else {
           // Accepted, never answered: a relay that stalls.
           held.push(res);
@@ -32,7 +28,7 @@ describe("waiting for a cloud computer", () => {
       });
     });
     await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
-    vi.stubEnv("OMB_BOX_API", `http://127.0.0.1:${(api.address() as { port: number }).port}/api/box/v1`);
+    vi.stubEnv("OMB_BOAT_API", `http://127.0.0.1:${(api.address() as { port: number }).port}/api/v1`);
     vi.stubEnv("OMB_CLOUD_BOAT_TOKEN", undefined);
     vi.resetModules();
     boat = await import("./boat.ts");

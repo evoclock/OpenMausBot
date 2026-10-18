@@ -1,6 +1,3 @@
-// Per-bot profile history: one NDJSON row per changed field, full text only
-// for the soul, secrets scrubbed, and a revision token that moves when any
-// proposable field moves.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,10 +13,7 @@ import {
 
 const base = { name: "Scout", title: "", description: "", soul: "", notifications: true, speakReplies: false };
 
-/** A real bot's folder exists before any profile change can fire (it is
- * created at bot creation, via writeSoulMirror). Mirror that invariant here
- * so these tests exercise the same path recordProfileChange does in
- * production, instead of relying on writeRows to create the folder itself. */
+/** A real bot has its folder before any profile change (writeSoulMirror at creation), so the tests do too. */
 function withBotFolder(id: string): void {
   mkdirSync(botFolder(id), { recursive: true, mode: 0o700 });
 }

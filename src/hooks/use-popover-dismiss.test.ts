@@ -20,7 +20,6 @@ describe("popover dismissal", () => {
   it("closes on a fresh Escape only", () => {
     expect(popoverClosesOnKey(key())).toBe(true);
     expect(popoverClosesOnKey(key({ key: "Enter" }))).toBe(false);
-    // an editor closing its own suggestion list already claimed this Escape
     expect(popoverClosesOnKey(key({ defaultPrevented: true }))).toBe(false);
     expect(popoverClosesOnKey(key({ isComposing: true }))).toBe(false);
   });

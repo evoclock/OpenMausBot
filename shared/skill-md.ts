@@ -1,7 +1,5 @@
-// SKILL.md reading shared by the server skill store, the package format and
-// the renderer. Pure text only: no filesystem, no Node globals, so the same
-// rules validate a skill wherever it is read (server/skills.ts re-exports
-// these under their historical names).
+// SKILL.md reading for the server skill store, the package format and the
+// renderer. Pure text, so the same rules validate a skill wherever it is read.
 
 /** Spec rule: lowercase alphanumerics with single hyphens, 1-64 chars,
  * folder name must equal it. The regex IS the traversal gate — no dots, no
@@ -38,18 +36,65 @@ export function parseSkillTags(raw: string | undefined): string[] | undefined {
   return tags.length > 0 ? tags : undefined;
 }
 
+/** Unwraps only a matched quote pair, per YAML: "…" unescapes \" \\ \n, '…' folds '' to '. */
+function unquoteScalar(raw: string): string {
+  const value = raw.trim();
+  if (value.length >= 2) {
+    const last = value.length - 1;
+    if (value[0] === '"' && value[last] === '"') {
+      let out = "";
+      for (let i = 1; i < last; i += 1) {
+        const c = value[i]!;
+        if (c === "\\" && i + 1 < last) {
+          const next = value[i + 1]!;
+          if (next === '"' || next === "\\" || next === "n") {
+            out += next === "n" ? "\n" : next;
+            i += 1;
+            continue;
+          }
+        }
+        out += c;
+      }
+      return out;
+    }
+    if (value[0] === "'" && value[last] === "'") {
+      return value.slice(1, -1).replace(/''/g, "'");
+    }
+  }
+  return value;
+}
+
+/** One-line YAML scalar that parseSkillMd reads back unchanged: plain when unambiguous, else double-quoted. */
+export function yamlFrontmatterValue(value: string): string {
+  const plain =
+    value.length > 0 &&
+    value === value.trim() &&
+    !/[\n\r]/.test(value) &&
+    !value.includes('"') &&
+    !/^["'&*!|>%@`]/.test(value) &&
+    !/^[-?:](\s|$)/.test(value) &&
+    !/^[[\]{}#,]/.test(value) &&
+    !value.includes(": ") &&
+    !value.endsWith(":") &&
+    !value.includes(" #") &&
+    !/["']$/.test(value);
+  return plain ? value : `"${value.replace(/(["\\\n])/g, (c) => (c === "\n" ? "\\n" : `\\${c}`))}"`;
+}
+
 /** Minimal frontmatter reader for the two required keys plus the two we
  * display. Deliberately not a YAML engine: values are single-line strings in
  * every skill the spec's own examples show, and a parser that cannot
  * evaluate anchors or tags cannot be surprised by them. */
 export function parseSkillMd(raw: string): ParsedSkill | { error: string } {
+  // A byte order mark (Notepad, PowerShell) would hide the opening ---.
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { error: "SKILL.md has no YAML frontmatter (--- block) at the top" };
   const fields: Record<string, string> = {};
   for (const line of match[1]!.split(/\r?\n/)) {
     const kv = line.match(/^([A-Za-z][\w-]*):\s*(.*)$/);
     if (!kv) continue;
-    fields[kv[1]!.toLowerCase()] = kv[2]!.replace(/^["']|["']$/g, "").trim();
+    fields[kv[1]!.toLowerCase()] = unquoteScalar(kv[2]!);
   }
   const name = fields.name ?? "";
   const description = fields.description ?? "";

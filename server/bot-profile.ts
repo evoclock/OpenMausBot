@@ -8,12 +8,11 @@ import {
   botAvatarUrlSchema,
 } from "../shared/bot-avatar.ts";
 import { BOT_PROFILE_LIMITS, fitsOnOneLine } from "../shared/bot-profile.ts";
+import { REPLY_STYLES } from "../shared/reply-style.ts";
 import { MASCOT_BODY_IDS, mascotBodySchema } from "../shared/mascot-bodies.ts";
 
 import type { BotRecord } from "./store.ts";
 
-// Shared with the package format, which checks the same rule on names it
-// carries; re-exported under its historical path.
 export { fitsOnOneLine } from "../shared/bot-profile.ts";
 
 export const BOT_PROFILE_PATCH_FIELDS = [
@@ -30,6 +29,7 @@ export const BOT_PROFILE_PATCH_FIELDS = [
   "mascotBody",
   "voice",
   "speakReplies",
+  "replyStyle",
 ] as const;
 
 export const profilePatchSchema = z.object({
@@ -70,6 +70,7 @@ export const profilePatchSchema = z.object({
     .max(BOT_PROFILE_LIMITS.voice, { error: "voice must be at most 200 characters" })
     .optional(),
   speakReplies: z.boolean({ error: "speakReplies must be true or false" }).optional(),
+  replyStyle: z.enum(REPLY_STYLES, { error: "replyStyle must be default or conversational" }).optional(),
 });
 
 export type BotProfilePatchInput = z.input<typeof profilePatchSchema>;
@@ -90,6 +91,7 @@ export type BotProfilePatch = Partial<
     | "mascotBody"
     | "voice"
     | "speakReplies"
+    | "replyStyle"
   >
 >;
 
@@ -97,15 +99,8 @@ export type BotProfilePatchResult =
   | { ok: true; patch: BotProfilePatch }
   | { ok: false; error: string };
 
-/**
- * The shared validation boundary for profile fields. The desktop's broad bot
- * PATCH passes strict=false; paired clients use strict=true so a future bot
- * field cannot silently become remotely writable.
- *
- * avatarUrl deliberately uses `undefined` as the normalized clear value.
- * Store persistence already omits undefined fields, while wireBot sends null
- * back to clients so Codable and object-spread clients both clear stale data.
- */
+/** Paired clients use strict=true, so a future bot field never silently becomes remotely writable. A cleared avatarUrl is
+ * `undefined` here (persistence omits it) and goes to clients as null, so Codable and object-spread clients both clear it. */
 export function parseBotProfilePatch(input: BotProfilePatchInput, strict = false): BotProfilePatchResult {
   const parsed = (strict ? profilePatchSchema.strict() : profilePatchSchema).safeParse(input);
   if (!parsed.success) {

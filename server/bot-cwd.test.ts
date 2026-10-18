@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
-import { validateBotCwd } from "./bot-cwd.ts";
+import { sharedProjectFolder, validateBotCwd } from "./bot-cwd.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "omb-cwd-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -32,5 +32,24 @@ describe("validateBotCwd", () => {
     expect(validateBotCwd(file)).toEqual({ ok: false, error: expect.stringMatching(/not a folder/) });
     expect(validateBotCwd(join(dir, "nope"))).toEqual({ ok: false, error: expect.stringMatching(/doesn't exist/) });
     expect(validateBotCwd(42)).toEqual({ ok: false, error: expect.stringMatching(/path/) });
+  });
+});
+
+describe("sharedProjectFolder", () => {
+  const data = join(dir, "omb-data");
+  const project = join(dir, "omb-data-site");
+  mkdirSync(join(data, "task-workspaces", "bot", "thread"), { recursive: true });
+  mkdirSync(project);
+
+  it("shares an existing folder outside the data folder, even one whose name starts the same", () => {
+    expect(sharedProjectFolder(project, data)).toBe(project);
+  });
+
+  it("never shares the data folder, a private workspace in it, a missing folder or no folder", () => {
+    expect(sharedProjectFolder(data, data)).toBeUndefined();
+    expect(sharedProjectFolder(join(data, "task-workspaces", "bot", "thread"), data)).toBeUndefined();
+    expect(sharedProjectFolder(join(dir, "gone"), data)).toBeUndefined();
+    expect(sharedProjectFolder(null, data)).toBeUndefined();
+    expect(sharedProjectFolder(undefined, data)).toBeUndefined();
   });
 });

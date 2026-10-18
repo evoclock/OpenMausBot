@@ -8,7 +8,6 @@ import { api } from "@/state/store";
 import type { NewBotDefaults } from "../../shared/new-bot-defaults";
 import type { PackageDocument, PackageSummary } from "../../shared/package-format";
 
-/** POST /api/teams/export with kind "library": a preset file. */
 export interface PresetShareResponse {
   document: PackageDocument;
   filename: string;
@@ -27,7 +26,6 @@ export interface PresetShareChoices {
   dryRun?: boolean;
 }
 
-/** The request body for a preset file. Pure, for tests. */
 export function presetShareBody(choices: PresetShareChoices): Record<string, unknown> {
   const text = (value: string | undefined) => (value?.trim() ? value.trim() : undefined);
   return {
@@ -45,7 +43,6 @@ export function presetShareBody(choices: PresetShareChoices): Record<string, unk
   };
 }
 
-/** What the preset file holds, counted by the server's own dry run. Pure, for tests. */
 export function SharePresetContents({ preview, localSkips }: { preview: PresetShareResponse; localSkips: string[] }) {
   const preset = preview.document.package.presets?.[0];
   const notes = Object.keys(preset?.seed?.memory ?? {}).length;
@@ -90,9 +87,6 @@ export function SharePresetContents({ preview, localSkips }: { preview: PresetSh
   );
 }
 
-/** Share as preset…: my New bot defaults as a file of one preset bot and
- * its skills (no team). Whoever imports it picks the preset in New bot. No
- * confirm step; Save file is the decision. */
 export function SharePresetDialog({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const [name, setName] = useState("");
@@ -101,7 +95,6 @@ export function SharePresetDialog({ onClose }: { onClose: () => void }) {
   const [notes, setNotes] = useState("");
   const [includeNotes, setIncludeNotes] = useState(true);
   const [includePicture, setIncludePicture] = useState(true);
-  // null while the defaults' picture is being prepared.
   const [picture, setPicture] = useState<{ dataUrl?: string; skipped: string[] } | null>(null);
   const [preview, setPreview] = useState<PresetShareResponse | null>(null);
   const [saving, setSaving] = useState(false);
@@ -130,7 +123,6 @@ export function SharePresetDialog({ onClose }: { onClose: () => void }) {
     ...(includePicture && picture?.dataUrl ? { picture: picture.dataUrl } : {}),
   });
 
-  // Live counts from the server's dry run whenever what goes in changes.
   useEffect(() => {
     if (!picture) return;
     const id = ++request.current;
@@ -149,7 +141,6 @@ export function SharePresetDialog({ onClose }: { onClose: () => void }) {
         });
     }, 250);
     return () => window.clearTimeout(timer);
-    // Only what goes in changes the counts; names and notes do not.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [picture, includeNotes, includePicture]);
 

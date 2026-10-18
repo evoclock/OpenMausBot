@@ -1,27 +1,13 @@
-// Live calls: OpenAI GPT-Live as the voice, the bot as the brain.
-//
-// The voice design doc (docs/voice-mode.md) rejected speech-to-speech models
-// because "they replace the brain". GPT-Live's *client delegation* does not:
-// the voice model only runs the conversation — listening while it speaks,
-// taking interruptions, filling the wait — and hands every real request back
-// to the application. Here that application is the harness, and the request
-// becomes an ordinary turn on the bot the person called, with its own engine,
-// tools, memory and approvals. Nothing about the bot changes.
-//
-// This file owns the one server-side step: exchanging the renderer's WebRTC
-// offer for an answer. The OpenAI key never leaves the harness; the renderer
-// only ever holds the SDP answer and the media connection it describes.
+// The OpenAI key never leaves the harness: the renderer only ever holds the SDP answer and its media connection.
 import { CLOUD_HOME_PLACE } from "./system-prompt.ts";
+import type { Message } from "./store.ts";
 
 export const LIVE_MODEL = "gpt-live-1";
 const OPENAI_BASE = "https://api.openai.com";
 export const DEFAULT_LIVE_VOICE = "marin";
-/** Largest SDP offer accepted from the renderer — a real offer is a few KB. */
 export const MAX_SDP_BYTES = 64 * 1024;
 
-/** The client's data channel is untrusted (it runs on a phone or in a
- * renderer). It may only hang up; the harness sends every append over the
- * sideband. Server events are limited to what captions and state need. */
+/** The client's data channel is untrusted: it may only hang up; every append goes over the sideband. */
 export const LIVE_DATA_CHANNEL = {
   allowed_client_events: ["session.close"],
   allowed_server_events: [
@@ -34,8 +20,7 @@ export const LIVE_DATA_CHANNEL = {
   ],
 };
 
-/** Tests and fixtures point this at server/testing/fake-openai-live.ts.
- * Only a loopback http URL is accepted, read at call time. */
+/** Only a loopback http URL is accepted, read at call time. */
 export function liveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.OMB_OPENAI_LIVE_URL?.trim() ?? "";
   return /^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(override) ? override : OPENAI_BASE;
@@ -49,9 +34,7 @@ export function liveAttachUrl(sessionId: string, env: NodeJS.ProcessEnv = proces
   return `${liveBaseUrl(env).replace(/^http/, "ws")}/v1/live/sessions/${encodeURIComponent(sessionId)}/attach`;
 }
 
-// Startup history is capped by the API at 128 messages / 8,192 tokens; stay
-// well inside it. It is only there so "and the other one?" makes sense to
-// the voice — the bot's own thread remains the source of truth.
+// The API caps startup history at 128 messages / 8,192 tokens; stay well inside it.
 const HISTORY_MESSAGES = 8;
 const HISTORY_MESSAGE_CHARS = 600;
 const HISTORY_TOTAL_CHARS = 6_000;
@@ -68,6 +51,12 @@ export interface LiveHistoryMessage {
   text: string;
 }
 
+export function liveHistoryFrom(messages: ReadonlyArray<Pick<Message, "role" | "kind" | "text">>): LiveHistoryMessage[] {
+  return messages
+    .filter((message) => message.kind === "text" && typeof message.text === "string" && (message.role === "user" || message.role === "bot"))
+    .map((message) => ({ role: message.role === "user" ? "user" as const : "assistant" as const, text: message.text ?? "" }));
+}
+
 export class LiveSessionError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -76,11 +65,6 @@ export class LiveSessionError extends Error {
   }
 }
 
-/** Frontend instructions for the voice. Business rules stay with the bot;
- * this only says who is speaking, where it runs and when to hand work over.
- * Structure follows the GPT-Live prompting guide's template. `cloudHome`:
- * the harness is the person's My Cloud, named as the bot's own system prompt
- * names it (CLOUD_HOME_PLACE). */
 export function liveInstructions(bot: LiveBot, { cloudHome = false }: { cloudHome?: boolean } = {}): string {
   const name = oneLine(bot.name) || "the agent";
   const title = oneLine(bot.title ?? "");
@@ -117,7 +101,6 @@ export function liveInstructions(bot: LiveBot, { cloudHome = false }: { cloudHom
   ].join("\n");
 }
 
-/** Recent thread text as startup history, newest last, inside the budget. */
 export function liveInitialInput(history: LiveHistoryMessage[]) {
   const picked: LiveHistoryMessage[] = [];
   let total = 0;
@@ -134,8 +117,7 @@ export function liveInitialInput(history: LiveHistoryMessage[]) {
     : { type: "message" as const, role: "assistant" as const, content: [{ type: "output_text" as const, text: message.text }] });
 }
 
-/** The configured voice name, or the default. OpenAI validates the name and
- * rejects an unknown one with a clear 400 (see liveErrorMessage). */
+/** OpenAI rejects an unknown voice name with a clear 400. */
 export function liveVoice(voice: string | undefined): string {
   const name = voice?.trim().toLowerCase() ?? "";
   return /^[a-z]{2,40}$/.test(name) ? name : DEFAULT_LIVE_VOICE;
@@ -146,8 +128,6 @@ export interface CreateLiveSessionInput {
   sdp: string;
   bot: LiveBot;
   history: LiveHistoryMessage[];
-  /** This harness is a Cloud home (the person's My Cloud). Required, so
-   * the one caller cannot leave the voice saying it runs on their computer. */
   cloudHome: boolean;
   voice?: string;
   fetchImpl?: typeof fetch;
@@ -155,9 +135,7 @@ export interface CreateLiveSessionInput {
   timeoutMs?: number;
 }
 
-/** POST /v1/live/sessions with client delegation. Returns the session id
- * and the SDP answer. Errors carry a status and a message fit for the user —
- * never the key, never OpenAI's raw body. */
+/** Errors carry a status and a message fit for the user: never the key, never OpenAI's raw body. */
 export async function createLiveSession(input: CreateLiveSessionInput): Promise<{ sessionId: string; sdp: string }> {
   const key = input.key.trim();
   if (!key) throw new LiveSessionError("Add an OpenAI API key to use Live calls.", 409);
@@ -169,8 +147,6 @@ export async function createLiveSession(input: CreateLiveSessionInput): Promise<
     session: {
       model: LIVE_MODEL,
       instructions: liveInstructions(input.bot, { cloudHome: input.cloudHome }),
-      // client delegation: every request comes back to the harness, which
-      // runs it as a normal turn on the bot
       delegation: { type: "client" },
       audio: { output: { voice: liveVoice(input.voice) } },
       client: { data_channel: LIVE_DATA_CHANNEL },
@@ -225,9 +201,7 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-/** One server.log line per finished Live call, from the call's counters
- * (LiveCallController). Numbers and short codes only — never what anyone
- * said. */
+/** Numbers and short codes only: never what anyone said. */
 export function liveCallSummaryLine(body: Record<string, unknown>): string {
   const count = (value: unknown) => {
     const n = Number(value);

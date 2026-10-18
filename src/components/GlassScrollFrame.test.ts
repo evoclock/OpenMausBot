@@ -1,5 +1,3 @@
-// The frame tells its scroller how tall the glass bars are, so rows rest
-// clear of them and the scrollbar runs only between them.
 import { describe, expect, it } from "vitest";
 
 import { publishGlassInsets } from "./GlassScrollFrame";

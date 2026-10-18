@@ -48,9 +48,6 @@ describe("companionEndpointCandidates", () => {
     ]);
   });
 
-  // The desktop's "Pair on this Wi-Fi" QR leads with the first LAN route
-  // (src/lib/companion-pairing.ts companionPairingRoute). On Oct 3 that was
-  // WSL's 172.19.96.1 on a Windows PC, which no phone can reach.
   it("leads a Windows PC's LAN routes with its Wi-Fi address, not WSL's", () => {
     const ipv4 = (address: string, netmask = "255.255.255.0"): NetworkInterfaceInfoIPv4 => ({
       address, netmask, family: "IPv4", mac: "00:15:5d:00:00:01", internal: false, cidr: `${address}/24`,

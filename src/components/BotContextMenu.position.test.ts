@@ -47,11 +47,13 @@ afterEach(() => vi.unstubAllGlobals());
 function render(x = 990, y = 795) {
   return renderToStaticMarkup(createElement(BotContextMenu, {
     menu: { botId: bot.id, x, y }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(),
-    onMoveToSection: vi.fn(), onNewFolder: vi.fn(),
+    onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
   }));
 }
-/** Run this render's layout effects in order, as React does after a commit.
- * The menu's pop motion registers one ahead of placement; both must run. */
+/**
+ * Runs this render's layout effects in order, as React does after a commit: the pop motion registers one ahead of
+ * placement.
+ */
 function layoutEffects() {
   const cleanups = fixture.effects.map((effect) => effect());
   return () => cleanups.forEach((cleanup) => cleanup?.());

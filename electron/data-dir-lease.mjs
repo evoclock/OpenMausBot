@@ -6,9 +6,7 @@ import { join } from "node:path";
 
 const LEASE_NAME = "openmausbot-server.lease";
 const DELEGATED_CHILD_DIR = ".openmausbot-server-child";
-// This is an internal, parent-to-utility-process capability. Callers must get
-// it from utilityServerLeaseEnvironment(); neither its name nor its token is part
-// of the public configuration surface.
+// Internal parent-to-child capability, obtained only from utilityServerLeaseEnvironment(); never public configuration.
 const CHILD_LEASE_ENV = "OPENMAUSBOT_INTERNAL_DATA_DIR_LEASE";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_PID = 0x7fffffff;
@@ -28,17 +26,8 @@ function isPid(value) {
 }
 
 /**
- * A pid does not identify a process across a reboot. The kernel restarts pid
- * allocation, so the low pid a login-item launch recorded is typically reused
- * by a root-owned daemon on the next boot; process.kill(pid, 0) then answers
- * EPERM, which reads as alive, and the desktop refuses to start forever with
- * no instance for anyone to close. Recording which boot wrote the lease turns
- * that guess into proof.
- *
- * Both signals below may only ever prove a lease DEAD, never alive, and both
- * are exact rather than heuristic: a wrong "stale" verdict would let two
- * instances share one data directory, which is the harm this module exists to
- * prevent. Nothing here is derived from the wall clock, which NTP can move.
+ * A pid does not survive a reboot: a low pid is often reused by a root daemon, whose EPERM reads as alive.
+ * Boot identity and uptime may only prove a lease dead, never alive, and never use the wall clock (NTP moves it).
  */
 let cachedBootSession;
 
@@ -55,8 +44,6 @@ function readBootSession() {
       }));
     }
   } catch {
-    // An unreadable boot id is not a startup failure. The lease simply falls
-    // back to the pid-only protocol this module has always used.
   }
   return null;
 }
@@ -66,7 +53,7 @@ function normalizeBootId(value) {
   return id.length > 0 && id.length <= MAX_BOOT_ID && !/[^0-9A-Za-z:_.-]/.test(id) ? id : null;
 }
 
-/** Stable for one boot; Windows has no equivalent, so it reports null there. */
+/** Stable for one boot; Windows has no equivalent, so null there. */
 function bootSession() {
   if (cachedBootSession === undefined) cachedBootSession = readBootSession();
   return cachedBootSession;
@@ -84,12 +71,8 @@ function isBootIdentity(value) {
 function ownerPredatesThisBoot(owner) {
   const current = bootSession();
   if (current !== null && typeof owner.boot === "string") return owner.boot !== current;
-  // Without a boot id, a since-boot clock is still one-directional: it cannot
-  // run backwards within a single boot, so a larger recorded value can only
-  // have been written before a reboot.
+  // A since-boot clock never runs backwards within one boot, so a larger recorded uptime predates a reboot.
   if (Number.isInteger(owner.uptime)) return uptimeMs() < owner.uptime;
-  // A record written by an older build carries neither signal. Treating it as
-  // current preserves the previous behaviour exactly.
   return false;
 }
 
@@ -98,22 +81,13 @@ function ownerIsAlive(owner) {
   return !ownerPredatesThisBoot(owner) && processIsAlive(owner.pid) && ownerIdentityMatches(owner);
 }
 
-/**
- * Whether a record was written on this computer. The hostname alone cannot
- * say: macOS renames the host when it joins another network, so a lease left
- * by a crash on one network looked like another machine's on the next and the
- * desktop refused to start until the file was deleted by hand (MOCA-270).
- * The same boot session proves it too — the id is random per boot, so no two
- * computers ever share one. A record from an earlier boot under another name
- * cannot be told apart from another computer's and still fails closed.
- */
+/** macOS renames the host on another network, so the same boot session (random per boot) also proves this machine. */
 function sameMachine(record) {
   if (record.host === hostname()) return true;
   const boot = bootSession();
   return boot !== null && typeof record.boot === "string" && record.boot === boot;
 }
 
-/** What to do when a record really does look like another computer's. */
 function otherMachineAdvice(path) {
   return ` If OpenMausBot is not running on another computer that shares this folder, quit OpenMausBot, delete ${JSON.stringify(path)} and start again.`;
 }
@@ -131,8 +105,7 @@ function isLeaseOwner(value) {
     && typeof value.createdAt === "number"
     && Number.isFinite(value.createdAt)
     && value.createdAt > 0
-    // Optional so a lease written by an older build stays readable rather
-    // than bricking startup on an "invalid lease" during the upgrade.
+    // Optional so an older build's lease stays readable during an upgrade.
     && (value.boot === undefined || isBootIdentity(value.boot))
     && (value.uptime === undefined || (Number.isInteger(value.uptime) && value.uptime >= 0));
 }
@@ -225,19 +198,11 @@ function processCreationTimeMs(pid) {
       if (parsed !== null) return parsed;
     }
   } catch {
-    // An unreadable creation time is not a startup failure. The lease falls
-    // back to the pid-only protocol this module has always used.
   }
   return null;
 }
 
-/**
- * A Windows pid can be reused within the same boot by a totally different
- * process. process.kill(pid, 0) only asks whether *a* process holds the pid.
- * Compare the process creation time to the lease's createdAt: the original
- * process was created before it wrote the lease, so a process created after
- * the lease cannot be the original owner.
- */
+/** Windows reuses pids within a boot: a process created after the lease cannot be its original owner. */
 function ownerIdentityMatches(owner) {
   if (process.platform !== "win32") return true;
   const created = processCreationTimeMs(owner.pid);
@@ -253,7 +218,6 @@ function unlinkExact(path, message) {
   }
 }
 
-/** Publish an already complete record with one hard-link operation. */
 function publishRecord(path, record, prepareMessage, acquireMessage) {
   const candidatePath = `${path}.candidate-${record.pid}-${record.token}`;
   try {
@@ -279,15 +243,7 @@ function successorReaperPath(leasePath, targetToken, reaperToken) {
   return `${leasePath}.reap-${targetToken}-${digest}`;
 }
 
-/**
- * Elect exactly one live process to retire a particular dead lease owner.
- *
- * A reaper can itself crash. Its successor is elected at a deterministic new
- * path derived from the dead reaper's random token. We never unlink election
- * records, so no contender can delete a newer replacement between a liveness
- * check and publication. A chain of real crashes remains recoverable instead
- * of bricking this data directory forever.
- */
+/** Election records are never unlinked, so no contender can delete a newer replacement between check and publish. */
 function claimReaperAuthority(leasePath, expected) {
   let reaperPath = `${leasePath}.reap-${expected.token}`;
   for (let generation = 0; generation < MAX_REAPER_GENERATIONS; generation += 1) {
@@ -346,15 +302,11 @@ function prepareDataDir(dataDir, legacyDataDir) {
   validateDataDir(dataDir);
   if (legacyDataDir !== undefined) {
     validateDataDir(legacyDataDir);
-    // Preserve the server's pre-rename migration order. Acquiring the new
-    // directory first would create it and make the later one-time rename a
-    // no-op, presenting an existing user with an empty workspace.
+    // Before acquiring: creating the new directory first would turn the one-time legacy rename into a no-op.
     if (!existsSync(dataDir) && existsSync(legacyDataDir)) {
       try {
         renameSync(legacyDataDir, dataDir);
       } catch {
-        // Match the established migration: cross-device/busy falls through
-        // to a fresh directory, while the untouched legacy data remains.
       }
     }
   }
@@ -423,10 +375,7 @@ function validateChildDelegation(dataDir, encoded) {
     throw invalid();
   }
 
-  // Parent authorization and child exclusivity are separate. The parent
-  // capability may be reused for a fallback port, but only one live utility
-  // server can hold this subordinate lease at a time. A crashed child is
-  // recovered by the same conservative protocol as a standalone owner.
+  // The parent capability may serve a fallback port, but only one live utility server holds this subordinate lease.
   const childLease = acquireDataDirLeaseInternal(
     join(dataDir, DELEGATED_CHILD_DIR),
     { guardDelegatedChild: false },
@@ -438,8 +387,6 @@ function validateChildDelegation(dataDir, encoded) {
   return Object.freeze({
     ownerPid: childLease.ownerPid,
     delegated: true,
-    // Release only this process's subordinate claim. The Electron parent's
-    // durable lease remains untouched until the desktop finally exits.
     release: () => childLease.release(),
   });
 }
@@ -523,15 +470,10 @@ function acquireDataDirLeaseInternal(dataDir, options = {}) {
   });
 }
 
-/** Claim exclusive ownership of one persistent OpenMausBot data directory. */
 export function acquireDataDirLease(dataDir, options = {}) {
   return acquireDataDirLeaseInternal(dataDir, options);
 }
 
-/**
- * Server entry-point API. A standalone server claims the lease; an Electron
- * utility child consumes and validates its parent's private capability.
- */
 export function acquireDataDirLeaseForProcess(dataDir, environment = process.env) {
   const encoded = consumeChildCapability(environment);
   return encoded === null

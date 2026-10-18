@@ -1,8 +1,5 @@
-/** Which computer select_computer picks for a request, kept free of index.ts
- * so the rule stays unit-testable. */
 import type { Surface } from "./surface.ts";
 
-/** One computer select_computer can offer (selectableComputers). */
 export interface ComputerOption {
   surface: Surface;
   available: boolean;
@@ -11,12 +8,8 @@ export interface ComputerOption {
   canCreate: boolean;
 }
 
-/** The option a request picks, and whether it is the computer this turn
- * already has. `current` is the turn's mounted place. `startsOnFirstCall`
- * says that place's computer is the one this turn's first computer call
- * creates or wakes (the bot's own cloud computer): it is this turn's before
- * it is up, so asking for it, or for Auto, keeps it instead of restarting
- * the request somewhere else. */
+/** `startsOnFirstCall`: the turn's first computer call creates or wakes it, so it is this turn's before it is up, and
+ * asking for it (or for Auto) keeps it rather than restarting the request elsewhere. */
 export function pickComputer<T extends ComputerOption>(
   options: readonly T[],
   requested: Surface | "auto",

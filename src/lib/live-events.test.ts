@@ -165,16 +165,11 @@ describe("live events supervisor", () => {
     vi.advanceTimersByTime(100);
     expect(test.sources[1].url).toBe("/api/events?since=oldrun00%3A10");
 
-    // The server has three replay frames queued. If the socket dies before
-    // they arrive, the next attempt still asks from the last consumed frame.
     test.sources[1].message({ kind: "hello", resumed: true, cursor: "oldrun00:13" });
     test.sources[1].error();
     vi.advanceTimersByTime(100);
     expect(test.sources[2].url).toBe("/api/events?since=oldrun00%3A10");
 
-    // A restart/expired replay window has no frames to replay. Application
-    // frames may arrive while the consumer rebuilds, but neither their id nor
-    // the hello boundary is safe until that replacement snapshot succeeds.
     test.sources[2].message({ kind: "hello", resumed: false, cursor: "newrun00:7" });
     test.sources[2].message({ kind: "message", value: "behind failed snapshot" }, "newrun00:8");
     snapshotResolutions.shift()?.(false);
@@ -279,8 +274,6 @@ describe("live events supervisor", () => {
     vi.advanceTimersByTime(10_000);
     expect(test.sources).toHaveLength(1);
 
-    // Even an explicit transport error stays quiet in the background; the
-    // visibility edge below is the single owner of recovery.
     test.sources[0].error();
     vi.advanceTimersByTime(1_000);
     expect(test.sources).toHaveLength(1);

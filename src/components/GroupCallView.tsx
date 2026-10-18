@@ -1,8 +1,5 @@
-// Conference call mode — one microphone, several room members.
-//
-// Capture stays half-duplex for the same reason as one-to-one calls: the
-// native recognizer has no acoustic echo cancellation. Bot replies are
-// explicitly queued so a fast second member never cuts off the first.
+// Half-duplex like CallView: the native recognizer has no echo cancellation. Replies are queued so a fast second member
+// never cuts off the first.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, PhoneOff, X } from "lucide-react";
 
@@ -16,7 +13,8 @@ import { usePushToTalk } from "@/lib/push-to-talk";
 import { useStore, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { BotAvatar } from "./Avatar";
-import { CallTargetButton } from "./CallView";
+import { CallTargetButton, type CallButtonPlacement } from "./CallView";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 
@@ -26,15 +24,15 @@ const CALL_ENDPOINT_MS = 850;
 
 type Phase = "listening" | "sending" | "working" | "speaking";
 
-export function GroupCallButton({ group, members }: { group: Group; members: Bot[] }) {
+/** `fill` (Simple composer): a round button in that colour. */
+export function GroupCallButton({ group, members, placement, fill }: { group: Group; members: Bot[]; placement?: CallButtonPlacement; fill?: string }) {
   const { capabilities, ready } = useDesktopCapabilities();
   if (group.dm) return null;
-  // A room call takes turns, which only the Mac app's own page can do, and a
-  // room has no Live call: elsewhere (a browser, the Windows or Linux app, My
-  // Cloud) there is no room call to offer, so no button that can't start one.
   if (ready && !capabilities.dictation.available) return null;
   return (
     <CallTargetButton
+      placement={placement}
+      fill={fill}
       targetId={group.id}
       targetName={group.name}
       voices={members.map((member) => member.voice)}
@@ -43,6 +41,12 @@ export function GroupCallButton({ group, members }: { group: Group; members: Bot
       onStart={() => track("group_call_started", { memberCount: members.length })}
     />
   );
+}
+
+/** The room header's call button: in Simple mode the room calls from its composer instead. */
+export function RoomHeaderCallButton({ group, members }: { group: Group; members: Bot[] }) {
+  const advanced = useAdvancedMode();
+  return advanced ? <GroupCallButton group={group} members={members} /> : null;
 }
 
 export function GroupCallOverlay({ group, members }: { group: Group; members: Bot[] }) {
@@ -240,8 +244,8 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
             );
             return;
           }
-          // Hold this approval in-flight until its server patch arrives so a
-          // slow response cannot reopen the microphone and submit it twice.
+          // In flight until its server patch arrives, so a slow response cannot reopen the microphone and submit it
+          // twice.
           openApproval.submitted = true;
           allowBargeIn.current = false;
           move("working");
@@ -332,7 +336,6 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       offEnd();
       void window.ogb?.speechStop();
     };
-    // Live busy/card changes are handled below without restarting native capture.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, enqueueSpeech, group.id, group.threadId, hush, listen, move, scheduleListen]);
 
@@ -350,8 +353,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       scheduleListen(true);
       return;
     }
-    // Keep the voice queue and microphone closed until this exact decision
-    // is settled or its request reports an error.
+    // Voice queue and microphone stay closed until this exact decision settles or its request errors.
     if (askedApproval.current?.submitted) return;
 
     if (approval && askedApproval.current?.requestId !== approval.requestId) {

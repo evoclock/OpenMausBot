@@ -63,7 +63,8 @@ it("remembers real permission requests, scopes and revokes grants, and preserves
   const stop = (bot: any, thread = bot.threadId) => api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: thread });
   try {
     const bot = (await api("POST", "/api/bots", { name: "Command rules fixture", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } }, 201)).bot;
-    await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.threadId}`, { approvalMode: "ask" });
+    // The bot on Ask, so every thread it opens asks and only a saved rule answers.
+    await api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask" });
     const rulesPath = `/api/bots/${bot.id}/command-allowlist`;
     expect((await api("GET", rulesPath)).rules).toEqual([]);
     const socket = await start(bot);
@@ -74,7 +75,6 @@ it("remembers real permission requests, scopes and revokes grants, and preserves
     expect(candidate.command).toBe(command);
     expect(candidate.cwd).toBe((await api("GET", rulesPath)).context.cwd);
 
-    // A member can approve once, but cannot change all of this bot's threads.
     const pairing = await api("POST", "/api/auth/pairing", { label: "Member fixture", scopes: ["client"] });
     const paired = await api("POST", "/api/auth/pair", { code: pairing.code });
     await api("GET", rulesPath, undefined, 403, paired.token);
@@ -92,7 +92,6 @@ it("remembers real permission requests, scopes and revokes grants, and preserves
     expect(await card(bot.threadId, repeated.id)).toBeUndefined();
     await expect.poll(async () => (await api("GET", "/api/decisions")).decisions.some((row: any) => row.requestId === repeated.id && row.source === "command-allowlist")).toBe(true);
 
-    // Exact means the whole command, not a prefix, shell wildcard, or title.
     for (const [text, input, tool] of [
       [command + " && pwd", {}, "Bash"],
       [command, { dangerouslyDisableSandbox: true }, "Bash"],
@@ -111,7 +110,6 @@ it("remembers real permission requests, scopes and revokes grants, and preserves
     expect(await revoked.reply).toMatchObject({ id: revoked.id, behavior: "allow" });
     expect((await api("GET", rulesPath)).rules).toHaveLength(1);
     await stop(bot);
-    // A settled/imported/stale card never manufactures another grant.
     await api("POST", `/api/threads/${bot.threadId}/respond`, { requestId: revoked.id, behavior: "allow", rememberCommand: true }, 403);
 
     const sibling = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Different folder" }, 201)).task;
@@ -122,7 +120,6 @@ it("remembers real permission requests, scopes and revokes grants, and preserves
     await stop(bot, sibling.threadId);
     expect(await other.reply).toMatchObject({ id: other.id, behavior: "deny" });
 
-    // The rule is bot-wide, not tied to the approval's original thread.
     await api("PATCH", `/api/bots/${bot.id}`, { cwd: candidate.cwd });
     const shared = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Same project folder" }, 201)).task;
     const sharedSocket = await start(bot, shared.threadId);

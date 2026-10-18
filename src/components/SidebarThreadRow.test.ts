@@ -2,17 +2,12 @@ import { createElement, type ComponentProps, type MemoExoticComponent, type Reac
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setLocale } from "@/lib/i18n";
-import { formatUpdatedAt, nextSnoozeExpiry, orderedSidebarThreads, orderedThreadList, SidebarThreadRow, stampClock, threadByline, threadOpenerLabel, threadUpdatedLabel, visibleSidebarThreads } from "./SidebarThreadRow";
+import { formatUpdatedAt, nextSnoozeExpiry, orderedSidebarThreads, orderedThreadList, partitionHelperThreads, SidebarThreadRow, stampClock, threadByline, threadOpenerLabel, threadUpdatedLabel, visibleSidebarThreads } from "./SidebarThreadRow";
 
 type ThreadRowProps = ComponentProps<typeof SidebarThreadRow>;
 
-// The More menu lives behind component state and a portal, which a static
-// render never reaches. SidebarThreadRow uses exactly useState, useRef,
-// useEffect and (through its menu motion) useLayoutEffect; stubbing those four
-// (initial values first, state kept across a re-render, effects never run)
-// lets this suite render the row directly, click the real action button, and
-// see the menu the click opened — the same extract-and-call approach the
-// ThreadRefs tests use for onClick props.
+// Stubs useState, useRef, useEffect and useLayoutEffect (state kept across re-renders, effects never run) so the row
+// renders directly and its real More button can be clicked.
 const rowHooks = vi.hoisted(() => {
   const slots: unknown[] = [];
   let cursor = 0;
@@ -84,7 +79,6 @@ describe("threads waiting on a teammate", () => {
     renderToStaticMarkup(createElement(SidebarThreadRow, {
       task, ownerId: "scout", current: false, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en", ...props,
     }));
-  // #1223: the parent thread dispatched a teammate and its own turn is done.
   it("shows the wait as a quiet label over the busy paint, never the work spinner", () => {
     const markup = render({ threadId: "dispatch", title: "Dispatch", waitingForTeammates: true, busy: true, activity: "working" });
     expect(markup).toContain('title="Dispatch · Waiting on teammate"');
@@ -126,7 +120,6 @@ describe("threads a bot opened", () => {
     expect(waiting).toContain(">Waiting</span>");
     expect(waiting).toContain('aria-label="Unread"');
     expect(waiting).toContain("opened by Scout");
-    // and it stays on screen past the six recent rows, exactly like a thread the person opened
     const rows = Array.from({ length: 9 }, (_, index) => ({ threadId: String(index), title: `Thread ${index}` }));
     const opened = [...rows, { threadId: "qa", title: "QA PR 245", openedBy, activity: "waiting-on-you" as const, busy: false }];
     expect(visibleSidebarThreads(opened, "0").map((task) => task.threadId)).toEqual(["0", "1", "2", "3", "4", "5", "qa"]);
@@ -189,7 +182,6 @@ describe("threads a bot opened", () => {
     expect(waiting).toContain(">Waiting</span>");
     expect(waiting).toContain('aria-label="Unread"');
     expect(waiting).toContain("opened by Scout");
-    // and it stays on screen past the six recent rows, exactly like a thread the person opened
     const rows = Array.from({ length: 9 }, (_, index) => ({ threadId: String(index), title: `Thread ${index}` }));
     const opened = [...rows, { threadId: "qa", title: "QA PR 245", openedBy, activity: "waiting-on-you" as const, busy: false }];
     expect(visibleSidebarThreads(opened, "0").map((task) => task.threadId)).toEqual(["0", "1", "2", "3", "4", "5", "qa"]);
@@ -203,11 +195,9 @@ describe("threads a bot closed", () => {
     task, ownerId: "pm", current, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
   }));
   it("folds closed threads out of the default list without spending the six recent rows on them", () => {
-    // newest first: three helper threads the PM opened and closed sit on top of the person's own
     const helpers = Array.from({ length: 3 }, (_, index) => ({ threadId: `h${index}`, title: `Helper ${index}`, openedBy, closedBy }));
     const own = Array.from({ length: 8 }, (_, index) => ({ threadId: String(index), title: `Thread ${index}` }));
     expect(visibleSidebarThreads([...helpers, ...own], "0").map((task) => task.threadId)).toEqual(["0", "1", "2", "3", "4", "5"]);
-    // show all and search still list them — closing is never a deletion
     expect(visibleSidebarThreads([...helpers, ...own], "0", "", [], true)).toHaveLength(11);
     expect(visibleSidebarThreads([...helpers, ...own], "0", "helper 1").map((task) => task.threadId)).toEqual(["h1"]);
   });
@@ -229,7 +219,6 @@ describe("threads a bot closed", () => {
     expect(markup).not.toContain("opened by");
     expect(markup).toContain('title="Helper 1 · Closed"');
     expect(markup).toContain('text-ink-tertiary">Helper 1</span>');
-    // a live status outranks the closed note; the selected row is not dimmed
     expect(render({ threadId: "h", title: "Helper 1", closedBy, busy: true })).toContain('title="Helper 1 · Working"');
     expect(render({ threadId: "h", title: "Helper 1", closedBy }, true)).not.toContain('text-ink-tertiary">Helper 1</span>');
   });
@@ -267,12 +256,10 @@ describe("threadUpdatedLabel", () => {
   });
 
   it("keeps the seventh day relative until a full week has elapsed", () => {
-    // six and a half days rounds to "7 d ago" without reaching the week
     expect(label(6 * 86_400_000 + 12 * 3_600_000)).toBe("7 d ago");
   });
 
   it("keeps a same-day update in the hour tier until a full day has elapsed", () => {
-    // 00:15 -> 23:45 on the same date: 23.5 h reads as hours, not "yesterday"
     const morning = Date.UTC(2026, 8, 25, 0, 15, 0);
     const night = Date.UTC(2026, 8, 25, 23, 45, 0);
     expect(threadUpdatedLabel(morning, night)).toBe("24 h ago");
@@ -320,6 +307,34 @@ describe("threadUpdatedLabel", () => {
   });
 });
 
+describe("thread title direction", () => {
+  const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+  const row = (title: string, openedBy?: { botId: string; name: string; at: number }) => renderToStaticMarkup(createElement(SidebarThreadRow, {
+    task: { threadId: "t", title, updatedAt: now - 2 * 3_600_000, ...(openedBy ? { openedBy } : {}) },
+    ownerId: "b", current: false, now, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
+  }));
+  const titleSpan = (markup: string, title: string) => {
+    const match = markup.match(new RegExp(`<span dir="auto" class="([^"]*)">${title}</span>`));
+    expect(match).not.toBeNull();
+    return match?.[1] ?? "";
+  };
+
+  it("renders the title with dir=auto and leaves the time a fixed column", () => {
+    const arabic = "انسخ محتوى الذكاء الاصطناعي وصمم منشورات";
+    const arabicClass = titleSpan(row(arabic), arabic);
+    const englishClass = titleSpan(row("New thread"), "New thread");
+    const withByline = titleSpan(row("QA PR 245", { botId: "scout", name: "Scout", at: 1 }), "QA PR 245");
+    for (const classes of [arabicClass, englishClass, withByline]) {
+      expect(classes).toContain("min-w-0");
+      expect(classes).toContain("flex-1");
+      expect(classes).toContain("max-w-max");
+      expect(classes).toContain("truncate");
+    }
+    expect(row("New thread")).toMatch(/<time [^>]*class="[^"]*\bshrink-0\b[^"]*"/);
+    expect(row(arabic)).not.toContain("<button dir=");
+  });
+});
+
 describe("orderedThreadList", () => {
   const task = (threadId: string, over: Record<string, unknown> = {}) => ({
     threadId,
@@ -328,21 +343,21 @@ describe("orderedThreadList", () => {
     ...over,
   });
 
-  it("pins first, then newest update, and keeps equal stamps in stored order", () => {
+  it("pins first, then newest ordering message, and keeps equal stamps in stored order", () => {
     const ordered = orderedThreadList([
-      task("old", { updatedAt: 10 }),
-      task("pinned-old", { pinned: true, updatedAt: 5 }),
-      task("new", { updatedAt: 30 }),
-      task("pinned-new", { pinned: true, updatedAt: 20 }),
-      task("tie-b", { updatedAt: 10 }),
+      task("old", { lastThreadOrderAt: 10 }),
+      task("pinned-old", { pinned: true, lastThreadOrderAt: 5 }),
+      task("new", { lastThreadOrderAt: 30 }),
+      task("pinned-new", { pinned: true, lastThreadOrderAt: 20 }),
+      task("tie-b", { lastThreadOrderAt: 10 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["pinned-new", "pinned-old", "new", "old", "tie-b"]);
   });
 
   it("does not let waiting or working outrank a newer idle thread", () => {
     const ordered = orderedThreadList([
-      task("waiting", { updatedAt: 1, activity: "waiting-on-you" }),
-      task("fresh", { updatedAt: 5 }),
+      task("waiting", { lastThreadOrderAt: 1, activity: "waiting-on-you" }),
+      task("fresh", { lastThreadOrderAt: 5 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["fresh", "waiting"]);
   });
@@ -353,6 +368,23 @@ describe("orderedThreadList", () => {
       task("created-late", { createdAt: 4 }),
     ]);
     expect(ordered.map((item) => item.threadId)).toEqual(["created-late", "created-early"]);
+  });
+
+  it("ignores running activity when sorting threads", () => {
+    const ordered = orderedThreadList([
+      task("bot-active", { updatedAt: 100, lastThreadOrderAt: 10 }),
+      task("user-active", { updatedAt: 80, lastThreadOrderAt: 50 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["user-active", "bot-active"]);
+  });
+
+  it("orders a reply completed at 120 above a person message at 110, retaining its display time of 100", () => {
+    const ordered = orderedThreadList([
+      task("person", { updatedAt: 110, lastThreadOrderAt: 110 }),
+      task("reply", { updatedAt: 100, lastThreadOrderAt: 120 }),
+    ]);
+    expect(ordered.map((item) => item.threadId)).toEqual(["reply", "person"]);
+    expect(ordered[0]).toMatchObject({ updatedAt: 100 });
   });
 });
 
@@ -418,28 +450,39 @@ describe("archived threads", () => {
   }));
   it("keeps the six newest open threads, and does not spend those slots on a pin", () => {
     const rows = [
-      { threadId: "old-open", title: "Old", createdAt: 1, updatedAt: 1 },
-      { threadId: "newer", title: "Newer", createdAt: 2, updatedAt: 50 },
-      { threadId: "mid", title: "Mid", createdAt: 3, updatedAt: 40 },
-      { threadId: "also", title: "Also", createdAt: 4, updatedAt: 30 },
-      { threadId: "fourth", title: "Fourth", createdAt: 5, updatedAt: 20 },
-      { threadId: "fifth", title: "Fifth", createdAt: 6, updatedAt: 15 },
-      { threadId: "sixth", title: "Sixth", createdAt: 7, updatedAt: 12 },
+      { threadId: "old-open", title: "Old", createdAt: 1, lastThreadOrderAt: 1 },
+      { threadId: "newer", title: "Newer", createdAt: 2, lastThreadOrderAt: 50 },
+      { threadId: "mid", title: "Mid", createdAt: 3, lastThreadOrderAt: 40 },
+      { threadId: "also", title: "Also", createdAt: 4, lastThreadOrderAt: 30 },
+      { threadId: "fourth", title: "Fourth", createdAt: 5, lastThreadOrderAt: 20 },
+      { threadId: "fifth", title: "Fifth", createdAt: 6, lastThreadOrderAt: 15 },
+      { threadId: "sixth", title: "Sixth", createdAt: 7, lastThreadOrderAt: 12 },
       { threadId: "pinned-closed", title: "Pinned", createdAt: 8, updatedAt: 2, pinned: true, closedBy: { botId: "b", name: "Scout", at: 2 } },
     ];
     expect(visibleSidebarThreads(rows, "none").map((task) => task.threadId)).toEqual([
       "pinned-closed", "newer", "mid", "also", "fourth", "fifth", "sixth",
     ]);
   });
-  it("folds archived threads out of the default list, but never when they need the person", () => {
+  it("keeps archived threads out of the default list until the person unarchives them, even when they need the person", () => {
     const rows = [
       { threadId: "0", title: "Current work" },
       { threadId: "1", title: "Put away", archivedAt: 5 },
       { threadId: "2", title: "Needs you", archivedAt: 5, activity: "waiting-on-you" as const, busy: false },
+      { threadId: "3", title: "Working", archivedAt: 5, busy: true },
+      { threadId: "4", title: "New reply", archivedAt: 5, unread: true },
+      { threadId: "5", title: "Queued", archivedAt: 5, queued: true },
+      { threadId: "6", title: "Teammates", archivedAt: 5, waitingForTeammates: true },
     ];
-    expect(visibleSidebarThreads(rows, "0").map((task) => task.threadId)).toEqual(["0", "2"]);
-    expect(visibleSidebarThreads(rows, "0", "", [], true).map((task) => task.threadId)).toEqual(["0", "1", "2"]);
+    expect(visibleSidebarThreads(rows, "0").map((task) => task.threadId)).toEqual(["0"]);
+    expect(visibleSidebarThreads(rows, "0", "", [], true).map((task) => task.threadId)).toEqual(["0", "1", "2", "3", "4", "5", "6"]);
     expect(visibleSidebarThreads(rows, "0", "put away").map((task) => task.threadId)).toEqual(["1"]);
+  });
+  it("shows an archived thread while it is the open one", () => {
+    const rows = [
+      { threadId: "0", title: "Current work" },
+      { threadId: "1", title: "Put away", archivedAt: 5 },
+    ];
+    expect(visibleSidebarThreads(rows, "1").map((task) => task.threadId)).toEqual(["0", "1"]);
   });
   it("says Archived under the title and dims the row, behind any live status", () => {
     expect(threadByline({ archivedAt: 5 })).toBe("Archived");
@@ -462,14 +505,12 @@ describe("archived threads", () => {
   });
 });
 
-// Row menu helpers: render the row, open its More menu, find a button.
 type RowTask = ThreadRowProps["task"];
 type RowProps = { children?: unknown; [key: string]: unknown };
 type RowNode = { $$typeof?: unknown; type?: unknown; props?: RowProps; children?: unknown };
 
 const renderRow = (task: RowTask, ownerId: string, fresh = true, extra: Partial<ThreadRowProps> = {}): RowNode => {
   rowHooks.begin(fresh);
-  // the memoized row's own function, called directly like the hooks above
   const row = (SidebarThreadRow as MemoExoticComponent<(props: ThreadRowProps) => ReactNode>).type;
   return row({ task, ownerId, current: false, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en", ...extra }) as RowNode;
 };
@@ -515,8 +556,6 @@ describe("Copy link", () => {
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
     vi.stubGlobal("document", { body: { nodeType: 1 } });
-    // a bot-owned row and a room-owned row: the owner id, not anything else,
-    // is what the copied link must carry as ?bot=
     const rows = [
       { task: { threadId: "qa-245", title: "QA PR 245" }, ownerId: "scout", link: "openmausbot://thread/qa-245?bot=scout" },
       { task: { threadId: "monday-1", title: "Monday plan" }, ownerId: "standup", link: "openmausbot://thread/monday-1?bot=standup" },
@@ -604,14 +643,88 @@ describe("Regenerate title", () => {
     const pending = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerating…")!;
     expect(pending.props!.disabled).toBe(true);
     expect(pending.props!["aria-busy"]).toBe(true);
-    // a second click while it runs asks nothing more of the server
     (pending.props!.onClick as () => void)();
     expect(onRegenerateTitle).toHaveBeenCalledTimes(1);
 
-    // a failure leaves the menu open with the action ready again
     settle!(false);
     const again = buttonWithLabel(renderRow(task, "scout", false, { onRegenerateTitle }), "Regenerate title")!;
     expect(again.props!.disabled).toBe(false);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("Thread link", () => {
+  it("shows the assigned link as a chip and removes it from the menu", () => {
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768 });
+    vi.stubGlobal("document", { body: { nodeType: 1 } });
+    const task = { threadId: "t1", title: "Fix the login", link: "https://github.com/o/r/pull/42" };
+    const onLink = vi.fn();
+    const closed = renderRow(task, "scout", true, { onLink });
+    let chip: RowNode | undefined;
+    walk(closed, (element) => { if (element.type === "a") chip = element; });
+    expect(chip?.props).toMatchObject({ href: task.link, target: "_blank", "aria-label": "Open #42" });
+    expect(textOf(chip)).toBe("#42");
+    let other: RowNode | undefined;
+    walk(renderRow({ ...task, link: "https://docs.example.com/plan" }, "scout", true, { onLink }), (element) => { if (element.type === "a") other = element; });
+    expect(textOf(other)).toBe("Link");
+    expect(other?.props?.["aria-label"]).toBe("Open https://docs.example.com/plan");
+    (moreMenuButton(closed)!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+    (buttonWithLabel(renderRow(task, "scout", false, { onLink }), "Remove link")!.props!.onClick as () => void)();
+    expect(onLink).toHaveBeenCalledWith(task, null);
+    const unlinked = { threadId: "t2", title: "No link" };
+    (moreMenuButton(renderRow(unlinked, "scout", true, { onLink }))!.props!.onClick as (event: unknown) => void)({ currentTarget: { getBoundingClientRect: () => ({ left: 100, bottom: 200 }) } });
+    expect(buttonWithLabel(renderRow(unlinked, "scout", false, { onLink }), "Remove link")).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("places the chip before the timestamp, outside the row button", () => {
+    const now = Date.UTC(2026, 8, 25, 12, 0, 0);
+    const markup = renderToStaticMarkup(createElement(SidebarThreadRow, {
+      task: { threadId: "t", title: "Fix", updatedAt: now - 3_600_000, link: "https://github.com/o/r/pull/42" },
+      ownerId: "b", current: false, now, onSelect: vi.fn(), onRename: vi.fn(), onDelete: vi.fn(), locale: "en",
+    }));
+    expect(markup.indexOf("</button>")).toBeLessThan(markup.indexOf(">#42</a>"));
+    expect(markup.indexOf(">#42</a>")).toBeLessThan(markup.indexOf("<time"));
+  });
+});
+
+describe("helper threads a bot opened", () => {
+  const opener = { botId: "pepper", name: "Pepper", at: 1 };
+  const thread = (threadId: string, patch: Record<string, unknown> = {}) =>
+    ({ threadId, title: threadId, createdAt: 1, updatedAt: 1, ...patch }) as any;
+
+  it("folds open bot-opened threads into a group and keeps the person's own threads", () => {
+    const tasks = [thread("mine"), thread("email", { openedBy: opener, busy: true }), thread("pricing", { openedBy: opener })];
+    const { own, helpers } = partitionHelperThreads(tasks, "mine");
+    expect(own.map((task) => task.threadId)).toEqual(["mine"]);
+    expect(helpers.map((task) => task.threadId)).toEqual(["email", "pricing"]);
+  });
+
+  it("keeps a helper thread in view while it needs the person", () => {
+    const tasks = [
+      thread("open-now", { openedBy: opener }),
+      thread("approval", { openedBy: opener, activity: "waiting-on-you" }),
+      thread("reply", { openedBy: opener, unread: true }),
+      thread("pinned", { openedBy: opener, pinned: true }),
+    ];
+    const { own, helpers } = partitionHelperThreads(tasks, "open-now");
+    expect(own.map((task) => task.threadId)).toEqual(["open-now", "approval", "reply", "pinned"]);
+    expect(helpers).toEqual([]);
+  });
+
+  it("leaves filed, closed, archived and snoozed helper threads where they already go", () => {
+    const tasks = [
+      thread("filed", { openedBy: opener, projectId: "launch" }),
+      thread("closed", { openedBy: opener, closedBy: opener }),
+      thread("archived", { openedBy: opener, archivedAt: 1 }),
+      thread("snoozed", { openedBy: opener, snoozedUntil: Date.now() + 60_000 }),
+    ];
+    const { helpers } = partitionHelperThreads(tasks, "mine", "", [{ id: "launch", name: "Launch" } as any]);
+    expect(helpers).toEqual([]);
+  });
+
+  it("does not group search results", () => {
+    const tasks = [thread("email", { openedBy: opener })];
+    expect(partitionHelperThreads(tasks, "mine", "email")).toEqual({ own: tasks, helpers: [] });
   });
 });

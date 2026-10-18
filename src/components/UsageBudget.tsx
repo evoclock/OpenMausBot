@@ -1,7 +1,3 @@
-// App settings → Usage → Budget and Prices: a monthly spend limit for the
-// workspace and the operator's own sell prices per model. Both are
-// enterprise entitlements (`budgets`, `billing`); the cards render only
-// when the server reports them, and edit the same config the server reads.
 import { useEffect, useState } from "react";
 import { Loader2, Plus, Trash2 } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
@@ -30,7 +26,6 @@ export function entitledTo(config: ConfigStatus | null | undefined, feature: str
   return config?.edition?.features?.includes(feature) === true;
 }
 
-/** The bar's tone follows the state: quiet, warning at the threshold, danger at the cap. */
 export function budgetTone(state: BudgetState | null): "quiet" | "warning" | "danger" {
   if (!state) return "quiet";
   return state.exceeded ? "danger" : state.warn ? "warning" : "quiet";
@@ -197,7 +192,6 @@ export function PricesCard() {
   );
 }
 
-/** Both cards, each only when the server is entitled to it. */
 export function UsageBudgetCards({ budget }: { budget: BudgetState | null }) {
   const { state } = useStore();
   const budgets = entitledTo(state.config, "budgets");

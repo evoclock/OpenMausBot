@@ -1,5 +1,4 @@
-// Real provider processes with independent per-thread gates, under the same
-// disposable-home launcher used by the independent-threads API fixture.
+// Real provider processes with independent per-thread gates, under the disposable-home launcher.
 import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -36,8 +35,7 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     let snapshot: any;
     await expect.poll(() => {
       try {
-        // The CLI writes in another process: existence alone can observe an
-        // empty or partial file between open() and its completed write.
+        // The CLI writes from another process: existence alone can observe an empty or partial file.
         snapshot = JSON.parse(readFileSync(threadFile(threadId, "json"), "utf8"));
         return true;
       } catch (error) {
@@ -73,7 +71,6 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       headers: { authorization: `Bearer ${launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN}` },
     });
     await response.arrayBuffer();
-    // The evidence records the authorization result, never the bearer token.
     evidence.push({ authority: "existing provider capability", path: "/api/internal/agents", status: response.status, pid: launched.pid });
     return response.status;
   };
@@ -204,8 +201,6 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     const runState = async (id: string) =>
       (await api("GET", "/api/routines")).body.runs.find((run: any) => run.id === id);
     try {
-      // One busy thread, one free slot: the run must start now instead of
-      // waiting for the bot to become fully idle.
       const first = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
       await expect.poll(async () => (await runState(first.id))?.status, { timeout: 15_000 }).toBe("running");
       const firstRun = await runState(first.id);
@@ -213,10 +208,7 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       expect(firstRun.threadId).not.toBe(threads[0]);
       await dump(firstRun.threadId);
       expect(await busyThreads(botId)).toHaveLength(2);
-      // Whole-bot idleness is no longer the gate: the bot flag stays busy
-      // while the scheduled run occupies the second slot.
       expect((await botState(botId)).busy).toBe(true);
-      // At capacity the next run defers until a slot frees.
       const second = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
       await new Promise((resolve) => setTimeout(resolve, 1_500));
       expect((await runState(second.id))?.status).toBe("queued");
@@ -237,10 +229,7 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     await limit(2);
     const project = mkdtempSync(join(tmpdir(), "omb-collide-"));
     projectDirs.push(project);
-    // Both threads below pin to this one folder (startTurn's cwd resolution
-    // for a bot with an explicit project folder), so the fake CLI's gate/dump
-    // naming (basename of its cwd) collapses to one shared key: the dump is
-    // whichever engine started last, and one gate write finishes both.
+    // Both threads pin to one folder, so the fake CLI's cwd-keyed gate/dump collapses to one key: one gate write finishes both.
     const key = basename(project);
     let botId: string | undefined;
     let routineId: string | undefined;
@@ -266,16 +255,12 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       const runState = async (id: string) =>
         (await api("GET", "/api/routines")).body.runs.find((run: any) => run.id === id);
 
-      // A free thread slot is all the run needs. The folder another thread
-      // works in is no reason to hold it: a bot's threads work there side by
-      // side, like several agent sessions open in one repo.
       const run = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
       await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("running");
       const dispatched = await runState(run.id);
       expect(dispatched.deferredAt).toBeUndefined();
       expect(dispatched.error).toBeUndefined();
       expect(dispatched.threadId).not.toBe(threadId);
-      // …in that same folder, while the first thread is still working there.
       await expect.poll(async () => JSON.stringify((await dump(key)).prompt), { timeout: 15_000 }).toContain("scheduled digest");
       expect((await dump(key)).cwd).toBe(realpathSync(project));
       expect((await busyThreads(botId)).sort()).toEqual([threadId, dispatched.threadId].sort());
@@ -320,19 +305,14 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       const sent = await api("POST", `/api/groups/${room.id}/messages`, { text: "Hold the room turn open." });
       expect(sent.status).toBe(202);
       expect(sent.body.queued).toBeUndefined();
-      // Room turns run in the member's shared workspace, so the gated fake
-      // provider dumps and holds under the bot id, not the room thread id.
+      // Room turns run in the member's shared workspace, so the gated fake holds under the bot id, not the room thread id.
       await dump(botId);
       await expect.poll(roomWorking, { timeout: 15_000 }).toBe(true);
       const run = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
-      // An active group turn blocks scheduled starts the same way it blocks
-      // every other turn kind, even with every capacity slot free: across
-      // scheduler ticks the run stays queued — deferred, not failed.
       await new Promise((resolve) => setTimeout(resolve, 12_000));
       const held = await runState(run.id);
       expect(held?.status).toBe("queued");
       expect(held?.deferredAt).toEqual(expect.any(Number));
-      // Ending the room turn releases the run into a thread of its own.
       finish(botId);
       await expect.poll(roomWorking, { timeout: 15_000 }).toBe(false);
       await expect.poll(async () => (await runState(run.id))?.status, { timeout: 20_000 }).toBe("running");
@@ -350,7 +330,7 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     }
   }, 120_000);
 
-  it("dispatches delegated handoffs into the standing thread without waiting for whole-bot idle", async () => {
+  it("dispatches a hand-off into a free slot without waiting for whole-bot idle, and holds the next at capacity", async () => {
     await limit(2);
     const target = await botWithThreads(2);
     const source = await botWithThreads(1);
@@ -366,9 +346,6 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
     expect(created.status).toBe(201);
     const routineId = created.body.routine.id;
     const runState = async (id: string) => (await api("GET", "/api/routines")).body.runs.find((run: any) => run.id === id);
-    // A routine turn is today's classic delegate_bot caller — a plain chat
-    // turn is steered to coordinate_bots — and its held turn supplies the
-    // internal comms capability that caller holds.
     const delegatorTurn = async () => {
       const run = (await api("POST", `/api/routines/${routineId}/run`)).body.run;
       await expect.poll(async () => (await runState(run.id))?.status, { timeout: 15_000 }).toBe("running");
@@ -377,43 +354,32 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
       return { runId: run.id as string, threadId: started.threadId as string, token: launched.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN as string };
     };
     const delegate = async (turn: { threadId: string; token: string }) => {
-      const response = await fetch(`${fixture.info.url}/api/internal/delegate-bot`, {
+      const response = await fetch(`${fixture.info.url}/api/internal/coordinate-bots`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${turn.token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ toBotId: target.botId, message: "Delegated slot probe" }),
+        body: JSON.stringify({ botIds: [target.botId], message: "Delegated slot probe" }),
       });
       const result = { status: response.status, body: await response.json() as any };
-      // The evidence records the authorization result, never the bearer.
-      evidence.push({ authority: "existing provider capability", path: "/api/internal/delegate-bot", threadId: turn.threadId, result });
-      return result;
+      evidence.push({ authority: "existing provider capability", path: "/api/internal/coordinate-bots", threadId: turn.threadId, result });
+      expect(result.status, JSON.stringify(result.body)).toBe(200);
+      expect(result.body.receipts).toEqual([expect.objectContaining({ botId: target.botId, outcome: "queued", threadId: expect.any(String), requestId: expect.any(String) })]);
+      return { workThread: result.body.receipts[0].threadId as string, requestId: result.body.receipts[0].requestId as string };
     };
-    // The woken delegator's reply echoes the prompt its provider received.
-    // Read it from the conversation, not the run record: a run keeps only
-    // the first 2,000 characters of its output, and the replayed history
-    // ahead of the notice (the teammate's echoed reply now includes its
-    // in-turn context note) runs past that. The notice must be the latest
-    // thing the delegator was told, after the teammate's reply.
+    // Read it from the conversation, not the run record: a run keeps only the first 2,000 characters of its output.
     const expectWokenByCompletion = async (turn: { runId: string; threadId: string }) => {
       const replies = (await messages(turn.threadId)).filter((message) => message.role === "bot" && message.kind === "text");
       const reply = String(replies.at(-1)?.text ?? "");
-      // the run recorded this same wake reply
       expect(reply.startsWith((await runState(turn.runId)).output)).toBe(true);
-      const peerReply = reply.indexOf("@Capacity fixture replied to the delegated task");
-      const notice = reply.lastIndexOf("[A delegated task just completed]");
-      expect(peerReply).toBeGreaterThan(-1);
-      expect(notice).toBeGreaterThan(peerReply);
-      expect(reply.slice(notice)).toMatch(/^\[A delegated task just completed\]\n\nThe task you delegated to @Capacity fixture has finished, and their reply is now in this conversation\.\n\n[^]*Do not re-delegate the same task\.$/);
+      expect(reply).toContain("Your downstream room requests have settled.");
+      expect(reply).toContain("[OpenMausBot report from @Capacity fixture on assignment");
+      expect(reply).toContain("What @Capacity fixture said:");
+      expect((await messages(turn.threadId)).some((message) => message.tool?.name === "Capacity fixture replied")).toBe(true);
     };
     try {
-      // One busy thread, one free slot: when the delegator's turn settles
-      // and the handoff drains, it must land in the target's standing
-      // thread — its newest task thread — instead of waiting for the whole
-      // bot to go idle. Every turn here, including the agentless delegated
-      // one, runs from its thread's task folder, so the fixture's shared
-      // cwd-keyed gates cover them all.
+      // Every turn here runs from its thread's task folder, so the cwd-keyed gates cover the work threads too.
       expect((await send(target.botId, target.threads[0], "HOLD_ONE_SLOT")).body.queued).toBeUndefined();
       await dump(target.threads[0]);
       expect(await busyThreads(target.botId)).toEqual([target.threads[0]]);
@@ -421,34 +387,31 @@ describe("per-bot thread capacity through an isolated HTTP fixture", () => {
 
       const first = await delegatorTurn();
       const queued = await delegate(first);
-      expect(queued.status).toBe(200);
-      expect(queued.body).toMatchObject({ queued: true, taskId: expect.any(String) });
-      finish(first.threadId);
-      await dump(target.threads[1]);
-      // The busy list orders by recent activity, not thread creation.
-      expect((await busyThreads(target.botId)).sort()).toEqual([...target.threads].sort());
+      expect(target.threads).not.toContain(queued.workThread);
+      await dump(queued.workThread);
+      expect((await busyThreads(target.botId)).sort()).toEqual([target.threads[0], queued.workThread].sort());
       expect((await botState(target.botId)).busy).toBe(true);
+      finish(first.threadId);
+      await expect.poll(async () => (await runState(first.runId))?.status, { timeout: 15_000 }).toBe("waiting");
 
-      // Standing thread busy and capacity full: the next handoff holds with
-      // a visible wait instead of dispatching.
       const second = await delegatorTurn();
       const held = await delegate(second);
-      expect(held.body).toMatchObject({ queued: true, taskId: expect.any(String) });
+      expect(held.workThread).not.toBe(queued.workThread);
       finish(second.threadId);
       await expect.poll(async () => (await runState(second.runId))?.status, { timeout: 15_000 }).toBe("waiting");
-      expect((await messages(second.threadId)).some((message) => message.kind === "activity" && message.tool?.name?.includes("waiting — they're busy"))).toBe(true);
-      expect((await busyThreads(target.botId)).sort()).toEqual([...target.threads].sort());
+      expect((await runState(second.runId)).attention).toContain("delegated");
+      expect((await busyThreads(target.botId)).sort()).toEqual([target.threads[0], queued.workThread].sort());
+      expect(existsSync(threadFile(held.workThread, "json"))).toBe(false);
 
-      // The standing thread frees while the other stays busy: the held
-      // handoff re-tests its own admission and moves — the whole-bot busy
-      // flag is never the gate. Its turn lands in the just-freed thread,
-      // whose gate is already down, so it settles and wakes the delegator.
-      finish(target.threads[1]);
-      await expect.poll(async () => (await runState(second.runId))?.status, { timeout: 20_000 }).toBe("completed");
-      expect(await busyThreads(target.botId)).toEqual([target.threads[0]]);
-      await expectWokenByCompletion(second);
-      await expect.poll(async () => (await runState(first.runId))?.status, { timeout: 15_000 }).toBe("completed");
+      finish(queued.workThread);
+      await expect.poll(async () => (await runState(first.runId))?.status, { timeout: 20_000 }).toBe("completed");
       await expectWokenByCompletion(first);
+      await dump(held.workThread);
+      expect((await busyThreads(target.botId)).sort()).toEqual([target.threads[0], held.workThread].sort());
+      finish(held.workThread);
+      await expect.poll(async () => (await runState(second.runId))?.status, { timeout: 20_000 }).toBe("completed");
+      await expectWokenByCompletion(second);
+      expect(await busyThreads(target.botId)).toEqual([target.threads[0]]);
     } finally {
       for (const bot of [target, source]) {
         for (const threadId of await busyThreads(bot.botId)) finish(threadId);

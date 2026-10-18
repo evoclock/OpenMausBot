@@ -102,7 +102,6 @@ describe("login and logout against the control plane", () => {
     expect([...stub.installations.values()][0]).toMatchObject({ platform: platformName() });
     if (posix) expect(statSync(join(dir, TUNNEL_CREDENTIALS_FILE)).mode & 0o777).toBe(0o600);
 
-    // status mentions the address without touching the network
     const status = fakeIo([]);
     await runStatus(options(dir, { command: "status" }), status.io);
     expect(status.out.join("\n")).toContain(`public address: ${stub.endpointUrl}`);
@@ -123,7 +122,6 @@ describe("login and logout against the control plane", () => {
     const restarts: ManagedTunnelAccess[] = [];
     const running: RunningTunnel = {
       address: stub.endpointUrl,
-      // The connector checked its route once and still says ready.
       state: () => ({ status: "ready", ready: true }),
       started: Promise.resolve({ status: "ready", ready: true }),
       restart: async (access) => {
@@ -154,7 +152,6 @@ describe("login and logout against the control plane", () => {
       for (const callback of due) callback();
     };
     try {
-      // serve starts the tunnel, then hands it to the service.
       serving = running;
       await account.service.restore();
       expect(stub.calls.filter((call) => call === "GET /v1/installations/self/endpoint")).toHaveLength(1);
@@ -168,7 +165,6 @@ describe("login and logout against the control plane", () => {
       expect(tunnelAccess(openTunnelCredentials(dir).read())).toEqual({ endpoint: stub.endpointUrl, token: replacement });
       expect(stub.calls.filter((call) => call === "POST /api/auth/email-otp/send-verification-otp")).toHaveLength(1);
 
-      // Once serve stops, nothing is checked any more.
       serving = null;
       account.service.dispose();
       expect(pending.size).toBe(0);
@@ -201,7 +197,6 @@ describe("where the pieces are", () => {
     } finally {
       void removeTempDir(bundled);
     }
-    // a checkout: the source files
     expect(guardianEntry()).toMatch(/managed-companion-guardian-main\.mjs$/);
   });
 
@@ -239,7 +234,6 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       binaryPath: fake,
       guardian: guardian ?? "",
       env: { ...process.env, OMB_TUNNEL_ORIGIN_PORT: String(originPort) },
-      // the public address does not exist here; verify through the gateway instead
       fetchImpl: (input, init) => fetch(String(input).replace(endpoint, `http://127.0.0.1:${originPort}`), init),
       onState: (state) => states.push(state.status),
     });
@@ -260,10 +254,8 @@ describe.skipIf(!posix)("startTunnel: guardian, gateway and connector, verified 
       };
       const firstPid = await connectorPidOtherThan(0);
       expect(firstPid).toBeGreaterThan(0);
-      // An unchanged token leaves the running connector alone ...
       expect((await tunnel.restart({ endpoint, token: `connector-${"t".repeat(60)}` })).status).toBe("ready");
       expect(Number(readFileSync(pidFile, "utf8").trim())).toBe(firstPid);
-      // ... and a re-provisioned one (idle reclaim recovery) replaces it.
       expect((await tunnel.restart({ endpoint, token: `connector-${"u".repeat(60)}` })).status).toBe("ready");
       const connectorPid = await connectorPidOtherThan(firstPid);
       expect(connectorPid).toBeGreaterThan(0);
@@ -291,9 +283,11 @@ describe("a fleet's credential in the environment", () => {
       expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: "   " })).toBeNull();
       const credential = stub.seedInstallation("boat-1");
       expect(fleetCredential({ OMB_INSTALLATION_CREDENTIAL: ` ${credential} ` })).toBe(credential);
-      const access = await fleetAccess({ credential, env });
+      const access = await fleetAccess({ credential, env, version: "9.8.7" });
       expect(access).toEqual({ endpoint: stub.endpointUrl, token: stub.connectorToken });
       expect(stub.calls).toContain("POST /v1/installations/self/endpoint");
+      // The fleet created the installation without a version; the endpoint request reports this server's release.
+      expect([...stub.installations.values()].find((inst) => inst.credential === credential)?.appVersion).toBe("9.8.7");
       expect(stub.calls.some((call) => call.includes("/api/auth/"))).toBe(false);
       await expect(fleetAccess({ credential: `omb_install_${"x".repeat(22)}.${"y".repeat(43)}`, env })).rejects.toThrow(/rejected/);
       await expect(fleetAccess({ credential, env: { ...env, OMB_CONTROL_PLANE_URL: "ftp://nope" } })).rejects.toThrow(/OMB_CONTROL_PLANE_URL/);

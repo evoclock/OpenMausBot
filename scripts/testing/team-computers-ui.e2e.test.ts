@@ -80,7 +80,7 @@ type Computer = { id: string; name: string; section: string | null; state: strin
     await expect.poll(async () => (await record(machine.id))?.state).toBe("idle");
     expect(machine.section).toBeNull();
     await expect.poll(snapshot).toContain("Engineering desktop");
-    expect((await receipts()).calls.filter((call: { method: string; path: string }) => call.method === "POST" && call.path === "/boxes")).toHaveLength(1);
+    expect((await receipts()).calls.filter((call: { method: string; path: string }) => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(1);
 
     const drag = (section: string, cancel = false) => evaluate(`(async () => {
       const source = document.querySelector('[data-computer-drag-id="${machine.id}"]');
@@ -153,11 +153,10 @@ type Computer = { id: string; name: string; section: string | null; state: strin
     await expect.poll(snapshot, { timeout: 10_000 }).toContain('log "Conversation with Ben"');
     await click("Bot's computer");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Ben's screen");
-    await expect.poll(snapshot, { timeout: 20_000, interval: 250 }).toContain("Team default");
-    expect(await snapshot()).toContain("Engineering desktop");
+    await expect.poll(snapshot, { timeout: 20_000, interval: 250 }).toContain("Uses Engineering desktop, the cloud computer this team shares.");
     expect(await snapshot()).not.toContain("Choose Cloud");
     await click("Open Team map");
-    expect((await receipts()).calls.filter((call: { method: string; path: string }) => call.method === "POST" && call.path === "/boxes")).toHaveLength(1);
+    expect((await receipts()).calls.filter((call: { method: string; path: string }) => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(1);
     await evaluate("location.reload(); true");
     await expect.poll(snapshot, { timeout: 15_000 }).toContain("Actions for Ada");
     await openMap();

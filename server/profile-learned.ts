@@ -1,8 +1,4 @@
-// What bots with Memory upkeep added to the shared About me on their own.
-// A durable fact about the person, taken from the person's own words, is
-// appended to About me as a dated, attributed line — every bot then knows
-// it — and recorded here so Settings can list it with a Remove button.
-// A removed fact is remembered (by identity only) and never added again.
+// Facts bots added to About me on their own; a removed fact is remembered by identity and never added again.
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -19,7 +15,6 @@ const TEXT_MAX = 300;
 export interface LearnedFact {
   id: string;
   text: string;
-  /** The exact line About me gained, so Remove takes out only that line. */
   line: string;
   botId: string;
   botName: string;
@@ -54,23 +49,18 @@ function save(file: LearnedFile): void {
   writeFileAtomic(filePath(), `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
 }
 
-/** Newest first, as Settings lists them. */
 export function listLearnedFacts(): LearnedFact[] {
   return [...load().learned].reverse();
 }
 
-/** A fact as the line About me gains: dated and attributed, like a memory entry. */
 export function aboutMeLine(fact: { text: string; botName: string }, today: string): string {
   return `- ${today} · learned by ${fact.botName.replace(/·/g, "-").replace(/\s+/g, " ").trim().slice(0, 60)} · ${fact.text}`;
 }
 
-/** The identity of an About me line, attributed or hand-written. */
 function lineIdentity(line: string): string {
   return factIdentity(line.replace(/^\s*-\s*\d{4}-\d{2}-\d{2} · learned by [^·\n]* · /, ""));
 }
 
-/** Facts not yet in About me and never removed by the person, as the lines
- * to append. Nothing is recorded until commitLearned. */
 export function planLearned(from: { botId: string; botName: string }, texts: readonly string[], aboutMe: string, today: string, now = Date.now()): LearnedFact[] {
   const file = load();
   const known = new Set([...file.removed, ...aboutMe.split("\n").map(lineIdentity)]);
@@ -92,7 +82,6 @@ export function commitLearned(facts: readonly LearnedFact[]): void {
   save(file);
 }
 
-/** About me with the lines appended, or null when it would pass the limit. */
 export function appendAboutMe(aboutMe: string, lines: readonly string[], maxChars = 24_000): string | null {
   if (!lines.length) return aboutMe;
   const base = aboutMe.replace(/\s+$/, "");
@@ -100,9 +89,7 @@ export function appendAboutMe(aboutMe: string, lines: readonly string[], maxChar
   return next.length > maxChars ? null : next;
 }
 
-/** Forget one learned fact: its line leaves About me (when it is still
- * there, unedited) and it is never added again. Save About me before
- * committing removal so a failed profile save leaves the fact retryable. */
+/** Save About me before committing removal, so a failed profile save leaves the fact retryable. */
 export function removeLearned(id: string, aboutMe: string, saveAboutMe?: (text: string) => void): { fact: LearnedFact; aboutMe: string } | null {
   const file = load();
   const fact = file.learned.find((f) => f.id === id);

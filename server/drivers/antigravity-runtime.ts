@@ -30,10 +30,7 @@ const FREE_SPACE_MARGIN = 256 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 45 * 60_000;
 const STAGING_PREFIX = ".install-";
 
-/** Windows refuses to rename or delete a file something still holds open,
- * with EPERM/EBUSY/EACCES rather than a clear "in use": the runtime the
- * validator just stopped or an antivirus scan of a brand-new executable.
- * Retry briefly; persistent refusals still fail. */
+/** Windows refuses to rename or delete a held file with EPERM/EBUSY/EACCES, not "in use" (a just-stopped runtime, an antivirus scan). */
 export function transientWindowsFileError(error: unknown): boolean {
   const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
   return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "ENOTEMPTY";
@@ -47,9 +44,6 @@ export interface RetryOptions {
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Retry a filesystem step on the transient Windows refusals above, with
- * growing delays (default: 8 tries, 0.25 s → 2 s, about 10 s in total).
- * Anything else, and the final failure, surface unchanged. */
 export async function retryOnWindowsFileLock<T>(step: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const attempts = options.attempts ?? 8;
   const sleep = options.sleep ?? wait;
@@ -159,9 +153,7 @@ async function externalRuntime(candidate: string, source: "override" | "path"): 
   return { executablePath, harnessPath, source, version: null };
 }
 
-/** Resolve an explicit official ACP binary, the pinned managed release, or an
- * official binary already on PATH. Legacy `agy` commands (including saved
- * absolute paths and Windows shims) migrate without editing user config. */
+/** Legacy `agy` commands (saved absolute paths, Windows shims) migrate without editing user config. */
 export async function resolveAntigravityRuntime(
   binaryPath?: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -174,10 +166,6 @@ export async function resolveAntigravityRuntime(
       const found = await externalRuntime(candidate, "override");
       if (found) return found;
     }
-    // Older versions saved the detected agy path in engine settings. It is
-    // not an official ACP override: installing the new runtime must not leave
-    // discovery permanently stuck on that legacy command. A valid explicit
-    // ACP executable still wins above, regardless of its filename.
     if (!legacyCli) {
       throw new AntigravitySetupError(
         "The custom Antigravity ACP executable or its localharness_external sibling is missing.",
@@ -219,9 +207,7 @@ const CENTRAL_SIGNATURE = 0x02014b50;
 const LOCAL_SIGNATURE = 0x04034b50;
 const MAX_EOCD_BYTES = 22 + 0xffff;
 
-/** Read the ZIP directory without loading Google's 300 MiB archive (or its
- * 1.5 GiB expanded binary) into memory. The whole archive is SHA-pinned first;
- * this parser only accepts the exact two flat members named by the manifest. */
+/** Reads the ZIP directory without loading the 300 MiB archive; after the SHA pin, only the manifest's two flat members pass. */
 async function pinnedZipEntries(path: string): Promise<PinnedZipEntry[]> {
   const handle = await open(path, "r");
   try {
@@ -386,12 +372,10 @@ async function installOnce(options: AntigravityInstallOptions): Promise<Antigrav
     }
   } catch (error) {
     if (error instanceof Error && error.message.includes("Antigravity needs")) throw error;
-    // statfs is unavailable on a few filesystems. The bounded download and
-    // extraction checks still fail safely if the disk fills.
+    // statfs is unavailable on a few filesystems.
   }
 
-  // Another app/server process may be installing into this versions folder.
-  // The in-memory coalescing map cannot protect its staging directory.
+  // Another process may be installing into this versions folder; the in-memory map cannot protect its staging dir.
   const staging = await mkdtemp(join(versions, `${STAGING_PREFIX}${randomUUID()}-`));
   let failed = false;
   try {
@@ -472,10 +456,7 @@ async function installOnce(options: AntigravityInstallOptions): Promise<Antigrav
     failed = true;
     throw error;
   } finally {
-    // Cleanup must never replace the real error with its own: a user who
-    // saw "EPERM: unlink agy_acp_server.exe" was looking at this line, not
-    // at why the install failed. Only clean up this attempt's directory;
-    // if it stays locked, log and leave it without touching other attempts.
+    // Cleanup must never replace the real error; only this attempt's directory is touched.
     try {
       await retryOnWindowsFileLock(() => rm(staging, { recursive: true, force: true }));
     } catch (cleanupError) {
@@ -485,7 +466,6 @@ async function installOnce(options: AntigravityInstallOptions): Promise<Antigrav
   }
 }
 
-/** Coalesce concurrent clicks so only one large Google artifact is fetched. */
 export function installAntigravityRuntime(options: AntigravityInstallOptions = {}): Promise<AntigravityRuntime> {
   const key = runtimeRoot(options.baseDir);
   const existing = installs.get(key);

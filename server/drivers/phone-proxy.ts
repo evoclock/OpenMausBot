@@ -1,5 +1,4 @@
-// First-party Android phone MCP server. It deliberately accepts physical USB
-// devices only: no emulators, wireless debugging, network ADB, or Tailscale.
+// First-party Android phone MCP server: physical USB devices only (no emulators, wireless or network ADB).
 import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -12,9 +11,6 @@ type UiNode = { text: string; description: string; id: string; className: string
 type ClaimOutcome = { ok: true } | { ok: false; message: string };
 
 const MAX_ADB_OUTPUT = 16 * 1024 * 1024;
-// Mirrors the shared-computer blockedReason shape: name the holder's
-// situation, say the call did not happen, and tell the model what beats a
-// blind retry once the phone frees up.
 const PHONE_BUSY_TEXT = "Another thread is using the phone. This call was not performed. Pause phone work until that thread finishes, then read the screen again before acting.";
 const PACKAGE = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/;
 const COMPONENT = /^([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+)\/\S+$/;
@@ -249,12 +245,8 @@ const TOOLS = [
 type ToolResult = { content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>; isError?: boolean };
 const textResult = (text: string, isError = false): ToolResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-// The harness reserves the physical phone for one turn at a time, but only
-// from the first real tool call (issue #1663): trigger-term matching decides
-// whether these tools are mounted, never who holds the device. Revalidate
-// every call: retained MCP processes can outlive their turn, whose claim and
-// capability are released at settlement. Reclaiming for the same live owner
-// is idempotent; a blocked caller can retry once the holding turn settles.
+// The harness reserves the phone per turn from the first real tool call. Retained MCP processes can
+// outlive their turn, so every call revalidates the claim.
 export function createPhoneClaim(
   env: NodeJS.ProcessEnv = process.env,
   fetchImpl: typeof fetch = fetch,
@@ -262,8 +254,6 @@ export function createPhoneClaim(
   const url = env.OMB_HARNESS_URL?.trim();
   const token = env.OMB_PHONE_TOKEN?.trim();
   if (!url || !token) {
-    // Spawned outside the harness (development, direct debugging): no
-    // exclusivity to enforce, exactly the behavior this proxy always had.
     return async () => ({ ok: true });
   }
   return async () => {

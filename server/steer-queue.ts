@@ -1,30 +1,14 @@
-// Queue-and-steer for busy 1:1 bots.
-//
-// A message sent to a bot mid-turn used to bounce with a 409. Now it waits
-// here until the bot settles, then lands in the thread and runs as ONE
-// follow-up turn whose prompt is the queued texts separated by a blank line.
-//
-// The durable queue is NOT in `messages[]` while the current
-// turn is running: appending immediately would make the queued line the
-// active leaf, so remaining tool/assistant events of *this* turn would
-// hang off a user line the model has not seen. Restart restores only sends
-// whose dispatch has not begun. The composer shows a pending chip
-// until drain appends the words.
-//
-// Unlike the delegation drain, an interrupted or failed turn does NOT
-// discard this queue: delegations are a bot's fan-out (dropping them on
-// Stop is a safety property), but these are the user's own words —
-// stop-then-steer (queue a correction, hit Stop, the correction runs) is
-// the feature.
+// Mid-turn sends wait here off the transcript (else they become the active leaf mid-turn) and survive Stop: stop-then-steer is the feature.
 
 import { newId } from "./contracts.ts";
 import { chatFollowups, saveChatFollowup, settleChatFollowups } from "./message-db.ts";
 import { drainCoalesceHead } from "./admission.ts";
+import { spokenLineFields } from "./live-call-record.ts";
+import { workOriginSchema, type WorkOrigin } from "./peer-provenance.ts";
 import type { ResolvedSender, SteerQueueReason } from "../shared/wire.ts";
 import type { BotRecord, Message } from "./store.ts";
 import type { UsageTrigger } from "./usage-ledger.ts";
 
-/** The slice of Store this module needs — narrow so tests can fake it. */
 export interface SteerStore {
   bot(id: string): BotRecord | null;
   projectBotForTask?(botId: string, threadId: string): BotRecord | null;
@@ -33,7 +17,6 @@ export interface SteerStore {
 }
 
 interface QueueEntry {
-  /** Keep ownership pinned even when the selected task changes. */
   botId: string;
   items: Array<{
     messageId: string;
@@ -41,33 +24,24 @@ interface QueueEntry {
     prompt: string;
     replyToId?: string;
     sendId?: string;
+    dataContext?: Message["dataContext"];
     reason?: SteerQueueReason;
-    /** The words were queued by a bot already running unattended (a
-     * thread it opened on itself). The drained turn must inherit that:
-     * a queue is a delay, not a person sitting down at the keyboard. */
+    /** Queued by a bot running unattended: the drained turn inherits it (a queue is a delay, not a person at the keyboard). */
     unattended?: boolean;
     peerAsk?: Message["peerAsk"];
-    /** The person who sent the words: a queue is a delay, not a change of
-     * author, so the drained line names them like an immediate send would. */
+    origin?: WorkOrigin;
     sender?: ResolvedSender;
-    /** Who the usage ledger books the turn these words start to, captured
-     * when they were sent. Absent on rows queued before this existed. */
     trigger?: UsageTrigger;
-    /** When the words were queued (epoch ms): drain-time coalescing splits
-     * one sender's items when the gap between them outgrows the window. */
     queuedAt: number;
-    /** The words were spoken in a Live call, not typed: the drained line
-     * says so, like an immediate send would. */
     via?: "call";
+    callId?: string;
   }>;
 }
 
-/** The first waiting line of a drained batch: the one that starts the turn. */
-export type SteerQueueHead = Pick<QueueEntry["items"][number], "trigger" | "sender" | "peerAsk">;
+export type SteerQueueHead = Pick<QueueEntry["items"][number], "trigger" | "sender" | "peerAsk" | "origin">;
 
-const queues = new Map<string, QueueEntry>(); // threadId → waiting sends
+const queues = new Map<string, QueueEntry>();
 
-/** A thread's queue lifted out of the map while a live steer is attempted. */
 export interface HeldSteerQueue {
   botId: string;
   threadId: string;
@@ -80,15 +54,14 @@ export function restoreSteeredMessages(): void {
     if (row.status !== "pending") continue;
     const entry = queues.get(row.threadId) ?? { botId: row.ownerId, items: [] };
     if (entry.botId !== row.ownerId) throw new Error("queued task belongs to another bot");
-    // a 1:1 line is only ever stamped "call"; "api" belongs to channel rows
-    const { via, ...payload } = row.payload;
+    const { via, callId, origin: storedOrigin, ...payload } = row.payload;
+    const origin = workOriginSchema.safeParse(storedOrigin);
     entry.items.push({
       ...payload,
-      ...(via === "call" ? { via } : {}),
+      ...spokenLineFields(via, callId),
+      ...(origin.success ? { origin: origin.data } : {}),
       messageId: row.id,
       prompt: row.payload.prompt ?? row.payload.text,
-      // rows queued before timestamps were kept read as queued at restore
-      // time: the burst was still live when the restart interrupted it
       queuedAt: row.payload.queuedAt ?? Date.now(),
     });
     queues.set(row.threadId, entry);
@@ -112,7 +85,6 @@ export function queuedSteerSnapshot(ownsThread: (botId: string, threadId: string
     }))]));
 }
 
-/** Publish changes synchronously so every client can restore/cancel the queue. */
 export function onSteeredQueueChange(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
@@ -122,17 +94,14 @@ export interface QueuedSteer {
   id: string;
 }
 
-/** Hold a mid-turn send off the transcript until drain. */
 export function queueSteeredMessage(
   botId: string,
   threadId: string,
   text: string,
-  options: { prompt?: string; replyToId?: string; sendId?: string; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; sender?: ResolvedSender; trigger?: UsageTrigger; via?: "call" } = {},
+  options: { prompt?: string; replyToId?: string; sendId?: string; dataContext?: Message["dataContext"]; reason?: SteerQueueReason; unattended?: boolean; peerAsk?: Message["peerAsk"]; origin?: WorkOrigin; sender?: ResolvedSender; trigger?: UsageTrigger; callId?: string; via?: "call" } = {},
 ): QueuedSteer {
   const id = newId();
   const entry = queues.get(threadId) ?? { botId, items: [] };
-  // A thread cannot legitimately change owners. Refuse to merge unrelated
-  // queues even if a corrupt caller reuses a thread id.
   if (entry.botId !== botId) throw new Error("queued task belongs to another bot");
   const item = {
     messageId: id,
@@ -140,13 +109,15 @@ export function queueSteeredMessage(
     prompt: options.prompt ?? text,
     replyToId: options.replyToId,
     sendId: options.sendId,
+    dataContext: options.dataContext,
     reason: options.reason,
     unattended: options.unattended,
     peerAsk: options.peerAsk,
+    ...(options.origin ? { origin: options.origin } : {}),
     sender: options.sender,
     trigger: options.trigger,
     queuedAt: Date.now(),
-    via: options.via,
+    ...spokenLineFields(options.via, options.callId),
   };
   saveChatFollowup({ id, kind: "bot", ownerId: botId, threadId, payload: item });
   entry.items.push(item);
@@ -155,11 +126,6 @@ export function queueSteeredMessage(
   return { id };
 }
 
-/** Where a thread stands among this bot's threads waiting for the bot to
- * become available (a full slot list or an active room turn):
- * 1 for the next to start. The drain visits queues in insertion order, so
- * insertion order is the line. Null when nothing of this bot's is waiting
- * on that thread. */
 export function queuedThreadPosition(botId: string, threadId: string): number | null {
   let position = 0;
   for (const [candidate, entry] of queues) {
@@ -170,31 +136,17 @@ export function queuedThreadPosition(botId: string, threadId: string): number | 
   return null;
 }
 
-/** Any queued correction supersedes a tool-planned continuation, whether it
- * waits for this thread's turn or for the bot's shared capacity. */
 export function hasQueuedSteeredMessages(botId: string, threadId: string): boolean {
   const entry = queues.get(threadId);
   return entry?.botId === botId && entry.items.length > 0;
 }
 
-/** Whether one send still waits in its thread's queue. False while it is
- * out of the queue: drained onto the thread, held for a steer into the
- * running turn, or cancelled (editing a queued line cancels it). */
 export function isSteeredMessageQueued(botId: string, threadId: string, queueId: string): boolean {
   const entry = queues.get(threadId);
   return entry?.botId === botId && entry.items.some((item) => item.messageId === queueId);
 }
 
-/** Drain every queue whose task is idle: append the held lines (leaf is now
- * the finished turn's last item), then one run per thread whose prompt is
- * the drained group's texts separated by a blank line. `userMessage` is the last appended line
- * so startTurn does not duplicate it; `excludeIds` is every drained line
- * so transcript-replay adapters do not also see earlier queued texts.
- * Entries leave the map BEFORE running so a settle racing another settle
- * can never fire the same queue twice. M2: only the leading coalesced
- * group drains per settle — one sender's contiguous in-window burst joins
- * one turn, and later groups (another sender, or the same sender past the
- * window) wait for this turn's completion, preserving FIFO. */
+/** Entries leave the map before running, so racing settles never fire one queue twice; one coalesced group drains per settle. */
 export function drainSteeredMessages(
   store: SteerStore,
   run: (
@@ -206,7 +158,7 @@ export function drainSteeredMessages(
     unattended: boolean,
     head: SteerQueueHead,
   ) => void | Promise<void>,
-  isBlocked?: (botId: string, threadId: string) => boolean,
+  isBlocked?: (botId: string, threadId: string, head: SteerQueueHead) => boolean,
 ): void {
   // deleting only the entry being visited is safe under Map iteration
   for (const [threadId, entry] of queues) {
@@ -214,16 +166,15 @@ export function drainSteeredMessages(
       ? store.projectBotForTask(entry.botId, threadId)
       : store.bot(entry.botId);
     if (!bot) {
-      // the bot or task was deleted while messages waited
       settleChatFollowups(entry.items.map((item) => item.messageId), "cancelled");
       queues.delete(threadId);
       changed();
       continue;
     }
-    if (bot.busy || isBlocked?.(entry.botId, threadId)) continue;
+    if (bot.busy || isBlocked?.(entry.botId, threadId, entry.items[0])) continue;
+    // isBlocked can re-enter this drain; if a nested drain took this entry, it is stale.
+    if (queues.get(threadId) !== entry) continue;
     const group = drainCoalesceHead(entry.items, coalesceIdentity, (item) => item.queuedAt);
-    // committed to draining: the entry leaves the map before anything runs,
-    // so a settle racing another settle can never fire the same queue twice
     const ids = group.map((item) => item.messageId);
     settleChatFollowups(ids, "dispatching");
     const rest = entry.items.slice(group.length);
@@ -232,8 +183,6 @@ export function drainSteeredMessages(
     changed();
     const appended: Message[] = [];
     for (const item of group) {
-      // queueId is the pending-chip identity from the 202; append still
-      // assigns a fresh transcript id so replay/exclude keep using message.id.
       appended.push(
         store.appendMessage(threadId, {
           role: "user",
@@ -241,19 +190,17 @@ export function drainSteeredMessages(
           text: item.text,
           replyToId: item.replyToId,
           sendId: item.sendId,
+          ...(item.dataContext ? { dataContext: item.dataContext } : {}),
           queueId: item.messageId,
           peerAsk: item.peerAsk,
           sender: item.sender,
-          ...(item.via ? { via: item.via } : {}),
+          ...spokenLineFields(item.via, item.callId),
         }),
       );
     }
     const last = appended.at(-1);
     if (!last) continue;
-    // Keep each queued message on its own Markdown block boundary. A single
-    // newline can merge a trailing standalone attachment tag with the next
-    // message into one HTML block, which makes that attachment stop being a
-    // native image when the combined follow-up is dispatched.
+    // A blank line keeps each message its own Markdown block; otherwise a trailing attachment tag merges into the next and stops being an image.
     const prompt = group.map((item) => item.prompt).join("\n\n");
     const running = run(
       entry.botId,
@@ -261,11 +208,9 @@ export function drainSteeredMessages(
       prompt,
       last,
       appended.map((message) => message.id),
-      // one unattended line makes the whole drained turn unattended: a
-      // person's words in the same group cannot re-attend a bot's own
+      // One unattended line makes the turn unattended: a person's words in the group cannot re-attend a bot's own.
       group.some((item) => item.unattended === true),
-      // the first waiting line is the one that starts this turn
-      { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk },
+      { trigger: group[0].trigger, sender: group[0].sender, peerAsk: group[0].peerAsk, origin: group[0].origin },
     );
     void Promise.resolve(running).then(
       () => settleChatFollowups(ids, null),
@@ -274,19 +219,15 @@ export function drainSteeredMessages(
   }
 }
 
-/** A queued item's coalescing identity: WHO sent it, with provenance as
- * part of the identity. A person's texts merge only with that same
- * person's; a bot's own queued work (peerAsk/unattended) never merges with
- * anyone's person texts, and unattributed local sends (the loopback owner)
- * are one identity — the transcript already names them all the same. */
+/** Who sent it, provenance included: a bot's own work never merges with a person's texts, nor a spoken line with a typed one. */
 function coalesceIdentity(item: QueueEntry["items"][number]): string {
-  if (item.peerAsk) return `peer:${item.peerAsk.botId}:${item.unattended === true ? "unattended" : "attended"}`;
+  if (item.peerAsk?.incident) return "incident";
+  if (item.peerAsk) return `peer:${item.peerAsk.botId}:${item.unattended === true ? "unattended" : "attended"}:${JSON.stringify(item.origin ?? null)}`;
   if (item.unattended === true) return "unattended";
-  if (item.sender) return `person:${item.sender.id ?? item.sender.name}`;
-  return "person:local";
+  const person = item.sender ? `person:${item.sender.id ?? item.sender.name}` : "person:local";
+  return item.via === "call" ? `call:${item.callId ?? ""}|${person}` : person;
 }
 
-/** Find the receipt for a retry whose message is still waiting to drain. */
 export function queuedSteeredMessage(
   botId: string,
   threadId: string,
@@ -298,10 +239,6 @@ export function queuedSteeredMessage(
   return item ? { id: item.messageId, text: item.text, replyToId: item.replyToId, ...(item.reason ? { reason: item.reason } : {}) } : null;
 }
 
-/** Drop one waiting send owned by this bot so it never drains. The queue id
- * is stable even if the bot switches away from the task while the request is
- * in flight. Returns false when it was already drained, belongs to another
- * bot, or dispatch has already started. */
 export function cancelSteeredMessage(botId: string, messageId: string, expectedThreadId?: string): boolean {
   for (const [threadId, entry] of queues) {
     if (entry.botId !== botId || (expectedThreadId !== undefined && threadId !== expectedThreadId)) continue;
@@ -316,10 +253,7 @@ export function cancelSteeredMessage(botId: string, messageId: string, expectedT
   return false;
 }
 
-/** Atomically lift a thread's whole queue out of the map for a live steer.
- * The entry leaves first so a settle that starts draining while the adapter
- * is still thinking can never also dispatch the same words as a follow-up
- * turn. The caller must either restore the held queue or settle its rows. */
+/** The entry leaves first, so a racing settle cannot also dispatch these words; the caller must restore or settle it. */
 export function holdSteeredQueue(botId: string, threadId: string, queueId: string): HeldSteerQueue | null {
   const entry = queues.get(threadId);
   if (!entry || entry.botId !== botId || !entry.items.some((item) => item.messageId === queueId)) return null;
@@ -328,8 +262,6 @@ export function holdSteeredQueue(botId: string, threadId: string, queueId: strin
   return { botId, threadId, items: entry.items };
 }
 
-/** Put a held queue back after the steer was refused. Words queued while the
- * hold was open keep their place behind the restored items. */
 export function restoreHeldSteeredQueue(held: HeldSteerQueue): void {
   const existing = queues.get(held.threadId);
   if (existing && existing.botId !== held.botId) throw new Error("queued task belongs to another bot");
@@ -340,13 +272,10 @@ export function restoreHeldSteeredQueue(held: HeldSteerQueue): void {
   changed();
 }
 
-/** Mark a held queue's durable rows delivered: the words were folded into the
- * running turn, so a restart must not replay them as a fresh follow-up. */
 export function settleHeldSteeredQueue(held: HeldSteerQueue): void {
   settleChatFollowups(held.items.map((item) => item.messageId), null);
 }
 
-/** Test helper: how many messages remain queued for a thread. */
 export function _queuedCount(threadId: string): number {
   return queues.get(threadId)?.items.length ?? 0;
 }

@@ -1,20 +1,16 @@
-// Dev gallery for the welcome flow, like mascot-preview.html for the mascot:
-// every beat, in every skin, with reduced motion on or off, without touching
-// the workspace's real onboarding record. Served by Vite in dev at
-// /onboarding-preview.html; not part of the packaged app.
-//
-// The flow talks to whatever harness the dev proxy points at, so the engines
-// and phone beats show real data when `pnpm dev:server` is running and their
-// empty or error states when it is not. Saving the preview bot fails on
-// purpose (there is no such bot), which exercises the exit beat's error path.
+// Dev-only gallery of the welcome flow's beats, served at /onboarding-preview.html; not in the packaged app.
 import { StrictMode, useEffect, useState } from "react";
+import type { CloudOffer } from "../electron/cloud-home.mjs";
 import { createRoot } from "react-dom/client";
 import { DesktopCapabilitiesProvider } from "@/components/DesktopCapabilities";
 import { WelcomeFlow } from "@/components/onboarding/WelcomeFlow";
+import { Select } from "@/components/Select";
 import type { MausMotion } from "@/lib/mascot";
 import { type BeatId, beatsFor } from "@/lib/onboarding";
+import type { SetupImportClient } from "@/lib/setup-import";
 import { SKINS, type SkinId } from "@/lib/skins";
 import { StoreProvider, type Bot } from "@/state/store";
+import type { SetupDetection, SetupImportResult } from "../shared/setup-import";
 import "./styles.css";
 
 const PREVIEW_BOT = {
@@ -24,10 +20,42 @@ const PREVIEW_BOT = {
   soul: "",
 } as unknown as Bot;
 
-const BEATS = beatsFor({ dictation: true, reel: true });
+const BEATS = beatsFor({ dictation: true, reel: true, setupImport: true, cloud: true });
 
-/** ?beat=engines&skin=linen&reduced=1&all=1 — so a screenshot script can
- * open any state directly. Unknown values fall back to the defaults. */
+/** The Cloud beat's stand-in for the Admin's offer (the app reads its own). */
+const PREVIEW_CLOUD_OFFER: CloudOffer = { recommended: "pro", creditUsd: 5, reminderDays: 1, refundDays: 14, plans: [
+  { tier: "personal", label: "Personal", amount: 2900, trialDays: 3 }, { tier: "pro", label: "Pro", amount: 4900, trialDays: 3 },
+  { tier: "max", label: "Max", amount: 9900, trialDays: 3 }] };
+
+// A fixture: the preview never looks at this computer's own skills or MCP servers.
+const PREVIEW_DETECTION: SetupDetection = {
+  skills: Array.from({ length: 30 }, (_, i) => ({ name: `skill-${i + 1}`, source: "claudeCode" as const })),
+  tools: [
+    { name: "github", source: "claudeCode" },
+    { name: "linear", source: "claudeCode" },
+    { name: "notion", source: "cursor" },
+    { name: "figma", source: "cursor" },
+  ],
+};
+
+/** ?import=notes answers with something left out; ?import=fail fails. */
+function previewImport(mode: string | null): SetupImportClient {
+  return {
+    detect: async () => PREVIEW_DETECTION,
+    apply: async (request) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (mode === "fail") throw new Error("fixture failure");
+      const notes = mode === "notes";
+      const result: SetupImportResult = {
+        ...(request.skills ? { skills: { added: PREVIEW_DETECTION.skills.slice(notes ? 1 : 0).map((skill) => skill.name), present: [], skipped: notes ? [{ name: "skill-1", reason: "conflict" as const }] : [], filesLeftOut: notes ? 2 : 0, review: notes ? ["skill-2"] : [] } } : {}),
+        ...(request.tools ? { tools: { added: ["github", "linear", "notion", "figma"], present: [], skipped: [] } } : {}),
+      };
+      return result;
+    },
+  };
+}
+
+/** ?beat=engines&skin=linen&reduced=1&all=1 opens any state directly; ?w=390&h=760 sizes the stage like a narrow window. */
 function fromUrl() {
   const params = new URLSearchParams(location.search);
   const beat = params.get("beat") as BeatId | null;
@@ -38,13 +66,13 @@ function fromUrl() {
     reduced: params.get("reduced") === "1",
     all: params.get("all") === "1",
     entrance: (params.get("entrance") ?? "arrive") as Exclude<MausMotion, "none">,
+    importMode: params.get("import"),
+    size: { width: Number(params.get("w")) || 1100, height: Number(params.get("h")) || 720 },
   };
 }
 
-/** One window-sized stage in one skin. The flow fills it via `embedded`. */
-function Stage({ skin, beat, run, scale = 1, entrance }: { skin: SkinId; beat: BeatId; run: number; scale?: number; entrance: Exclude<MausMotion, "none"> }) {
-  const width = 1100;
-  const height = 720;
+function Stage({ skin, beat, run, scale = 1, entrance, importMode = null }: { skin: SkinId; beat: BeatId; run: number; scale?: number; entrance: Exclude<MausMotion, "none">; importMode?: string | null }) {
+  const { width, height } = fromUrl().size;
   return (
     <div
       data-skin={skin}
@@ -58,8 +86,10 @@ function Stage({ skin, beat, run, scale = 1, entrance }: { skin: SkinId; beat: B
           dictation
           entrance={entrance}
           initialBeat={beat}
+          cloudOffer={PREVIEW_CLOUD_OFFER}
           bot={PREVIEW_BOT}
           onDone={() => {}}
+          setupImport={{ client: previewImport(importMode), detection: PREVIEW_DETECTION }}
         />
       </div>
     </div>
@@ -78,8 +108,7 @@ function Preview() {
     document.documentElement.dataset.reducedMotion = reduced ? "true" : "false";
   }, [reduced]);
 
-  // ?debug=1 — after a few seconds, log what the guide's face was drawn as.
-  // Lets a headless run inspect the animation loop's output without DevTools.
+  // ?debug=1 logs what the guide's face was drawn as, for headless runs.
   useEffect(() => {
     if (!new URLSearchParams(location.search).has("debug")) return;
     const timer = setTimeout(() => {
@@ -93,32 +122,29 @@ function Preview() {
     return () => clearTimeout(timer);
   }, []);
 
-  const control =
-    "rounded-lg border border-hairline/40 bg-inset px-2 py-1.5 text-[13px] text-ink focus:outline-none";
-
   return (
     <div data-skin="midnight" className="min-h-screen bg-app p-6 text-ink">
       <header className="mb-5 flex flex-wrap items-center gap-3">
         <h1 className="mr-2 text-[18px] font-semibold">Welcome flow</h1>
         <label className="flex items-center gap-1.5 text-[13px] text-ink-secondary">
           Beat
-          <select value={beat} onChange={(e) => setBeat(e.target.value as BeatId)} className={control}>
+          <Select size="sm" value={beat} onChange={(e) => setBeat(e.target.value as BeatId)}>
             {BEATS.map((id) => (
               <option key={id} value={id}>
                 {id}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="flex items-center gap-1.5 text-[13px] text-ink-secondary">
           Skin
-          <select value={skin} onChange={(e) => setSkin(e.target.value as SkinId)} className={control} disabled={all}>
+          <Select size="sm" value={skin} onChange={(e) => setSkin(e.target.value as SkinId)} disabled={all}>
             {SKINS.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label className="flex items-center gap-1.5 text-[13px] text-ink-secondary">
           <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> All skins
@@ -142,12 +168,12 @@ function Preview() {
           {SKINS.map((s) => (
             <div key={s.id} className="flex flex-col gap-1.5">
               <div className="text-[12px] text-ink-secondary">{s.name}</div>
-              <Stage skin={s.id} beat={beat} run={run} scale={0.42} entrance={initial.entrance} />
+              <Stage skin={s.id} beat={beat} run={run} scale={0.42} entrance={initial.entrance} importMode={initial.importMode} />
             </div>
           ))}
         </div>
       ) : (
-        <Stage skin={skin} beat={beat} run={run} entrance={initial.entrance} />
+        <Stage skin={skin} beat={beat} run={run} entrance={initial.entrance} importMode={initial.importMode} />
       )}
     </div>
   );

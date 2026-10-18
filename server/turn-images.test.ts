@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { extractTurnImages } from "./turn-images.ts";
+import { extractReplayImages, extractSteerImages, extractTurnImages } from "./turn-images.ts";
 
 const IDS = [
   "123e4567-e89b-42d3-a456-426614174000",
@@ -112,5 +112,66 @@ describe("turn image admission", () => {
     const source = `<attached-image path="${link}" />`;
 
     expect(extractTurnImages(source, { attachmentsDir: root })).toEqual({ text: source, images: [] });
+  });
+
+  it("resolves a steer's texts one by one and keeps its images in order", () => {
+    const root = store();
+    const first = image(root, 0, ".png", 5);
+    const second = image(root, 1, ".webp", 6);
+    const texts = [
+      `look\n\n<attached-image path="${first}" name="a.png" />`,
+      "plain words stay exactly as sent",
+      `and this\n\n<attached-image path="${second}" name="b.webp" />`,
+    ];
+
+    expect(extractSteerImages(texts, { attachmentsDir: root })).toEqual({
+      texts: ["look\n\n", "plain words stay exactly as sent", "and this\n\n"],
+      images: [
+        { path: first, mime: "image/png", bytes: 5 },
+        { path: second, mime: "image/webp", bytes: 6 },
+      ],
+    });
+    expect(extractSteerImages(["just text"], { attachmentsDir: root })).toEqual({ texts: ["just text"], images: [] });
+  });
+
+  it("gives up on a steer whose images together would not fit one turn", () => {
+    const root = store();
+    const one = (index: number) => `<attached-image path="${image(root, index, ".png", 4)}" name="${index}.png" />`;
+    expect(extractSteerImages([one(0), one(1), one(2)], { attachmentsDir: root, maxCount: 2 })).toBeNull();
+    expect(extractSteerImages([one(3), one(4)], { attachmentsDir: root, maxBytes: 7 })).toBeNull();
+    expect(extractSteerImages([`${one(0)}\n\n${one(1)}\n\n${one(2)}`], { attachmentsDir: root, maxCount: 2 })).toBeNull();
+  });
+
+  it("re-sends the newest replayed user images within what the current turn leaves", () => {
+    const root = store();
+    const tag = (index: number) => `<attached-image path="${image(root, index)}" name="${index}.png" />`;
+    const current = [{ path: image(root, 4), mime: "image/png" as const, bytes: 4 }];
+    const transcript = [
+      { role: "user" as const, text: `oldest\n\n${tag(0)}` },
+      { role: "assistant" as const, text: `quoted\n\n${tag(1)}` },
+      { role: "user" as const, text: `older\n\n${tag(2)}` },
+      { role: "user" as const, text: `newest\n\n${tag(3)}` },
+    ];
+
+    const result = extractReplayImages(transcript, current, { attachmentsDir: root, maxCount: 3 });
+
+    expect(result.images.map((entry) => entry.path)).toEqual([join(root, `${IDS[2]}.png`), join(root, `${IDS[3]}.png`)]);
+    expect(result.transcript.map((entry) => entry.text)).toEqual([transcript[0]!.text, transcript[1]!.text, "older\n\n", "newest\n\n"]);
+    expect(transcript[3]!.text).toContain("<attached-image");
+  });
+
+  it("stops at the first replayed message whose images no longer fit", () => {
+    const root = store();
+    const tag = (index: number, bytes = 4) => `<attached-image path="${image(root, index, ".png", bytes)}" name="${index}.png" />`;
+    const transcript = [
+      { role: "user" as const, text: tag(0) },
+      { role: "user" as const, text: tag(1, 9) },
+      { role: "user" as const, text: tag(2) },
+    ];
+
+    const result = extractReplayImages(transcript, [], { attachmentsDir: root, maxBytes: 12 });
+
+    expect(result.images.map((entry) => entry.path)).toEqual([join(root, `${IDS[2]}.png`)]);
+    expect(result.transcript.slice(0, 2)).toEqual(transcript.slice(0, 2));
   });
 });

@@ -8,10 +8,9 @@
 // Copyright (c) 2025 models.dev. Its full licence text travels inside the
 // snapshot (source.licenseText) and is kept at third_party/models-dev/LICENSE.
 //
-// The trim and the brace filter are server/model-catalog/trim.ts, the same code
-// the runtime refresh uses: only current, tool-calling, text-input models are
-// kept, and any provider or model with `{` or `}` in its strings is dropped,
-// because OpenCode expands {env:…} and {file:…} anywhere in its config.
+// Only current, tool-calling, text-input models are kept, and any provider or
+// model with `{` or `}` in its strings is dropped: OpenCode expands {env:…} and
+// {file:…} anywhere in its config.
 //
 // Output is one model per line so a refresh reads as a per-model diff.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -30,7 +29,6 @@ export const MODELS_DEV_REPOSITORY = "https://github.com/anomalyco/models.dev";
 export const MAX_GZIP_BYTES = 150 * 1024;
 const MAX_INPUT_BYTES = 20 * 1024 * 1024;
 
-/** Wrap trimmed providers in the snapshot document. */
 export function buildCatalogDocument(raw, { commit, updatedAt, licenseText, onDrop } = {}) {
   if (!commit || !/^[0-9a-f]{7,40}$/.test(commit)) throw new Error("--commit must be the models.dev commit the data came from");
   const time = new Date(updatedAt ?? "");
@@ -67,9 +65,8 @@ export function serializeCatalog(doc) {
   return `${out}}}\n`;
 }
 
-/** .gitattributes pins the snapshot and the licence files to LF. This keeps a
- * working tree that still has CRLF (checked out before that rule) from failing
- * over line endings, which git owns, rather than over content. */
+/** .gitattributes pins the snapshot and licence files to LF, so a working tree
+ * still holding CRLF fails on content, not on line endings. */
 export const toLf = (text) => text.replace(/\r\n/g, "\n");
 
 /** Problems with a snapshot's text, or an empty list when it is sound. */

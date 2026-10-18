@@ -1,7 +1,10 @@
 name: ${COMPOSE_PROJECT_NAME:-openmausbot}
 services:
   omb:
+    # Collects exited browser processes; Chrome's shared memory as on the
+    # desktop containers (docs/browser-packaging.md, "Process hygiene").
     init: true
+    shm_size: 512m
     build:
       context: ./deploy/local
       args:

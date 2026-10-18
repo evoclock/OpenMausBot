@@ -1,13 +1,3 @@
-// The /setup scene. One authored moment: "/setup" turns into a command as
-// it is typed, and the bot fills in its own profile. Setup is the composer
-// (the job typed after the command, the send press); action is the ask
-// landing in the chat and the bot answering; resolution is the profile card
-// on the right going from placeholders to a configured bot, one row per
-// change the bot makes (its name, its schedule, its apps, its folder).
-//
-// Rows land one at a time because that is what setup really does: each is
-// its own tool call, applied or waiting on the user. Values blur in rather
-// than cross-fade so a placeholder and a value never show as two objects.
 import { useEffect, useState } from "react";
 import { ArrowUp, CalendarClock, Check, Folder, Plug } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -23,7 +13,6 @@ const COMMAND = "/setup";
 const JOB = " watch Discord, file bugs in Linear";
 const TYPED = COMMAND + JOB;
 
-/** Beats, in ms from play. Type → send → reply → four changes → done. */
 const TYPE_AT = 400;
 const MS_PER_CHAR = 34;
 const SEND_AT = TYPE_AT + TYPED.length * MS_PER_CHAR + 350;
@@ -37,7 +26,6 @@ const APPS = [
 
 type Phase = "compose" | "sent" | "reply" | "configured";
 
-/** Official logos from the catalog, fetched once per session. */
 let catalog: Promise<Map<string, ToolkitCard>> | null = null;
 function loadCatalog(): Promise<Map<string, ToolkitCard>> {
   catalog ??= api("/api/connectors/catalog")
@@ -46,7 +34,6 @@ function loadCatalog(): Promise<Map<string, ToolkitCard>> {
   return catalog;
 }
 
-/** The typed text, with the command drawn as a command once it is whole. */
 function Typed({ text, caret, sent = false }: { text: string; caret: boolean; sent?: boolean }) {
   const command = text.slice(0, COMMAND.length);
   const whole = command === COMMAND;
@@ -66,7 +53,6 @@ function Typed({ text, caret, sent = false }: { text: string; caret: boolean; se
   );
 }
 
-/** A value that blurs in over its placeholder bar when the change lands. */
 function Reveal({ shown, children, bar = "w-20" }: { shown: boolean; children: React.ReactNode; bar?: string }) {
   return (
     <span className="relative inline-flex min-h-[16px] items-center">
@@ -116,7 +102,6 @@ export function Setup({ playing, onCue, onEnded, label }: SceneProps) {
   const still = reducedMotion() || !playing;
   const [typed, setTyped] = useState(still ? TYPED.length : 0);
   const [phase, setPhase] = useState<Phase>(still ? "configured" : "compose");
-  /** How many profile changes have landed: name, schedule, apps, folder. */
   const [steps, setSteps] = useState(still ? 4 : 0);
   const [pressed, setPressed] = useState(false);
   const [logos, setLogos] = useState<Map<string, ToolkitCard>>(new Map());
@@ -166,7 +151,6 @@ export function Setup({ playing, onCue, onEnded, label }: SceneProps) {
   return (
     <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-inset px-6" role="img" aria-label={label}>
       <div className="flex w-full max-w-[608px] items-stretch gap-4">
-        {/* the chat: the ask lands above the composer, the bot answers under it */}
         <div className="flex min-w-0 flex-1 flex-col justify-end gap-2.5">
           {sent && (
             <div className="animate-msg-in self-end rounded-2xl rounded-br-md bg-bubble-user px-3 py-2 shadow-md shadow-black/15">
@@ -222,7 +206,6 @@ export function Setup({ playing, onCue, onEnded, label }: SceneProps) {
           </div>
         </div>
 
-        {/* the bot's profile, filling itself in as each change lands */}
         <div
           className={cn(
             "w-[264px] shrink-0 rounded-2xl border bg-card px-3.5 py-3 shadow-lg shadow-black/20 transition-[border-color,box-shadow] duration-500 ease-out",

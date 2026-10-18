@@ -1,11 +1,4 @@
-/**
- * Supervise one browser EventSource for `/api/events`.
- *
- * EventSource hides SSE comment keepalives, so a half-open proxy can leave the
- * UI looking connected forever. The server also sends a visible `ping` frame;
- * this supervisor uses it as liveness, owns reconnects itself, and carries an
- * explicit replay cursor whenever it replaces the native EventSource.
- */
+// EventSource hides SSE comment keepalives, so liveness comes from the server's visible `ping` frame.
 import type { ServerFrame } from "../../shared/wire";
 
 export const LIVE_EVENTS_PATH = "/api/events";
@@ -48,10 +41,7 @@ export interface LiveEventsPlatform {
 
 export interface LiveEventsHandlers {
   onFrame: (frame: LiveFrame) => void;
-  /** Rebuild the consumer's complete snapshot after the server says its
-   * replay gap cannot be filled. The transport commits the new cursor only
-   * after this succeeds; false/rejection closes the stream and retries from
-   * the last known-good boundary. */
+  /** The transport commits the new cursor only after this resolves true. */
   onSnapshotRequired: () => Promise<boolean>;
   onOpen?: () => void;
   onError?: () => void;
@@ -67,15 +57,8 @@ export function liveEventsUrl(options?: { since?: string | null }): string {
   return query ? `${LIVE_EVENTS_PATH}?${query}` : LIVE_EVENTS_PATH;
 }
 
-/**
- * The app opens one live stream, the store's. Frames the store does not keep
- * (a computer's live screen, raw runtime events) go from that stream to the
- * open panel that reads them, instead of re-rendering the whole app or each
- * panel opening a stream of its own.
- */
 export interface LiveFrameListener {
   onFrame: (frame: ServerFrame) => void;
-  /** The stream lost frames it could not replay: reload what you keep. */
   onMissedFrames?: () => void;
 }
 
@@ -108,9 +91,6 @@ export function shouldReconnectLiveEvents(
   return now - lastHeardAt >= staleMs;
 }
 
-/** Parse only the transport envelope here. Payloads remain owned by their
- * consumers; cloning every token delta through a general schema would put
- * avoidable work on the hottest renderer path. */
 function parseLiveFrame(data: string): LiveFrame | null {
   let value: unknown;
   try {
@@ -119,8 +99,6 @@ function parseLiveFrame(data: string): LiveFrame | null {
     return null;
   }
   if (!value || Array.isArray(value) || Object(value) !== value) return null;
-  // SAFETY: the object guard above establishes an indexable JSON object; each
-  // transport-owned field is validated below before exposing LiveFrame.
   const candidate = value as {
     kind?: unknown;
     cursor?: unknown;
@@ -130,8 +108,6 @@ function parseLiveFrame(data: string): LiveFrame | null {
   if (candidate.kind !== String(candidate.kind)) return null;
   if (candidate.cursor !== undefined && candidate.cursor !== String(candidate.cursor)) return null;
   if (candidate.resumed !== undefined && candidate.resumed !== Boolean(candidate.resumed)) return null;
-  // SAFETY: kind is a string and the two optional transport fields were
-  // checked against their exact primitive representations above.
   return candidate as LiveFrame;
 }
 
@@ -183,12 +159,6 @@ function browserPlatform(overrides: Partial<LiveEventsPlatform>): LiveEventsPlat
   };
 }
 
-/**
- * Open and supervise one live stream. The returned function owns all cleanup:
- * after it runs, no EventSource, reconnect timer, or browser listener remains.
- * The optional platform is intentionally narrow so connection behavior can be
- * tested without a browser or network.
- */
 export function openLiveEvents(
   handlers: LiveEventsHandlers,
   platformOverrides: Partial<LiveEventsPlatform> = {},
@@ -286,20 +256,14 @@ export function openLiveEvents(
       const frame = parseLiveFrame(event.data);
       if (!frame) return;
 
-      // Heartbeats prove this socket is alive, but they are not application
-      // state and never establish a replay boundary of their own.
       if (isLivePing(frame)) {
-        // An open event only proves that a TCP handshake happened. A ping
-        // proves the stream stayed usable, so only now forgive prior flaps.
+        // An open event only proves a handshake; a ping proves the stream stayed usable.
         retryAttempt = 0;
         return;
       }
 
       if (frame.kind === "hello") {
-        // `resumed:true` is followed by replay frames. Advancing to hello's
-        // newest cursor here would skip any replay frame not yet delivered if
-        // this socket died mid-replay. A failed resume has no replay, but its
-        // cursor is safe only after the consumer's replacement snapshot loads.
+        // Replay frames follow `resumed:true`: advancing to hello's cursor now could skip one if the socket dies mid-replay.
         if (frame.resumed === false) {
           const generation = ++snapshotGeneration;
           pendingSnapshot = {
@@ -329,9 +293,6 @@ export function openLiveEvents(
               connectionLost(current);
               return;
             }
-            // The consumer resolved only after applying every frame it held
-            // behind the snapshot. Commit the newest delivered cursor, or the
-            // hello boundary when no application frame arrived meanwhile.
             cursor = pending.newestFrameCursor ?? pending.boundaryCursor;
             pendingSnapshot = null;
           })();
@@ -344,8 +305,6 @@ export function openLiveEvents(
         }
       }
 
-      // Hello is transport control, not application state. Consumers rebuild
-      // through onSnapshotRequired and receive only numbered application data.
       if (frame.kind !== "hello") handlers.onFrame(frame);
     };
   };
@@ -361,8 +320,7 @@ export function openLiveEvents(
   };
 
   const recover = () => {
-    // Background tabs suspend timers and network delivery. Let visibility or
-    // focus perform one recovery on wake instead of churning hidden sockets.
+    // Background tabs suspend timers and network delivery: recover once on wake.
     if (stopped || !platform.isOnline() || !platform.isVisible()) return;
     if (!source || shouldReconnectLiveEvents(lastHeardAt, platform.now(), staleMs)) {
       reconnectNow(source !== null);

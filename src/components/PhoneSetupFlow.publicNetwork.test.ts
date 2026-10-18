@@ -4,9 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import { PhoneSetupFlowView, type CompanionState, type PhoneSetupController } from "./PhoneSetupFlow";
 
-// Windows Firewall drops a phone's connection on a network Windows calls
-// Public, and Windows 11 calls a newly joined Wi-Fi Public. The Wi-Fi QR is
-// the one a phone dials on this network, so that panel says what to change.
+// Windows Firewall drops a phone's connection on a network Windows calls Public, and Windows 11 calls a newly joined
+// Wi-Fi Public.
 const state: CompanionState = {
   enabled: true,
   keepAwake: false,

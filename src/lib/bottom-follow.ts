@@ -1,14 +1,7 @@
 import { useLayoutEffect, type RefObject } from "react";
 
-/** Subpixel slack for "at the rest position" — not a magnet zone. A larger
- * value used to re-pin follow ~48px early and then jump the pane to the end. */
 export const BOTTOM_FOLLOW_THRESHOLD = 4;
 
-/**
- * Resume automatic bottom-follow only when the reader is already at the
- * rest position and still moving toward it. Re-pinning must not imply a
- * snap; the scroll effect follows new content, it does not yank the viewport.
- */
 export function shouldResumeBottomFollow({
   following,
   previousScrollTop,
@@ -28,17 +21,12 @@ interface BottomFollowScroller {
   scrollTo(options?: ScrollToOptions): void;
 }
 
-/** Follow content growth only while the reader remains pinned to the tail. */
 export function followBottomGrowth(scroller: BottomFollowScroller, following: boolean): boolean {
   if (!following) return false;
   scroller.scrollTo({ top: scroller.scrollHeight });
   return true;
 }
 
-/**
- * Keep a pinned transcript at its true bottom when descendants mount or
- * resize after the parent's one-shot message scroll (for example TurnPresence).
- */
 export function useBottomFollowResize(
   scrollRef: RefObject<HTMLElement | null>,
   transcriptRef: RefObject<HTMLElement | null>,

@@ -1,8 +1,3 @@
-// A scheduled run's task, as a phone's event stream sees it, through the real
-// server. The frame announcing the run's task used to carry the bot's whole
-// active transcript; past the phone sidecar's 4 MiB event ceiling that ended
-// the stream, and resuming from the cursor replayed the same frame forever —
-// "loses connection about once an hour" with an hourly routine (MOCA-179).
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,7 +39,6 @@ async function waitFor<T>(read: () => Promise<T | null | undefined> | T | null |
   }
 }
 
-/** The live event stream, parsed frame by frame. */
 function openStream() {
   const controller = new AbortController();
   const frames: any[] = [];
@@ -72,7 +66,6 @@ function openStream() {
         }
       }
     } catch {
-      /* aborted */
     }
   })();
   return { frames, ready: () => waitFor(() => state.hello, 10_000), close: () => controller.abort() };
@@ -142,14 +135,11 @@ posixOnly("a routine run's task on the event stream", () => {
       expect(await stream.ready()).not.toBeNull();
       expect((await api("POST", `/api/routines/${routine.body.routine.id}/run`)).status).toBeLessThan(300);
 
-      // Once the run has finished, every frame its task produced has been sent.
       const finished = await waitFor(() => stream.frames.find((frame) =>
         frame.kind === "routine.run" && ["completed", "failed"].includes(frame.run?.status)));
       expect(finished, log.slice(-2_000)).not.toBeNull();
       const botFrames = stream.frames.filter((frame) => frame.kind === "bot" && frame.bot?.id === bot.id);
-      // The run's task did reach the stream...
       expect(Math.max(...botFrames.map((frame) => (frame.bot.tasks ?? []).length))).toBeGreaterThan(1);
-      // ...and no frame for it carried the transcript, which stays where it was.
       expect(botFrames.filter((frame) => "messages" in frame.bot)).toEqual([]);
       expect(botFrames.every((frame) => frame.bot.threadId === bot.threadId)).toBe(true);
     } finally {

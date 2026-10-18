@@ -19,6 +19,8 @@ pairing, native permissions or user workspace is involved.
 
 Assertions cover profile-save failure and retry, reduced-motion reel playback,
 engine refresh failure without losing inventory, phone skip, welcome completion,
+automatic starter-model selection and a successful first composer message without
+opening the model picker,
 every guided tour step, persistence after reload, Settings replay, skipping
 while Next is saving, closing welcome while its save is pending, and replay on
 legacy installs with a failed-save retry. Screenshots
@@ -27,6 +29,24 @@ each workflow. Actual provider authentication and native Electron permissions
 remain covered by their separate platform recipes, not this browser fixture.
 
 Stop the launcher with Ctrl-C; it owns and removes only its disposable home.
+
+## Providers connected after first launch
+
+```sh
+pnpm exec vitest run server/onboarding-model-default.e2e.test.ts server/default-model-selection.test.ts src/components/NewBotDialog.test.ts
+```
+
+The server tests launch only disposable homes and repository-owned fake engines.
+They cover a genuinely signed-out first install, a missing CLI connected later,
+and first-send discovery without opening settings. They assert the selected model
+in persisted bot records and fake-provider arguments, settled turns and bounded
+transcripts. Existing bot choices and explicitly pinned thread models survive
+both automatic repair and a restart. Disabled and signed-out engines stay unset.
+Guarded messages recheck permissions after held provider discovery before starting.
+Pure-picker tests cover API/custom engines, empty catalogs, fallback model options
+and organization policy. Dialog tests cover blank saved new-bot templates without
+replacing deliberate choices. Real provider authentication and packaged native
+installation are not exercised by these offline fixtures.
 
 ## Organization row, hosted beats and member note (Sep 23 2026)
 
@@ -60,3 +80,61 @@ Not covered here: the real Electron preload bridge and a real Admin enrolment
 (see [organization connection](organization-settings.md), not rerun for this
 change), and a real hosted tenant's browser. The hosted beat set was rendered
 from a temporary preview entry, not reached through a hosted sign-in.
+
+## A new Cloud's welcome
+
+```sh
+node --experimental-strip-types scripts/verify-cloud-welcome.ts
+```
+
+It launches the isolated fake-engine fixture and mounts the whole app
+(`scripts/testing/cloud-welcome-preview.tsx`) in a Vite preview whose
+session and config answer as a Cloud home's owner, with Claude signed out and
+the trial's Claude credit in the engine list. Open the printed `previewUrl`:
+
+- `?desktop=1` adds the reduced bridge a Cloud's page gets in the desktop app,
+  with this computer's work to copy (6 bots, 142 chats, 4 routines);
+  `?copy=uploading` or `?copy=done` shows a copy under way or landed, and
+  `?cloud=full` a Cloud that already has bots of its own.
+- `?step=engine`, `?step=files` or `?step=done` opens the welcome on that step;
+  `?skin=daylight` (or any skin) picks the skin.
+- `POST /__fixture/engines?mode=signed-in` (or `signed-out`, `credit`) changes
+  the engine list for the next load.
+
+What was checked this way (Oct 16 2026): every step and the done state in
+Midnight and Daylight at 1280×860, 1024×760 and 390×844, the bring and engine
+steps in the other seven skins, and
+the setup card in short beside Routines; after review, "Your bots are already
+here" (`?cloud=full`) and step 1 with only its two choices. Steps finished there are written to
+the fixture's onboarding record; the record can be cleared with
+`PUT /api/config` (`{"onboarding":{"hintsSeen":[]}}`). The real copy, Electron
+main's empty-Cloud check and its preload bridge are not exercised here; they
+are covered by `electron/cloud-move.node-test.mjs` and
+`src/components/cloud-welcome/CloudWelcome.test.ts`.
+
+## Bring what you already use (Oct 16 2026)
+
+The step after the engines beat: skills and MCP servers another AI tool keeps on
+this computer, brought in with one button. Desktop app only, and skipped when
+nothing new is found within two seconds.
+
+```sh
+pnpm exec vitest run server/setup-import.test.ts server/imported-skills.test.ts server/toml-lite.test.ts server/routes/setup-import.test.ts server/setup-import.e2e.test.ts src/components/onboarding/beats/ImportBeat.test.ts src/lib/setup-import.test.ts src/lib/onboarding.test.ts
+```
+
+Every test builds its own temporary home; none reads the real `~/.claude`,
+`~/.codex` or other dotfiles. The detector test plants credential, session,
+history and transcript files holding a sentinel, records every path the step
+touches, and checks that none of them was listed or opened and that the
+sentinel reaches no answer, saved server or copied skill. The route test
+refuses a paired device, a service loopback and a hosted or Cloud server; the
+end-to-end test runs the real server from `launchVerificationServer` against a
+planted home, as the desktop app runs it (`OMB_TEST_DESKTOP_OWNER_TOKEN`), checks
+that a headless server (`openmausbot serve`) refuses the step, and checks that the starter bot and a bot made afterwards both
+get the skills in their turn's index, task folder links and `/name`, that a
+Claude turn with "Also use my Claude Code skills" on sees a Claude Code skill
+once, and that a bot can switch one off for itself. Screenshots of the step in
+Midnight and Daylight, at a narrow width, working, failed and with its result
+came from `onboarding-preview.html` with a fixture detection (`?beat=import`,
+`?import=notes`, `?import=fail`, `?w=390&h=760`). Not covered here: the
+packaged Electron window itself.

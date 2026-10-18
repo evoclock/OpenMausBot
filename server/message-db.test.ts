@@ -1,5 +1,3 @@
-// SQLite message-store contract: per-mutation persistence, one-time legacy
-// import, deletion, and the LIKE search used by /api/search.
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,12 +6,19 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import { closeMessageDb,
   deleteThread,
+  deleteThreads,
   indexMemoryFile,
   indexedMemoryFiles,
   insertMessage,
+  insertNotificationLog,
+  latestPersonLineAts,
+  logNotification,
   latestSaidByBot,
+  markAllNotificationLogRead,
+  markNotificationLogRead,
   readMessageText,
   recentMessages,
+  recentNotificationLog,
   recallMemory,
   removeMemoryFile,
   readThread,
@@ -22,6 +27,7 @@ import { closeMessageDb,
   searchMessages,
   setActiveLeaf,
   updateMessage, describeMissingFts5 } from "./message-db.ts";
+import type { NotificationLogEntry } from "../shared/notification.ts";
 import { withPeerProvenance } from "./peer-provenance.ts";
 import { Store, type Message } from "./store.ts";
 import type { ModelSelection } from "./contracts.ts";
@@ -50,7 +56,7 @@ describe("message-db", () => {
     setActiveLeaf("t1", "m2");
     updateMessage("t1", msg("m1", "hello, edited"));
 
-    closeMessageDb(); // simulate a restart
+    closeMessageDb();
     const thread = readThread("t1", legacy("t1"));
     expect(thread.messages.map((m) => m.text)).toEqual(["hello, edited", "world"]);
     expect(thread.activeLeafId).toBe("m2");
@@ -64,7 +70,6 @@ describe("message-db", () => {
     const imported = readThread("t2", legacy("t2"));
     expect(imported.messages.map((m) => m.id)).toEqual(["a", "b"]);
     expect(imported.activeLeafId).toBe("b");
-    // the file was renamed so wiped rows can never resurrect stale data
     expect(existsSync(legacy("t2"))).toBe(false);
     expect(existsSync(`${legacy("t2")}.imported`)).toBe(true);
 
@@ -76,7 +81,7 @@ describe("message-db", () => {
     writeFileSync(legacy("t3"), JSON.stringify([msg("a", "one"), msg("b", "two")]));
     const imported = readThread("t3", legacy("t3"));
     expect(imported.messages).toHaveLength(2);
-    expect(imported.activeLeafId).toBeNull(); // Store derives the tail
+    expect(imported.activeLeafId).toBeNull();
   });
 
   it("migrates known legacy transcripts at Store startup so search sees unopened tasks", () => {
@@ -107,6 +112,36 @@ describe("message-db", () => {
     expect(thread.activeLeafId).toBeNull();
   });
 
+  it("deleteThreads removes every listed thread's rows, state and followups in one transaction and leaves the rest", () => {
+    for (const id of ["b1", "b2", "keep"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    deleteThreads(["b1", "b2", "never-existed"]);
+    for (const id of ["b1", "b2"]) {
+      const thread = readThread(id, legacy(id));
+      expect(thread.messages).toEqual([]);
+      expect(thread.activeLeafId).toBeNull();
+    }
+    expect(readThread("keep", legacy("keep")).messages).toHaveLength(1);
+    expect(() => deleteThreads([])).not.toThrow();
+  });
+
+  it("deleteThreads rolls the whole batch back when any statement fails", () => {
+    for (const id of ["r1", "r2"]) {
+      insertMessage(id, msg("m1", `text of ${id}`));
+      setActiveLeaf(id, "m1");
+    }
+    // A second connection makes the last statement for r2 fail, after r1 was fully deleted.
+    const breaker = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    breaker.exec(`CREATE TRIGGER boom BEFORE DELETE ON thread_state WHEN old.thread_id = 'r2'
+      BEGIN SELECT RAISE(ABORT, 'boom'); END`);
+    expect(() => deleteThreads(["r1", "r2"])).toThrow("boom");
+    const counts = breaker.prepare("SELECT thread_id, count(*) AS n FROM messages GROUP BY thread_id ORDER BY thread_id").all();
+    breaker.close();
+    expect(counts.map((row) => ({ ...row }))).toEqual([{ thread_id: "r1", n: 1 }, { thread_id: "r2", n: 1 }]);
+  });
+
   it("recall ranks by relevance, scopes to the given threads, and survives updates and deletes", () => {
     insertMessage("own-a", msg("m1", "The site audit found three broken links on the pricing page", { role: "bot" }));
     insertMessage("own-a", msg("m2", "audit", { role: "user" }));
@@ -114,28 +149,21 @@ describe("message-db", () => {
     insertMessage("other-bot", msg("m4", "another bot's audit found broken links too"));
     insertMessage("own-a", { ...msg("m5", "audit broken links"), kind: "activity" });
 
-    // all query words must match; the richest match ranks first; the other
-    // bot's thread never appears because scoping happens in SQL
     const hits = recallMessages("audit broken links", ["own-a", "own-b"]);
     expect(hits.map((hit) => hit.messageId)).toEqual(["m1"]);
     expect(hits[0]).toMatchObject({ threadId: "own-a", role: "bot" });
     expect(hits[0]!.snippet).toContain("[audit]");
     expect(hits[0]!.snippet).toContain("[broken]");
 
-    // a single word: both text messages that carry it, never the activity chip
     expect(recallMessages("audit", ["own-a", "own-b"]).map((hit) => hit.messageId).sort()).toEqual(["m1", "m2"]);
 
-    // FTS5 syntax in the query is searched for, not interpreted
     expect(() => recallMessages('audit AND NOT "links" OR pricing:* (', ["own-a"])).not.toThrow();
     expect(recallMessages("", ["own-a"])).toEqual([]);
     expect(recallMessages("audit", [])).toEqual([]);
 
-    // filler words the model adds must not turn a good query into a miss;
-    // a query made only of filler still searches for what was sent
     expect(recallMessages("what did the audit found on the pricing page", ["own-a"]).map((hit) => hit.messageId)).toEqual(["m1"]);
     expect(recallMessages("the on what", ["own-a"])).toEqual([]);
 
-    // the whole message behind a hit, text kinds only
     expect(readMessageText("own-a", "m1")).toMatchObject({
       threadId: "own-a",
       messageId: "m1",
@@ -145,11 +173,9 @@ describe("message-db", () => {
     expect(readMessageText("own-a", "m5")).toBeNull();
     expect(readMessageText("own-a", "nope")).toBeNull();
 
-    // updates re-index; deletes drop out
     updateMessage("own-a", msg("m1", "The site audit is done; nothing to report", { role: "bot" }));
     expect(recallMessages("broken links", ["own-a"])).toEqual([]);
     expect(recallMessages("nothing report", ["own-a"]).map((hit) => hit.messageId)).toEqual(["m1"]);
-    // an upsert of the same id keeps a single index entry
     insertMessage("own-a", msg("m1", "The site audit found three broken links again", { role: "bot" }));
     expect(recallMessages("broken links", ["own-a"])).toHaveLength(1);
     deleteThread("own-a");
@@ -165,12 +191,10 @@ describe("message-db", () => {
     insertMessage("other", msg("theirs", "audit in another bot's thread", { role: "bot", at: now }));
     insertMessage("own-a", { ...msg("chip", "audit", { at: now }), kind: "activity" });
 
-    // the window narrows a ranked recall
     expect(recallMessages("audit pricing", ["own-a", "own-b"]).map((hit) => hit.messageId).sort()).toEqual(["mid", "old"]);
     expect(recallMessages("audit pricing", ["own-a", "own-b"], 12, { since: now - 2 * day }).map((hit) => hit.messageId)).toEqual(["mid"]);
     expect(recallMessages("audit pricing", ["own-a", "own-b"], 12, { until: now - 2 * day }).map((hit) => hit.messageId)).toEqual(["old"]);
 
-    // no words: everything said in the window, newest first, text only, own threads only
     const recent = recentMessages(["own-a", "own-b"], { since: now - 2 * day });
     expect(recent.map((hit) => hit.messageId)).toEqual(["new", "mid"]);
     expect(recent[0]).toMatchObject({ threadId: "own-b", role: "user", snippet: "lunch plans, no audit" });
@@ -181,16 +205,12 @@ describe("message-db", () => {
   it("latestSaidByBot: one line per thread, the bot's own words only, inside the window", () => {
     const now = Date.UTC(2026, 8, 16, 12);
     const hour = 3_600_000;
-    // a 1:1 thread: the bot's lines carry no `from`
     insertMessage("dm", msg("d1", "I started the invoice run", { role: "bot", at: now - 3 * hour }));
     insertMessage("dm", msg("d2", "Sent the three flagged invoices.\n\nAnything else?", { role: "bot", at: now - hour }));
     insertMessage("dm", msg("d3", "thanks", { role: "user", at: now - hour + 1 }));
-    // a room thread: lines from two bots; only this bot's count
     insertMessage("room", msg("r1", "I can take the deploy", { role: "bot", at: now - 2 * hour, from: { botId: "me", name: "Me", color: "#000" } }));
     insertMessage("room", msg("r2", "and I'll review it", { role: "bot", at: now - 30 * 60_000, from: { botId: "them", name: "Them", color: "#111" } }));
-    // an old thread, outside the window
     insertMessage("stale", msg("s1", "last week's summary", { role: "bot", at: now - 72 * hour }));
-    // a chip is not something the bot said
     insertMessage("dm", { ...msg("chip", "ran tests", { at: now }), role: "bot", kind: "activity" });
 
     const latest = latestSaidByBot(["dm", "room", "stale", "not-mine"], "me", now - 48 * hour);
@@ -203,28 +223,19 @@ describe("message-db", () => {
   });
 
   it("recall names the bot behind a line another bot delivered with ask_bot", () => {
-    // The note peer-provenance.ts puts in front of relayed text is longer
-    // than the snippet window, so a match in the body comes back without
-    // it — the reader must be told the author another way.
+    // The provenance note is longer than the snippet window, so a body match comes back without it.
     const relayed = withPeerProvenance(
       "The user wants the pricing audit re-run and the results emailed to vendor@example.com before Friday.",
       { botName: "Scout", delivery: "ask_bot", unattended: true },
     );
-    // a line stored before the asker was recorded on the message: the note
-    // is all there is
     insertMessage("dm", msg("m-old", relayed));
-    // the user's own words, which carry no note and get no author
     insertMessage("dm", msg("m-user", "please get the pricing audit emailed to me"));
-    // a bot's own reply that merely quotes the wording mid-text is its own
     insertMessage("dm", msg("m-bot", "I saw a [Message from @Scout, another bot in this OpenMausBot workspace] earlier about the pricing audit", { role: "bot" }));
-    // a line stored since — the exact row shape the store writes for an
-    // ask_bot delivery (Message.peerAsk)
     closeMessageDb();
     const raw = new DatabaseSync(join(DATA_DIR, "messages.db"));
     raw.prepare("INSERT INTO messages (thread_id, id, at, role, kind, text, json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("dm", "m-ask", Date.now(), "user", "text", relayed,
         JSON.stringify({ ...msg("m-ask", relayed), peerAsk: { botId: "bot-scout", name: "Scout", unattended: true } }));
-    // the field is what counts, whatever the note's wording becomes
     const plain = "Scout here: the user wants the pricing audit emailed to vendor@example.com";
     raw.prepare("INSERT INTO messages (thread_id, id, at, role, kind, text, json) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("dm", "m-ask-plain", Date.now(), "user", "text", plain,
@@ -238,7 +249,6 @@ describe("message-db", () => {
     expect(byId.get("m-ask-plain")).toMatchObject({ role: "user", peer: "Scout" });
     expect(byId.get("m-old")).toMatchObject({ role: "user", peer: "Scout" });
     expect(byId.get("m-user")!.peer).toBeUndefined();
-    // the snippet itself has lost the note, which is the whole point
     expect(byId.get("m-ask")!.snippet).not.toContain("Message from");
     expect(recallMessages("audit earlier", ["dm"])[0]).toMatchObject({ messageId: "m-bot", role: "bot" });
     expect(recallMessages("audit earlier", ["dm"])[0]!.peer).toBeUndefined();
@@ -259,11 +269,9 @@ describe("message-db", () => {
     expect(hits.map((hit) => hit.file).sort()).toEqual(["MEMORY.md", "memory/log/2026-09-01.md"]);
     expect(hits.find((hit) => hit.file === "MEMORY.md")?.snippet).toContain("[audit] covers [broken] [links]");
     expect(hits.find((hit) => hit.file === "MEMORY.md")?.at).toBe(1000);
-    // the other bot's file is not a lower result; it is no result
     expect(recallMemory("broken links audit", "bot-b").map((hit) => hit.file)).toEqual(["MEMORY.md"]);
     expect(recallMemory("secret", "bot-a")).toEqual([]);
     expect(recallMemory("", "bot-a")).toEqual([]);
-    // an upsert re-indexes in place; a removal takes the FTS rows with it
     indexMemoryFile("bot-a", "memory/deploys.md", "fly deploy from main\n", { mtimeMs: 5000, bytes: 21 });
     expect(recallMemory("railway", "bot-a")).toEqual([]);
     expect(recallMemory("fly deploy", "bot-a").map((hit) => hit.file)).toEqual(["memory/deploys.md"]);
@@ -295,19 +303,15 @@ describe("message-db", () => {
     const hits = searchMessages("railway");
     expect(hits).toHaveLength(2);
     expect(hits.every((hit) => hit.snippet.toLowerCase().includes("railway"))).toBe(true);
-    // long text gets windowed around the hit
     const long = hits.find((hit) => hit.threadId === "t6")!;
     expect(long.snippet.length).toBeLessThan(200);
     expect(long.snippet.startsWith("…")).toBe(true);
 
-    // a literal % is a literal, not match-everything
     expect(searchMessages("%")).toHaveLength(0);
     insertMessage("t5", msg("m5", "50% done"));
     expect(searchMessages("%")).toHaveLength(1);
     expect(searchMessages("")).toEqual([]);
 
-    // Current-chat find scopes in SQL before LIMIT, so busy transcripts in
-    // other conversations cannot crowd out this thread's matches.
     expect(searchMessages("railway", 40, "t5").map((hit) => hit.threadId)).toEqual(["t5"]);
     expect(searchMessages("railway", 40, "missing")).toEqual([]);
   });
@@ -319,15 +323,12 @@ describe("message-db", () => {
 
     const text = searchMessages("the migration")[0];
     expect(text.messageId).toBe("m1");
-    // whitespace folded in the snippet, offset points at the folded match
     expect(text.snippet.slice(text.matchStart, text.matchStart + text.matchLength)).toBe("the migration");
 
-    // "which bot ran that migration" — the tool name is searchable
     const chip = searchMessages("alembic")[0];
     expect(chip).toMatchObject({ messageId: "m2", kind: "activity" });
     expect(chip.snippet).toContain("alembic upgrade head");
 
-    // room attribution rides along
     expect(searchMessages("spoke")[0].from).toBe("Scout");
   });
 
@@ -340,13 +341,11 @@ describe("message-db", () => {
     expect(page.hasMore).toBe(true);
     expect(page.activeLeafId).toBe("m4");
 
-    // asking for exactly what exists (or more): the whole thread, hasMore false
     expect(readThreadTail("tail", legacy("tail"), 5).hasMore).toBe(false);
     const roomy = readThreadTail("tail", legacy("tail"), 50);
     expect(roomy.messages).toHaveLength(5);
     expect(roomy.hasMore).toBe(false);
 
-    // no rows yet: same one-time legacy import as readThread(), not a partial read
     writeFileSync(legacy("tail-legacy"), JSON.stringify([msg("a", "one"), msg("b", "two"), msg("c", "three")]));
     const imported = readThreadTail("tail-legacy", legacy("tail-legacy"), 1);
     expect(imported.messages.map((m) => m.id)).toEqual(["a", "b", "c"]);
@@ -366,8 +365,66 @@ describe("message-db", () => {
     const path = reloaded.activePath(bot.threadId);
     expect(path.at(-1)?.id).toBe(fork.id);
     expect(path.at(-1)?.text).toBe("edited");
-    // both branches survive in the tree
     expect(reloaded.messagesFor(bot.threadId).filter((m) => m.parentId === first.parentId)).toHaveLength(2);
+  });
+});
+
+describe("latestPersonLineAts", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("is each thread's newest line a person sent from an app, never a prompt, a bot's delivery, a relayed line or a reply", () => {
+    insertMessage("chat", msg("asked", "Good morning.", { at: 10, sendId: "send-1" }));
+    // A routine's or a webhook's prompt carries no sendId.
+    insertMessage("chat", msg("prompt", "Report this run's state.", { at: 20 }));
+    insertMessage("chat", msg("delivered", "Take this over.", { at: 30, sendId: "send-2", peerAsk: { botId: "teammate", name: "Teammate" } }));
+    insertMessage("chat", msg("relayed", "Sent from Slack.", { at: 40, sendId: "send-3", relayed: true }));
+    insertMessage("chat", msg("reply", "Morning!", { at: 50, role: "bot", sendId: "send-4" }));
+    insertMessage("webhook", msg("payload", "Handle the build event.", { at: 60 }));
+    insertMessage("later", msg("first", "One.", { at: 70, sendId: "send-5" }));
+    insertMessage("later", msg("second", "Two.", { at: 80, sendId: "send-6" }));
+    expect(Object.fromEntries(latestPersonLineAts(["chat", "webhook", "later", "empty"]))).toEqual({ chat: 10, later: 80 });
+  });
+});
+
+describe("messages_thread_at", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  it("plans a thread's latest rows on messages_thread_at", () => {
+    for (let thread = 0; thread < 4; thread += 1) {
+      for (let n = 0; n < 50; n += 1) {
+        insertMessage(`thread-${thread}`, msg(`m-${thread}-${n}`, "hello from the bot", { role: "bot", at: n }));
+      }
+    }
+    closeMessageDb();
+    const raw = new DatabaseSync(join(DATA_DIR, "messages.db"));
+    const planOf = (sql: string) => raw.prepare(`EXPLAIN QUERY PLAN ${sql}`).all()
+      .map((row) => String((row as { detail: string }).detail))
+      .join("\n");
+    try {
+      // Same statements as latestSaidByBot and latestMessageAts.
+      const said = planOf(
+        "SELECT thread_id, id, at, head FROM (" +
+          "SELECT m.thread_id, m.id, m.at, substr(m.text, 1, 400) AS head, " +
+          "ROW_NUMBER() OVER (PARTITION BY m.thread_id ORDER BY m.at DESC) AS rn " +
+          "FROM messages m " +
+          "WHERE m.kind = 'text' AND m.role = 'bot' AND m.text IS NOT NULL AND m.at >= ? AND m.thread_id IN (?, ?) " +
+          "AND (json_extract(m.json, '$.from.botId') IS NULL OR json_extract(m.json, '$.from.botId') = ?)" +
+          ") WHERE rn = 1 ORDER BY at DESC LIMIT ?",
+      );
+      const ats = planOf("SELECT thread_id, MAX(at) AS at FROM messages WHERE thread_id IN (?, ?) GROUP BY thread_id");
+      expect(said).toContain("messages_thread_at");
+      expect(ats).toContain("messages_thread_at");
+    } finally {
+      raw.close();
+    }
   });
 });
 
@@ -399,5 +456,65 @@ describe("recall of digest rows", () => {
     const hits = recallMessages("retry limit", ["t1"]);
     expect(hits.map((h) => h.messageId)).toEqual(["m1", "d1"]);
     expect(hits[1]?.kind).toBe("digest");
+    for (const hit of hits) expect(readMessageText(hit.threadId, hit.messageId)).toMatchObject({ messageId: hit.messageId });
+  });
+});
+
+describe("notification_log", () => {
+  beforeEach(() => {
+    closeMessageDb();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    mkdirSync(DATA_DIR, { recursive: true });
+  });
+
+  const entry = (id: string, at: number, extra: Partial<NotificationLogEntry> = {}): NotificationLogEntry => ({
+    id, at, kind: "done", botId: "bot-1", botName: "Scout", threadId: "thread-1", title: `${id} finished`, body: "", read: false, ...extra,
+  });
+
+  it("reads rows back newest first, read defaulting to false", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000, { groupId: "room-1" }));
+    const rows = recentNotificationLog();
+    expect(rows.map((r) => r.id)).toEqual(["n2", "n1"]);
+    expect(rows.every((r) => r.read === false)).toBe(true);
+    expect(rows.find((r) => r.id === "n2")?.groupId).toBe("room-1");
+  });
+
+  it("stamps a notification once and returns the stored entry", () => {
+    const logged = logNotification({ kind: "question", botId: "bot-1", botName: "Scout", threadId: "thread-1", title: "Scout asks", body: "Which?" });
+    expect(logged).toMatchObject({ kind: "question", read: false });
+    expect(recentNotificationLog()).toEqual([logged]);
+  });
+
+  it("forgets a thread's notifications when the thread is deleted", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000, { threadId: "thread-2" }));
+    deleteThread("thread-1");
+    expect(recentNotificationLog().map((r) => r.id)).toEqual(["n2"]);
+  });
+
+  it("marking read never deletes a row: read-one and read-all only flip the flag", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000));
+    markNotificationLogRead("n1");
+    let rows = recentNotificationLog();
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.id === "n1")?.read).toBe(true);
+    expect(rows.find((r) => r.id === "n2")?.read).toBe(false);
+
+    markAllNotificationLogRead();
+    rows = recentNotificationLog();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.read)).toBe(true);
+  });
+
+  it("keeps only the newest 500 rows, FIFO", () => {
+    for (let i = 0; i < 503; i++) insertNotificationLog(entry(`n${i}`, i));
+    const rows = recentNotificationLog(1000);
+    expect(rows).toHaveLength(500);
+    expect(rows.map((r) => r.id)).not.toContain("n0");
+    expect(rows.map((r) => r.id)).not.toContain("n2");
+    expect(rows[0]?.id).toBe("n502");
+    expect(rows.map((r) => r.id)).toContain("n3");
   });
 });

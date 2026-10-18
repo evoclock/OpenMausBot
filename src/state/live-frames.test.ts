@@ -1,8 +1,4 @@
 // @vitest-environment happy-dom
-// The app opens one live stream. A computer's live screen and raw runtime
-// events reach the panel that reads them straight from that stream; the app
-// store neither keeps them nor re-renders for them. The one thing a screen
-// frame still tells the store: a computer that was setting up is up.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -96,7 +92,6 @@ describe("live frames the store does not keep", () => {
     await send({ kind: "screen", botId: "bot", threadId: "thread", png: "BBBB" });
     expect(seen.computerStarts.bot).toBeUndefined();
     expect(seen.mascotMotion).toBe(mascot);
-    // and every later frame is news only to the panel
     const before = seen;
     await send({ kind: "screen", botId: "bot", threadId: "thread", png: "CCCC" });
     expect(seen).toBe(before);
@@ -107,7 +102,6 @@ describe("live frames the store does not keep", () => {
     expect(seen.computerStarts.bot).toEqual({ state: "waking", place: "cloud" });
     await send({ kind: "screen", botId: "bot", threadId: "thread", png: "DDDD" });
     expect(seen.computerStarts.bot).toBeUndefined();
-    // A start that failed sends no frame: the line goes when the turn ends.
     await send({ kind: "bot", bot: { ...bot, busy: true } } as ServerFrame);
     await send({ kind: "computer", botId: "bot", state: "provisioning", place: "cloud" });
     expect(seen.computerStarts.bot).toEqual({ state: "provisioning", place: "cloud" });

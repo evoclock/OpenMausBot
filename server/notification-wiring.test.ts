@@ -1,8 +1,4 @@
-// Notification policy has pure unit coverage; this pins the production wiring
-// from a real failed routine turn through RoutineManager and the server's SSE
-// stream. A generic `done` frame for the same failure would produce two desktop
-// notifications, so the marker PATCH below is an ordering barrier before the
-// exact emitted set is asserted.
+// A generic `done` frame for the same failure would make two desktop notifications, so the marker PATCH below is an ordering barrier.
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,10 +58,7 @@ posixOnly("routine failure notification wiring", () => {
         instances: {
           grok: {
             driver: "grokAgent",
-            // fail-after-text streams a partial answer before failing: with a
-            // NON-empty reply, only the routine-failed/done dedup suppresses
-            // the generic done — exit-early would pass on the empty-reply
-            // rule alone and leave the dedup guard untested.
+            // a partial answer before failing: with a non-empty reply only the routine-failed/done dedup suppresses the generic done
             environment: { FAKE_ACP_MODE: "fail-after-text" },
             config: { cli: FAKE_CLI, fullAuto: false },
           },
@@ -94,7 +87,6 @@ posixOnly("routine failure notification wiring", () => {
       try {
         if ((await fetch(`${BASE}/api/health`)).ok) break;
       } catch {
-        /* not up yet */
       }
       if (Date.now() > deadline) throw new Error(`server never came up. stderr:\n${stderr}`);
       if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}. stderr:\n${stderr}`);
@@ -149,7 +141,7 @@ posixOnly("routine failure notification wiring", () => {
           botId: bot.id,
           title: "Routine Scout's routine failed",
         });
-        expect(frame.notification.threadId).not.toBe(bot.threadId);
+        expect(frame.notification.threadId).toBe(bot.threadId);
         expect(frame.notification.body).toContain("Broken nightly report");
 
         const receipts = await api("GET", "/api/routines");
@@ -169,9 +161,6 @@ posixOnly("routine failure notification wiring", () => {
         expect(currentBot.tasks.find((task: any) => task.threadId === receipt.threadId))
           .toMatchObject({ routineRunId: receipt.id, unread: false });
 
-        // A unique bot patch is an SSE ordering barrier: by the time it is
-        // observed, every notification emitted by the failed turn is already
-        // in `frames`, including an accidental generic `done` duplicate.
         expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Failure observed" })).status).toBe(200);
         await stream.until(
           (candidate) => candidate.kind === "bot" && candidate.bot?.id === bot.id && candidate.bot?.name === "Failure observed",

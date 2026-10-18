@@ -47,8 +47,7 @@ export function createStartupScreen({
     if (platform === "win32" && onHide) onHide(splash);
     else onQuit();
   });
-  // Renderer window.close() bypasses BrowserWindow's cancellable close path.
-  // This dedicated, unprivileged bridge requests the native path instead.
+  // Renderer window.close() bypasses BrowserWindow's cancellable close path, so the page asks for the native one.
   splash.webContents.on("ipc-message", (_event, channel) => {
     if (channel === "startup-screen:close" && !disposed) splash.close();
   });
@@ -58,18 +57,14 @@ export function createStartupScreen({
     shown = true; splash.show(); resolveReady();
   };
   splash.once("ready-to-show", showSplash);
-  // Some Wayland compositors (COSMIC) never paint a hidden window, so
-  // ready-to-show never comes. Show the loaded page after a short grace.
+  // Some Wayland compositors (COSMIC) never paint a hidden window, so ready-to-show never comes.
   splash.webContents.once("did-finish-load", () => {
     const grace = setTimeout(showSplash, 500);
     grace.unref?.();
   });
   splash.on("show", () => onShow?.(splash));
   splash.once("closed", resolveReady);
-  // Server startup waits on ready. A failed loading renderer must not keep
-  // it from ever reaching the main window's own bounded recovery path. The
-  // splash stays until that window replaces it: it can be the app's only
-  // window, and destroying it then quits the app (window-all-closed).
+  // The splash stays until the main window replaces it: as the only window, destroying it would quit the app.
   splash.webContents.once("render-process-gone", resolveReady);
   const startupFallback = setTimeout(resolveReady, 10_000);
   startupFallback.unref?.();
@@ -91,8 +86,6 @@ export function createStartupScreen({
       }
       dispose();
     };
-    // React must mount before the loading window gives way to the workspace.
-    // Error pages have no React root and can be shown immediately.
     win.webContents.on("did-finish-load", () => {
       if (revealed || win.isDestroyed() || isQuitting()) return;
       void win.webContents.executeJavaScript(`new Promise(resolve => {
@@ -107,7 +100,6 @@ export function createStartupScreen({
     win.webContents.once("render-process-gone", reveal);
     win.once("show", () => { if (!revealed) { revealed = true; dispose(); } });
     win.once("closed", dispose);
-    // Preserve a bounded recovery path if the renderer fails to mount.
     fallback = setTimeout(reveal, 10_000);
     fallback.unref?.();
   };

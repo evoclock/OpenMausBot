@@ -96,7 +96,6 @@ describe("resolveTranscriptWindow", () => {
   it("grows the window when messages append past an anchored boundary", () => {
     const start = tailWindowStart(300);
     const result = resolveTranscriptWindow(thread(310), start);
-    // the boundary must not slide forward: rows on screen stay on screen
     expect(result.startIndex).toBe(start);
     expect(result.visible).toHaveLength(130);
     expect(result.visible.at(-1)).toBe(309);
@@ -113,7 +112,6 @@ describe("resolveTranscriptWindow", () => {
   });
 
   it("falls back to a tail window when the thread shrinks under the boundary", () => {
-    // branch switch / edit rewound the thread below the stored boundary
     const result = resolveTranscriptWindow(thread(150), 180);
     expect(result.startIndex).toBe(30);
     expect(result.visible).toHaveLength(TRANSCRIPT_WINDOW_SIZE);

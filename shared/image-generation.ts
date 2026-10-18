@@ -2,7 +2,7 @@ export type AvatarImageProvider = "openai" | "xai" | "custom";
 
 export interface ImageGenerationConfig {
   provider?: AvatarImageProvider;
-  /** Legacy OpenAI key; never sent to another provider. */
+  /** An OpenAI key; never sent to another provider. */
   key?: string;
   customApiKey?: string;
   customUrl?: string;

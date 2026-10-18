@@ -1,7 +1,3 @@
-// The Computer engine is gone (decision D5): a whole turn ran on Boat's own
-// agent, which has no AI sign-in on a Cloud. These pin the one-time move off
-// it: the engine is never offered again, and saved settings that name it move
-// to the engine a new bot gets, keeping where each conversation works.
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -33,7 +29,6 @@ describe("the Computer engine is not offered", () => {
       expect(map).not.toHaveProperty("computer");
       expect(map).not.toHaveProperty("myBoat");
     }
-    // The caller's saved map is never changed in place.
     expect(cfg.instances).toHaveProperty("computer");
   });
 
@@ -84,7 +79,6 @@ describe("moving saved bots off the engine", () => {
     expect(reloaded.taskByThread(bot.id, second.threadId)?.modelSelection).toEqual(replacement);
     expect(reloaded.taskByThread(bot.id, bot.threadId)?.resumeCursors).toEqual({ codex: "codex-session" });
     expect(reloaded.bot(other.id)?.modelSelection).toEqual({ instanceId: "codex", model: "codex-model" });
-    // One time: nothing left names the engine.
     expect(reloaded.retireInstances(removed, replacement, boat)).toEqual([]);
   });
 
@@ -101,8 +95,6 @@ describe("moving saved bots off the engine", () => {
     const reloaded = new Store(newBotDefault);
     expect(reloaded.bot(auto.id)?.computer).toBe("cloud");
     expect(moves.find(move => move.botId === auto.id)?.cloud).toBe(true);
-    // The removed engine never ran on a VPS, nor on This computer: those
-    // bots now work where their setting says, which the line does not claim.
     expect(reloaded.bot(vps.id)?.computer).toBeUndefined();
     expect(moves.find(move => move.botId === vps.id)?.cloud).toBe(false);
     expect(reloaded.bot(local.id)?.computer).toBe("local");
@@ -129,19 +121,16 @@ describe("moving saved bots off the engine", () => {
     ]);
 
     const reloaded = new Store(newBotDefault);
-    // The bot itself keeps its engine and Works on: Auto.
     expect(reloaded.bot(bot.id)?.modelSelection).toEqual({ instanceId: "codex", model: "codex-model" });
     expect(reloaded.bot(bot.id)?.computer).toBeUndefined();
     const task = reloaded.taskByThread(bot.id, second.threadId)!;
     expect(task.modelSelection).toEqual(replacement);
-    // Pinned the way an Auto turn records where it landed, so a later Works
-    // on change still moves it.
     expect(task.surface).toBe("cloud");
     expect(task.surfaceSource).toBe("auto");
     expect(reloaded.taskByThread(bot.id, bot.threadId)?.surface).toBeUndefined();
   });
 
-  it("sets a level the new engine would have to confirm back to Ask, as every engine switch does", () => {
+  it("carries every level the new engine runs, Full included, as every engine switch does (#2697)", () => {
     const store = new Store(newBotDefault);
     const full = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(full.id, { approvalMode: "full", alwaysAllow: ["Bash(ls:*)"] });
@@ -153,18 +142,16 @@ describe("moving saved bots off the engine", () => {
     const moves = store.retireInstances(removed, replacement, noBoat);
 
     const reloaded = new Store(newBotDefault);
-    expect(reloaded.bot(full.id)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    expect(reloaded.taskByThread(full.id, full.threadId)).toMatchObject({ approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    expect(moves.find(move => move.botId === full.id)?.askNow).toBe(true);
-    // A level the new engine has as well carries across, as on any switch.
+    expect(reloaded.bot(full.id)).toMatchObject({ approvalMode: "full", alwaysAllow: ["Bash(ls:*)"] });
+    expect(reloaded.taskByThread(full.id, full.threadId)).toMatchObject({ approvalMode: "full", alwaysAllow: ["Bash(ls:*)"] });
+    expect(moves.find(move => move.botId === full.id)?.askNow).toBe(false);
     expect(reloaded.bot(auto.id)?.approvalMode).toBe("auto");
     expect(reloaded.taskByThread(auto.id, auto.threadId)?.approvalMode).toBe("auto");
     expect(moves.find(move => move.botId === auto.id)?.askNow).toBe(false);
   });
 
-  it("keeps the level of a conversation on another engine when the bot's own level goes back to Ask", () => {
+  it("keeps the bot's Full and the level of a conversation on another engine when the bot moves", () => {
     const store = new Store(newBotDefault);
-    // The first conversation has no level of its own: it follows the bot's.
     const bot = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(bot.id, { approvalMode: "full", alwaysAllow: ["Bash(ls:*)"] });
     const elsewhere = bot.threadId;
@@ -174,31 +161,26 @@ describe("moving saved bots off the engine", () => {
     const moves = store.retireInstances(removed, replacement, noBoat);
 
     const reloaded = new Store(newBotDefault);
-    // The bot moved and its Full access goes back to Ask, as on any switch.
-    expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: replacement, approvalMode: "ask", alwaysAllow: [] });
-    // The conversation stays on Codex, so nothing about its level changes.
+    expect(reloaded.bot(bot.id)).toMatchObject({ modelSelection: replacement, approvalMode: "full", alwaysAllow: ["Bash(ls:*)"] });
     expect(reloaded.projectBotForTask(bot.id, elsewhere)).toMatchObject({
       modelSelection: { instanceId: "codex", model: "codex-model" }, approvalMode: "full", alwaysAllow: ["Bash(ls:*)"],
     });
-    // It is the bot's open conversation, so it still hears what moved: the
-    // bot's own engine and level, not its own.
     expect(moves).toEqual([
-      { botId: bot.id, threadId: elsewhere, scope: "bot-only", cloud: false, noComputer: false, askNow: true },
+      { botId: bot.id, threadId: elsewhere, scope: "bot-only", cloud: false, noComputer: false, askNow: false },
     ]);
   });
 
-  it("tells a moved conversation that follows the bot's level that it is now Ask", () => {
+  it("leaves a moved conversation that follows the bot's level at Full, with nothing to ask", () => {
     const store = new Store(newBotDefault);
     const bot = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(bot.id, { approvalMode: "full" });
     const first = bot.threadId;
-    // A newer conversation becomes the open one; the first keeps following the bot.
     store.createTask(bot.id, "Newer", true);
 
     const moves = store.retireInstances(removed, replacement, noBoat);
 
-    expect(moves.find(move => move.threadId === first)).toMatchObject({ scope: "conversation", askNow: true });
-    expect(new Store(newBotDefault).projectBotForTask(bot.id, first)).toMatchObject({ approvalMode: "ask" });
+    expect(moves.find(move => move.threadId === first)).toMatchObject({ scope: "conversation", askNow: false });
+    expect(new Store(newBotDefault).projectBotForTask(bot.id, first)).toMatchObject({ approvalMode: "full" });
   });
 
   it("keeps a bot on Auto when the new engine can't use a computer, and says so", () => {
@@ -213,29 +195,23 @@ describe("moving saved bots off the engine", () => {
     const moves = store.retireInstances(removed, replacement, chatOnly);
 
     const reloaded = new Store(newBotDefault);
-    // Works on: Cloud would refuse every turn on this engine, so Auto stays Auto.
     expect(reloaded.bot(auto.id)?.computer).toBeUndefined();
     expect(moves.find(move => move.botId === auto.id)).toMatchObject({ cloud: false, noComputer: "auto" });
     expect(reloaded.taskByThread(mixed.id, mixedConversation.threadId)?.surface).toBeUndefined();
     expect(moves.find(move => move.botId === mixed.id)).toMatchObject({ scope: "conversation", cloud: false, noComputer: "auto" });
-    // The removed engine never ran on This computer, so nothing was lost there.
     expect(moves.find(move => move.botId === local.id)).toMatchObject({ cloud: false, noComputer: false });
   });
 
   it("tells a Cloud the person chose apart from Auto when the new engine can't use a computer", () => {
     const store = new Store(newBotDefault);
-    // Works on: Cloud, set by the person.
     const cloud = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(cloud.id, { computer: "cloud" });
-    // Auto, with one conversation the person set to the cloud computer.
     const pinned = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchTask(pinned.id, pinned.threadId, { surface: "cloud", surfaceSource: "user" });
 
     const moves = store.retireInstances(removed, replacement, chatOnly);
 
     const reloaded = new Store(newBotDefault);
-    // A chosen place stays chosen, and each turn there is refused until it
-    // or the model changes: the line names the one setting to change.
     expect(reloaded.bot(cloud.id)?.computer).toBe("cloud");
     expect(moves.find(move => move.botId === cloud.id)).toMatchObject({ scope: "bot", cloud: false, noComputer: "works-on" });
     expect(reloaded.bot(pinned.id)?.computer).toBeUndefined();
@@ -247,11 +223,9 @@ describe("moving saved bots off the engine", () => {
     const store = new Store(newBotDefault);
     const auto = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchTask(auto.id, auto.threadId, { surface: "cloud", surfaceSource: "auto" });
-    // Works on: Cloud matches the pin, so it is the setting that still applies.
     const cloud = store.createBot({ modelSelection: { instanceId: "computer", model: "claude-fable-5" } }, { seedMessages: false });
     store.patchBot(cloud.id, { computer: "cloud" });
     store.patchTask(cloud.id, cloud.threadId, { surface: "cloud", surfaceSource: "auto" });
-    // A conversation that stays on its own engine keeps its pin.
     const kept = store.createTask(auto.id, "On Codex", false)!;
     store.patchTask(auto.id, kept.threadId, { modelSelection: { instanceId: "codex", model: "codex-model" }, surface: "cloud", surfaceSource: "auto" });
 
@@ -262,8 +236,6 @@ describe("moving saved bots off the engine", () => {
       const task = reloaded.taskByThread(botId, threadId)!;
       return { surface: task.surface, surfaceSource: task.surfaceSource };
     };
-    // The machine's memory of where Auto landed gives way, so the next turn
-    // runs on Auto instead of being refused there once.
     expect(place(auto.id, auto.threadId)).toEqual({ surface: undefined, surfaceSource: undefined });
     expect(moves.find(move => move.threadId === auto.threadId)).toMatchObject({ cloud: false, noComputer: "auto" });
     expect(place(cloud.id, cloud.threadId)).toEqual({ surface: undefined, surfaceSource: undefined });

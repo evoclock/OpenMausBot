@@ -1,19 +1,10 @@
-// Per-bot connection scopes: which connected apps a bot may use, and
-// whether it may only read them or also write. Absent means what it has
-// always meant — every connected app, read and write — so nothing changes
-// for a bot nobody has scoped. Present means a list: an app not on it is
-// off for this bot, and "read" refuses anything that is not a read.
-//
-// Shared between the harness (which enforces it at the connector relay,
-// seeing through Composio's meta tools) and the app (which shows the
-// control), so both agree on what a scope means.
-// No import from outbound.ts: shared/ is compiled by both the server (which
-// needs .ts extensions) and the app (which forbids them), so shared modules
-// stand alone. The read-verb rule is repeated here in its Composio-only form.
+// Per-bot connection scopes: which connected apps a bot may use, and whether
+// only to read. Absent means every connected app, read and write; present, an
+// app not listed is off and "read" refuses anything that is not a read. The
+// harness enforces it at the connector relay; the app shows the control.
 
 const READ_VERBS = new Set(["GET", "LIST", "FETCH", "SEARCH", "READ", "FIND", "RETRIEVE", "LOOKUP", "DOWNLOAD", "VIEW", "CHECK", "COUNT"]);
 
-/** One app tool a request would run; matches ConnectorCall in outbound.ts. */
 interface ScopedCall {
   slug: string;
 }

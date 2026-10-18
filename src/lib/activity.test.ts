@@ -14,8 +14,7 @@ const row = (overrides: Partial<ActivityRow> = {}): ActivityRow => ({
 
 describe("groupActivityByDay", () => {
   it("keeps newest-first order and groups rows under their local day", () => {
-    // Local-time dates: the grouping is by the viewer's day, so the fixture
-    // must not depend on the machine's offset from UTC.
+    // Local-time dates, so the fixture does not depend on the machine's UTC offset.
     const local = (day: number, hour: number) => new Date(2026, 8, day, hour).toISOString();
     const rows = [
       row({ at: local(7, 18) }),

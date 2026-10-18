@@ -1,13 +1,3 @@
-// Fetch a skill's files from where users actually keep skills: a GitHub
-// repo, a folder inside one, a direct SKILL.md, or a skills.sh page that
-// points at one. Network in, plain
-// {path, content} list out — validation, scanning, and storage live in
-// skills.ts, so this file owns exactly one concern and its tests can hand
-// it a fake fetch.
-//
-// Caps mirror the skills.sh CLI's: nothing here downloads more than
-// MAX_FILES files or MAX_FILE_BYTES per file, and only markdown is ever
-// requested (v1 imports are markdown-only by policy).
 import { z } from "zod";
 
 const MAX_FILES = 30;
@@ -15,8 +5,7 @@ const MAX_FILE_BYTES = 256 * 1024;
 const API = "https://api.github.com";
 class ImportLimitError extends Error {}
 
-// One budget for the entire import, including directory discovery. Read the
-// stream within the cap rather than allocating an unbounded response first.
+// One budget for the whole import, enforced while reading the stream.
 function boundedImportFetch(fetcher: typeof fetch): typeof fetch {
   let requests = 0;
   let bytes = 0;
@@ -65,13 +54,16 @@ interface Target {
   skill?: string;
 }
 
-/** owner/repo, github.com/owner/repo[/tree/<ref>/<path>], a raw/blob URL
- * straight to a SKILL.md, or a skills.sh/owner/repo[/skill] page. Anything
- * else is refused, loudly. */
 export function parseSkillSource(input: string): Target | { rawUrl: string } | { error: string } {
   const text = input.trim();
   if (!text) return { error: "paste a GitHub repository, folder, or SKILL.md URL" };
-  if (/^https?:\/\/raw\.githubusercontent\.com\/.+\/SKILL\.md$/i.test(text)) return { rawUrl: text };
+  const raw = text.match(/^(https?):\/\/raw\.githubusercontent\.com\/.+\/SKILL\.md$/i);
+  if (raw) {
+    // Plain http sends the skill URL in the clear; refuse it rather than upgrade it.
+    return raw[1]!.toLowerCase() === "https"
+      ? { rawUrl: text }
+      : { error: "paste an https:// raw.githubusercontent.com link instead of plain http" };
+  }
   const blob = text.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/((?:.*\/)?SKILL\.md)$/i);
   if (blob) {
     return { rawUrl: `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}/${blob[3]}/${blob[4]}` };
@@ -86,9 +78,7 @@ export function parseSkillSource(input: string): Target | { rawUrl: string } | {
       (registry[3] && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(registry[3]))) {
       return { error: "that does not look like a skills.sh repository or skill URL" };
     }
-    // skills.sh is a registry over GitHub: each page installs from
-    // github.com/<owner>/<repo> filtered to the named skill, so resolve to
-    // the repo and remember the slug to filter discovery on.
+    // skills.sh pages install from github.com/<owner>/<repo>, filtered to the named skill.
     return { owner: registry[1]!, repo: registry[2]!, path: "", skill: registry[3] };
   }
   const shorthand = text.match(/^([\w.-]+)\/([\w.-]+)$/);
@@ -104,8 +94,6 @@ const CONTENT_ENTRY = z.object({
 });
 type ContentEntry = z.infer<typeof CONTENT_ENTRY>;
 
-// The GitHub contents API is the I/O boundary: parse its JSON here, keep
-// only entries matching the documented shape, drop the rest silently.
 const CONTENT_LISTING = z.array(z.unknown()).catch([]);
 
 function asEntries(listing: z.infer<typeof CONTENT_LISTING>): ContentEntry[] {
@@ -123,8 +111,23 @@ async function fetchListing(url: string, fetcher: typeof fetch): Promise<Content
   return asEntries(CONTENT_LISTING.parse(await response.json()));
 }
 
+// Pin download_urls and pasted raw URLs to https on the raw host, no port or credentials, so a tampered response cannot aim server fetches elsewhere.
+function assertPinnedRawUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`refusing to download ${url} — not a valid URL`);
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.port || parsed.hostname !== "raw.githubusercontent.com") {
+    throw new Error(`refusing to download ${url} — skill files must be https://raw.githubusercontent.com links`);
+  }
+}
+
 async function fetchText(url: string, fetcher: typeof fetch): Promise<string> {
-  const response = await fetcher(url, { headers: { "user-agent": "OpenMausBot-skills" } });
+  assertPinnedRawUrl(url);
+  // The raw host never redirects: error rather than follow one to an arbitrary host.
+  const response = await fetcher(url, { headers: { "user-agent": "OpenMausBot-skills" }, redirect: "error" });
   if (!response.ok) throw new Error(`download failed (${response.status})`);
   const text = await response.text();
   if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) throw new Error("file is larger than the 256KB import cap");
@@ -141,14 +144,10 @@ export const MAX_SKILLS_PER_IMPORT = 30;
 const MAX_FOLDERS_WALKED = 24;
 const MAX_CHILDREN_PER_FOLDER = 60;
 
-/** Convert a skill name to a URL-safe slug, mirroring the skills.sh
- * registry's own toSkillSlug: page slugs derive from each SKILL.md's name
- * field, which can differ from the folder it lives in. */
+/** Mirrors skills.sh's toSkillSlug: page slugs come from SKILL.md names, which can differ from folder names. */
 const toSkillSlug = (name: string) =>
   name.toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
 
-/** The name field from a skill folder's SKILL.md frontmatter, or undefined
- * when it cannot be read. Budget and timeout errors still propagate. */
 async function skillNameFrom(entries: ContentEntry[], fetcher: typeof fetch): Promise<string | undefined> {
   const skillMd = entries.find((entry) => entry.type === "file" && entry.name === "SKILL.md" && entry.download_url);
   if (!skillMd) return undefined;
@@ -161,11 +160,7 @@ async function skillNameFrom(entries: ContentEntry[], fetcher: typeof fetch): Pr
   }
 }
 
-/** Where SKILL.md folders live in real repos, per the registry's own
- * discovery order: the pasted path itself, then skills/, then .claude/skills/
- * and .agents/skills/, then one level of direct children. A requested
- * skills.sh slug matches a folder whose name slugifies to it, else a skill
- * whose SKILL.md name does, like the registry's own installer. */
+/** The skills.sh registry's discovery order: the path, skills/, .claude/skills/, .agents/skills/, then direct children. */
 export async function discoverSkillDirs(target: Target, fetcher: typeof fetch): Promise<string[]> {
   const root = await listDir(target, target.path, fetcher);
   const wanted = target.skill ? toSkillSlug(target.skill) || undefined : undefined;
@@ -185,7 +180,6 @@ export async function discoverSkillDirs(target: Target, fetcher: typeof fetch): 
   const rank = (name: string) => (wanted && toSkillSlug(name) === wanted ? 0 : preferred.includes(name) ? 1 : 2);
   const ordered = [...dirs].sort((a, b) => rank(a.name) - rank(b.name));
   const enough = () => found.length >= (wanted ? 1 : MAX_SKILLS_PER_IMPORT);
-  // The shared fetch budget caps the whole walk, not each nested loop.
   for (const dir of ordered.slice(0, MAX_FOLDERS_WALKED)) {
     if (enough()) break;
     const base = dir.name === ".claude" || dir.name === ".agents" ? `${dir.path}/skills` : dir.path;
@@ -212,28 +206,33 @@ export async function discoverSkillDirs(target: Target, fetcher: typeof fetch): 
         if (inner.some((entry) => entry.type === "file" && entry.name === "SKILL.md") && (await isWanted(child.path, inner))) found.push(child.path);
       } catch (error) {
         if (error instanceof ImportLimitError || (error instanceof Error && error.name === "TimeoutError")) throw error;
-        // unreadable child — skip
       }
     }
   }
   return found;
 }
 
-/** Fetch ONE skill folder's markdown files. `dir` must contain SKILL.md. */
+/** Entries that are not downloaded come back path-only (empty content) so the install lists them as skipped. */
 export async function fetchSkillDir(target: Target, dir: string, fetcher: typeof fetch): Promise<FetchedSkill> {
   const entries = await listDir(target, dir, fetcher);
-  const markdown = entries
-    .filter((entry) => entry.type === "file" && /\.md$/i.test(entry.name) && entry.download_url)
-    .slice(0, MAX_FILES);
+  const markdown = entries.filter((entry) => entry.type === "file" && /\.md$/i.test(entry.name) && entry.download_url);
   if (!markdown.some((entry) => entry.name === "SKILL.md")) {
     throw new Error(`no SKILL.md in ${dir || "the repository root"}`);
   }
+  const downloadable = [
+    markdown.find((entry) => entry.name === "SKILL.md")!,
+    ...markdown.filter((entry) => entry.name !== "SKILL.md").slice(0, MAX_FILES - 1),
+  ];
   const files: FetchedSkill["files"] = [];
-  for (let i = 0; i < markdown.length; i += 4) {
-    files.push(...await Promise.all(markdown.slice(i, i + 4).map(async (entry) => ({
+  for (let i = 0; i < downloadable.length; i += 4) {
+    files.push(...await Promise.all(downloadable.slice(i, i + 4).map(async (entry) => ({
       path: entry.name,
       content: await fetchText(entry.download_url!, fetcher),
     }))));
+  }
+  for (const entry of entries) {
+    if (downloadable.includes(entry)) continue;
+    files.push({ path: entry.type === "dir" ? `${entry.name}/` : entry.name, content: "" });
   }
   const ref = target.ref ? `@${target.ref}` : "";
   return { source: `github.com/${target.owner}/${target.repo}${ref}/${dir}`.replace(/\/$/, ""), files };

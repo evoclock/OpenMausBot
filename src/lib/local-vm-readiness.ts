@@ -1,6 +1,3 @@
-/** Keep a user-started action pending until desktop readiness, not merely
- * until the runtime reports that the container process has started. Each
- * status read probes the container runtime, so poll at the panel's 2 s pace. */
 export async function waitForLocalVmReady<T extends { ready: boolean; container: string; problem: string | null }>(
   initial: T,
   read: () => Promise<T>,

@@ -5,10 +5,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, InstanceInfo, Message, Task } from "@/state/store";
 import type { FeatureFlagConfig } from "@/lib/feature-flags";
 
-// Same hook-by-call-order harness as ModelPicker.simple.test.ts: the panel's
-// own state survives between renders, effects never run, and handlers are
-// read off the returned element tree. `seed` presets the state the resolve
-// effect would have reached (it never runs here).
+// Hook-by-call-order harness: state survives between renders, effects never run, handlers are read off the element
+// tree. `seed` presets what the resolve effect would have reached.
 const fixture = vi.hoisted(() => {
   const view = { current: "computer" as string };
   const ogb: Record<string, unknown> = {};
@@ -30,12 +28,12 @@ const fixture = vi.hoisted(() => {
     dispatch: (() => {}) as (...args: unknown[]) => void,
     api: (() => Promise.resolve({})) as (...args: unknown[]) => Promise<unknown>,
     setAdvancedMode: (() => {}) as (enabled: boolean) => void,
+    ownerOrAdmin: null as boolean | null,
   };
 });
 
-// The panel's useState calls in source order, counted from `phase` (the only
-// one that starts as "checking"). Keep in step with ComputerPanel.tsx.
-const PHASE_OFFSETS = { phase: 0, resolved: 2, vmViewerUrl: 10, vmStatus: 11 } as const;
+// The panel's useState calls in source order, counted from `phase`; keep in step with ComputerPanel.tsx.
+const PHASE_OFFSETS = { phase: 0, resolved: 2, vmViewerUrl: 10, vmStatus: 11, error: 17 } as const;
 let phaseIndex = -1;
 
 vi.mock("react", async (original) => ({
@@ -60,6 +58,7 @@ vi.mock("@/lib/interface-mode", () => ({
   useAdvancedMode: () => fixture.advanced,
   setAdvancedMode: (enabled: boolean) => fixture.setAdvancedMode(enabled),
 }));
+vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.ownerOrAdmin }));
 vi.mock("./DesktopCapabilities", () => ({
   useCaptionChrome: () => ({ padClass: undefined }),
   useDesktopCapabilities: () => ({
@@ -105,6 +104,7 @@ const { ComputerPanel } = await import("./ComputerPanel");
 const { ComputerFilesPane } = await import("./ComputerFilesPane");
 const { CloudBackendPicker } = await import("./CloudBackendPicker");
 const { LocalComputerAutoWarning } = await import("./LocalComputerAutoWarning");
+const { ApiKeyRow } = await import("./ApiKeys");
 
 afterAll(() => vi.unstubAllGlobals());
 
@@ -159,6 +159,8 @@ const tabs = (rendered: ReturnType<typeof render>) => {
   const bar = rendered.nodes.find((node) => node.props["data-testid"] === "computer-tabs")!;
   return nodes(bar.props.children).filter((node) => node.type === "button").map((node) => text(node.props.children));
 };
+const placeLine = (rendered: ReturnType<typeof render>) =>
+  text(rendered.nodes.find((node) => node.props["data-testid"] === "place-line")!.props.children).replace(/&#x27;/g, "'");
 const grid = (rendered: ReturnType<typeof render>) => {
   const card = rendered.nodes.find((node) => node.props["data-testid"] === "where-works");
   if (!card) return [];
@@ -180,6 +182,7 @@ beforeEach(() => {
   fixture.dispatch = vi.fn();
   fixture.api = vi.fn(() => Promise.resolve({ features: { browser: true } }));
   fixture.setAdvancedMode = vi.fn();
+  fixture.ownerOrAdmin = null;
   for (const key of Object.keys(fixture.ogb)) delete fixture.ogb[key];
 });
 
@@ -190,7 +193,11 @@ describe("Computer panel tabs", () => {
       fixture.values = [];
       const rendered = render(makeBot());
       const bar = rendered.nodes.find((node) => node.props["data-testid"] === "computer-tabs")!;
-      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["justify-center", "rounded-full", "mx-9"]));
+      expect(String(bar.props.className).split(" ")).toEqual(expect.arrayContaining(["rounded-full", "mx-9"]));
+      expect(String(bar.props.className).split(" ")).not.toContain("flex-wrap");
+      const firstTab = Children.toArray(bar.props.children).find(isValidElement) as Node;
+      expect(String(firstTab.props.className).split(" ")).toEqual(expect.arrayContaining(["shrink-0", "@max-[28rem]/paneltabs:[&>svg]:hidden"]));
+      expect(rendered.nodes.some((node) => String(node.props.className ?? "").split(" ").includes("@container/paneltabs"))).toBe(true);
       const row = rendered.nodes.find((node) => Children.toArray(node.props.children)
         .some((child) => isValidElement(child) && (child as Node).props["data-testid"] === "computer-tabs"))!;
       expect(String(row.props.className).split(" ")).toEqual(expect.arrayContaining(["relative", "flex", "justify-center"]));
@@ -199,19 +206,18 @@ describe("Computer panel tabs", () => {
     }
   });
 
-  it("shows Computer, Browser and Files in Simple mode", () => {
+  it("shows Computer, Browser, Data and Files in Simple mode", () => {
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Files"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Browser", "Data", "Files"]);
   });
 
   it("keeps the Advanced tabs unchanged", () => {
     fixture.advanced = true;
     fixture.android = true;
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Android", "Browser", "Data"]);
     fixture.config = {};
     fixture.android = false;
-    // The Browser tab now stays in Advanced too, with its own switch.
-    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser"]);
+    expect(tabs(render(makeBot()))).toEqual(["Computer", "Routines", "Browser", "Data"]);
   });
 
   it("reads a Routines view stored by Advanced as the Computer tab in Simple", () => {
@@ -241,6 +247,56 @@ describe("Computer panel tabs", () => {
   it("explains an empty Files tab", () => {
     fixture.view.current = "files";
     expect(render(makeBot()).html).toContain("Files Scout makes or changes in this chat will show up here.");
+  });
+
+  it("shows the selected chat's pinned folder after the bot default changes", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({
+      cwd: "/workspace/new-project",
+      tasks: [
+        { threadId: "other-thread", title: "Other chat", createdAt: 1, cwd: "/workspace/other-project" },
+        { threadId: "thread-scout", title: "Existing chat", createdAt: 2, cwd: "/Users/me/original-project" },
+      ],
+    }));
+    expect(rendered.html).toContain('title="/Users/me/original-project"');
+    expect(rendered.html).toContain("~/original-project");
+    expect(rendered.html).not.toContain("/workspace/new-project");
+    expect(rendered.html).not.toContain("/workspace/other-project");
+    expect(rendered.html).toContain("Change default");
+    expect(rendered.html).toContain("This chat keeps its current folder.");
+  });
+
+  it("keeps showing the pinned private folder after the bot default is cleared", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({ tasks: [
+      { threadId: "thread-scout", title: "Existing chat", createdAt: 1, cwd: "/Users/me/.openmausbot/task-workspaces/scout/thread-scout" },
+    ] }));
+    expect(rendered.html).toContain('title="/Users/me/.openmausbot/task-workspaces/scout/thread-scout"');
+    expect(rendered.html).toContain("~/.openmausbot/task-workspaces/scout/thread-scout");
+    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
+  });
+
+  it("shows a legacy home-folder pin instead of the new bot default", () => {
+    fixture.view.current = "files";
+    const rendered = render(makeBot({
+      cwd: "/workspace/new-project",
+      tasks: [{ threadId: "thread-scout", title: "Legacy chat", createdAt: 1, cwd: null }],
+    }));
+    expect(rendered.html).toContain("Home folder");
+    expect(rendered.html).not.toContain("/workspace/new-project");
+    expect(rendered.html).not.toContain("Scout&#x27;s private folder");
+    expect(rendered.html).toContain("Change default");
+  });
+
+  it("uses the bot default until the selected chat has a folder pin", () => {
+    fixture.view.current = "files";
+    for (const tasks of [undefined, [{ threadId: "thread-scout", title: "New chat", createdAt: 1 }]]) {
+      const rendered = render(makeBot({ cwd: "/Users/me/new-project", tasks }));
+      expect(rendered.html).toContain('title="/Users/me/new-project"');
+      expect(rendered.html).toContain("~/new-project");
+      expect(rendered.html).not.toContain("This chat keeps its current folder.");
+      expect(rendered.html).not.toContain("Change default");
+    }
   });
 });
 
@@ -307,14 +363,75 @@ describe("Where the bot works", () => {
     expect(rendered.html).toContain("Where Scout works");
     expect(nodes(card.props.children).find((node) => node.props.role === "group")!.props.className).toContain("grid-cols-3");
     expect(grid(rendered).map((node) => text(node.props.children))).toEqual(["Auto", "Cloud computer", "Local VM", "This Mac", "Browser", "Off"]);
-    expect(rendered.html).toContain("Auto picks the cloud computer, Local VM, this Mac or just the browser for each task.");
+    expect(placeLine(rendered)).toBe("Uses the built-in browser, a private desktop on this computer, or this computer's screen, whichever the task needs.");
   });
 
-  it("says This PC off a Mac", () => {
+  it("says This PC off a Mac, and never names a Local VM in Auto's line there", () => {
     fixture.platform = "win32";
     const rendered = render(makeBot());
     expect(grid(rendered).map((node) => text(node.props.children))).toContain("This PC");
-    expect(rendered.html).toContain("this PC or just the browser");
+    expect(placeLine(rendered)).not.toMatch(/Local VM|Boat|cloud box/i);
+  });
+
+  it("says what Auto does on My Cloud, where it starts a cloud computer by itself", () => {
+    fixture.config = { ...fixture.config, cloudHome: true };
+    expect(placeLine(render(makeBot()))).toBe("Uses the built-in browser. In a chat, it starts its cloud computer by itself when a task needs desktop apps.");
+  });
+
+  it("J11: the Advanced cards and the Simple grid name the same problem in the same words", () => {
+    fixture.instances = [{ ...engine(), displayName: "Plain", capabilities: { computerMcp: false, browserMcp: true } } as InstanceInfo];
+    const simple = render(makeBot());
+    const tile = grid(simple).find((node) => text(node.props.children).startsWith("Cloud computer"))!;
+    expect(tile.props.disabled).toBe(true);
+    expect(text(tile.props.children)).toBe("Cloud computerNot with this model");
+    expect(tile.props.title).toBe("M can't use a computer. Choose a model that can, such as Claude or ChatGPT.");
+
+    fixture.advanced = true;
+    fixture.values = [];
+    phaseIndex = -1;
+    const advanced = render(makeBot());
+    const group = advanced.nodes.find((node) => node.props.role === "group" && node.props["aria-label"] === "Computer destination")!;
+    const card = nodes(group.props.children).filter((node) => node.type === "button")[1]!;
+    expect(card.props.disabled).toBe(true);
+    expect(text(card.props.children)).toBe("Cloud computerNot with this model");
+    expect(card.props.title).toBe(tile.props.title);
+  });
+
+  it("reads a refused start as the same state a failed row does, never the relay's words", () => {
+    fixture.seed = {
+      phase: "error",
+      resolved: { botId: "scout", threadId: "thread-scout", computer: "cloud", cloudBackend: "box" },
+      error: "Your Personal plan includes 1 cloud computer at once. Delete one to start another.",
+    };
+    const rendered = render(makeBot({ computer: "cloud" }));
+    expect(rendered.html).toContain("All the cloud computers your plan includes are in use.");
+    expect(rendered.html).not.toContain("Delete one to start another");
+    const actions = rendered.nodes.filter((node) => node.props["data-testid"] === "place-action").map((node) => text(node.props.children));
+    expect(actions).toContain("Manage cloud computers");
+    (rendered.nodes.find((node) => node.props["data-testid"] === "place-action")!.props.onClick as () => void)();
+    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "computer" });
+  });
+
+  it("offers the one next action for the chosen place, and a User is told to ask an Admin", () => {
+    fixture.config = { ...fixture.config, box: { configured: false } };
+    const rendered = render(makeBot({ computer: "cloud" }));
+    expect(placeLine(rendered)).toBe("A cloud computer here needs your own Boat key, a paid service.Add Boat key");
+    (rendered.nodes.find((node) => node.props["data-testid"] === "place-action")!.props.onClick as () => void)();
+    expect(fixture.dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "connections" });
+
+    fixture.ownerOrAdmin = false;
+    fixture.values = [];
+    phaseIndex = -1;
+    const user = render(makeBot({ computer: "cloud" }));
+    expect(placeLine(user)).toBe("A cloud computer here needs your own Boat key, a paid service. Ask an Admin to change it.");
+    expect(user.nodes.some((node) => node.props["data-testid"] === "place-action")).toBe(false);
+  });
+
+  it("saves a Boat key pasted into the panel as one from the Computer panel", () => {
+    fixture.config = { ...fixture.config, box: { configured: false } };
+    fixture.seed = { phase: "unconfigured", resolved: { botId: "scout", threadId: "thread-scout", computer: "cloud", cloudBackend: "box" } };
+    const rows = render(makeBot({ computer: "cloud" })).nodes.filter((node) => node.type === ApiKeyRow);
+    expect(rows.map((node) => ({ section: node.props.section, via: node.props.via }))).toEqual([{ section: "box", via: "computer_panel" }]);
   });
 
   it("dispatches exactly what the Advanced picker dispatches for each place", () => {
@@ -387,7 +504,6 @@ describe("A chat pinned to a place", () => {
     fresh();
     expect(text(unpin(render(pinnedOn("local")))!.props.children)).toBe("Use This Mac");
 
-    // Advanced keeps its own note and the composer chip.
     fixture.advanced = true;
     fresh();
     expect(unpin(render(pinned()))).toBeUndefined();

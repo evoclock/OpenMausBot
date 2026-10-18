@@ -19,9 +19,8 @@ export function createAuth(
     trustedOrigins: [...config.allowedOrigins],
     logger: { disabled: true },
     // Better Auth would otherwise delete expired verification rows inline on
-    // every OTP check: a SELECT and a DELETE, two serial D1 round trips. Expired
-    // codes are still rejected by their expiresAt check; index.ts runs the
-    // sweep after the sign-in response instead.
+    // every OTP check (two serial D1 round trips). Expired codes still fail
+    // their expiresAt check; the sweep runs after the sign-in response.
     verification: { disableCleanup: true },
     rateLimit: {
       enabled: true,

@@ -51,6 +51,18 @@ describe("command allowlist menu access", () => {
     expect(manage).not.toHaveBeenCalled();
   });
 
+  it("offers Full access without the desktop bridge and sends only Custom to the desktop app", () => {
+    const select = vi.fn();
+    fixture.open = true;
+    const open = render(select, undefined, false);
+    expect(open.html).not.toContain("Custom (config.toml)");
+    expect(open.html).toContain("Custom approval must be changed in the local packaged desktop app.");
+    expect(open.html).not.toContain("Full and Custom are available in the packaged desktop app.");
+    open.nodes.filter((node) => node.props.role === "menuitemradio")
+      .find((node) => renderToStaticMarkup(node).includes("Full access"))!.props.onClick!();
+    expect(select).toHaveBeenCalledExactlyOnceWith("full");
+  });
+
   it("offers the action without trusted modes, and omits it when the caller lacks management authority", () => {
     fixture.open = true;
     expect(render(vi.fn(), vi.fn(), false).html).toContain("Command allowlist");

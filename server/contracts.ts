@@ -1,9 +1,4 @@
-// Canonical harness contracts — ported from upstream
-// (apps/server/src/provider/ProviderDriver.ts, Services/ProviderAdapter.ts,
-// packages/contracts/src/{provider,providerInstance,providerRuntime}.ts),
-// de-Effect-ed: Promises instead of Effect, listener callbacks instead of
-// Stream. The shapes and names are kept so the two codebases stay mutually
-// readable.
+// Ported from upstream's provider contracts with Promises for Effect and listeners for Stream; shapes and names are kept.
 
 import type { ApprovalMode } from "../shared/approval-mode.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
@@ -13,11 +8,7 @@ import type {
 } from "../shared/runtime-events.ts";
 import type { ProviderIcon } from "../shared/provider-icon.ts";
 
-// These contract types live in shared/wire.ts now (part of the wire model);
-// re-exported here so existing server-side importers keep working.
 export type { CloudBackend, EffortLevel, ModelSelection } from "../shared/wire.ts";
-// Runtime-event wire shapes live in shared/runtime-events.ts now (part of
-// the wire model); re-exported here so existing importers keep working.
 export type {
   DriverKind, InstanceId, ModelVariantOption, ModelVariantState, RuntimeEvent,
   RuntimeEventBase, RuntimeEventListener, ThreadId, TurnId,
@@ -44,8 +35,7 @@ export class ProviderError extends Error {
   }
 }
 
-/** The driver proved this attempt never reached a prompt or client-side action,
- * and its owned process has stopped. The harness may safely recover it. */
+/** The attempt never reached a prompt or client-side action and its process stopped, so the harness may recover it. */
 export class TurnNotStartedError extends Error {
   readonly turnId: TurnId;
 
@@ -63,132 +53,77 @@ export function isModelVariant(value: unknown): value is string {
     value.trim() === value && !/\p{Cc}/u.test(value);
 }
 
-// ── model selection ────────────────────────────────────────────────────
-// "Which model" is a data value carried on the request, never a service
-// binding (upstream ModelSelectionWire). instanceId is the routing key.
-
-/** An image already admitted to OpenMausBot's private attachment store.
- * Drivers receive this structured value instead of learning a host path from
- * prompt text. The harness validates the path and size before constructing it. */
+/** An image already admitted to the private attachment store; drivers get this, never a host path in the prompt. */
 export interface TurnImageInput {
   path: string;
   mime: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
   bytes: number;
 }
 
-// ── instance configuration envelope ────────────────────────────────────
-// `driver` is any slug — NOT validated against known drivers; unknown
-// drivers round-trip and surface as unavailable shadow snapshots so a
-// config from a newer build downgrades safely.
+// `driver` is any slug: an unknown driver round-trips as an unavailable shadow snapshot.
 export interface InstanceConfig {
   driver: DriverKind;
   displayName?: string;
   accentColor?: string;
-  /** Presentation override for this instance only. Driver branding stays
-   * unchanged and custom images are admitted as bounded local data URLs. */
+  /** Presentation override for this instance only. */
   icon?: ProviderIcon;
   environment?: Record<string, string>;
   enabled?: boolean;
-  /** Picker group for this instance, over its driver's default: an
-   * `openai-compat` instance on a provider's own key is "api", not "custom". */
+  /** Picker group over the driver's default: an `openai-compat` instance on a provider's own key is "api". */
   access?: EngineAccess;
   config?: unknown;
 }
 
 export type InstanceConfigMap = Record<InstanceId, InstanceConfig>;
 
-// ── canonical runtime events ───────────────────────────────────────────
-/** What became of an answer to an ask. `allowed-once` grants only the
- * asked-about action — broadening ("always allow") stays a separate,
- * explicit step. `unavailable` is the fail-closed default: no answerer,
- * no action. */
+/** `allowed-once` grants only the asked-about action; `unavailable` is the fail-closed default: no answerer, no action. */
 export type RequestOutcome = "allowed-once" | "rejected" | "answered" | "unavailable";
 
-// ── adapter contract (upstream ProviderAdapterShape, promise-flavored) ──
-// The conversation runtime every provider is flattened into. streamEvents
-// becomes onEvent(listener) → unsubscribe; sessions start implicitly on
-// the first turn (the agentcal per-turn-process model) with resumeCursor
-// carrying the provider-native continuation (e.g. a claude session id).
+// Sessions start implicitly on the first turn; resumeCursor carries the provider-native continuation (e.g. a Claude session id).
 export interface SendTurnInput {
   threadId: ThreadId;
-  /** The bot this turn belongs to. threadIds are meant to be unique per bot
-   * task, but a driver's process-level resource maps (permission-broker
-   * socket, CLI session) key off threadId alone — botId lets a driver namespace
-   * those resources so a threadId that unexpectedly coincides across two
-   * bots (e.g. a delegation still holding its own broker open) can never
-   * collide with another bot's live session or broker (see #1017). */
+  /** Drivers namespace process-level resources (broker socket, CLI session) by botId too: threadIds may coincide across bots. */
   botId?: string;
   text: string;
-  /** Per-bot approval policy, reasserted by providers on every turn so a
-   * resumed native session cannot retain a stale, more permissive mode. */
+  /** The recall block the harness put in front of `text`; it informs this turn only, so a replay can leave it out. */
+  recalled?: string;
+  /** Reasserted every turn so a resumed native session cannot keep a stale, more permissive mode. */
   approvalMode?: ApprovalMode;
   /** Fresh owner selection, independent of execution approval and resume state. */
   toolScope?: ToolScope;
-  /** A guest drives this turn on an OMB Cloud home: it runs with no shell
-   * or command execution and reads nothing outside its own folder. Sent
-   * only to a driver whose capabilities.guestTurns is "confined"; the harness
-   * refuses the turn for any other (docs/cloud-pro.md). */
+  /** A guest turn: no shell or command execution, no reads outside its folder. Sent only to drivers whose guestTurns is "confined". */
   guestConfined?: boolean;
-  /** Why this turn is confined, in the owner's words, for a refusal to end
-   * with (on a personal Cloud home, what came before it: a routine or a
-   * conversation from before this update). */
+  /** Why this turn is confined, in the owner's words, for a refusal to end with. */
   confinedWhy?: string;
-  /** Images attached to this user turn only. They are deliberately kept out
-   * of replay transcripts: the provider's native session owns earlier image
-   * context, while a fresh replay retains the visible attachment marker. */
+  /** Images for this user turn only; kept out of replay transcripts. */
   images?: TurnImageInput[];
   model?: string;
   effort?: EffortLevel;
   variant?: string;
   resumeCursor?: unknown;
-  /** Start without the previous native context, including any retained idle
-   * process. Takes precedence over resumeCursor. The runtime supplies the
-   * active conversation in text/transcript when rebuilding a session. */
+  /** Start without the previous native context or retained process; wins over resumeCursor. */
   sessionReset?: boolean;
-  /** Hold the startup ACK until prompt dispatch; a safely retired transient
-   * setup failure may reject with TurnNotStartedError instead of completing. */
+  /** Hold the startup ACK until prompt dispatch; a retired transient setup failure may reject with TurnNotStartedError. */
   startupRecovery?: boolean;
-  /** The turn with the conversation so far replayed inline, attached only
-   * alongside resumeCursor. A cursor-resuming driver sends it once, on a
-   * fresh session, when the provider refuses the cursor before reading the
-   * prompt (server/resume-recovery.ts) — so a session the provider lost
-   * does not brick the thread, and the new session is not blank. */
+  /** The turn with the conversation replayed inline, sent once on a fresh session when the provider refuses resumeCursor before reading the prompt. */
   recoveryText?: string;
-  /** recoveryText is the replay this turn would have been sent without a
-   * resume cursor (it carries an update from outside the session). A driver
-   * that rebuilds only some lost sessions may also rebuild this one. */
-  recoveryIsReplay?: boolean;
   /** Prior turns for transcript-replay providers (API-backed drivers). */
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
   /** Bot persona (name/title/description) as a system prompt. */
   system?: string;
-  /** `system` split at the sections that legitimately change mid-conversation
-   * (the sections in VOLATILE_SECTIONS, system-prompt.ts): `systemStable` is
-   * everything else, `systemVolatile` is those sections' text. A driver that keeps one CLI process per thread keys
-   * that process on the stable half, so a memory edit no longer respawns the
-   * session and makes the provider re-cache the entire prompt; the changed half
-   * is delivered inside the next turn instead. Drivers that rebuild their
-   * request every turn keep only the stable half in their system message and
-   * carry the volatile half inside the newest user message, so the resent
-   * prefix stays byte-identical. */
+  /** `system` without its volatile sections (systemVolatile). A per-thread CLI process keys on this half; request-per-turn drivers
+   * carry the volatile half in the newest user message so the cached prefix stays byte-identical. */
   systemStable?: string;
   systemVolatile?: string;
-  /** True when this turn's user message tags teammates: the mentions part of
-   * systemVolatile describes this turn even when its text is unchanged from
-   * the previous turn, so digest-based delivery must not suppress the note. */
+  /** The message tags teammates, so digest-based delivery must not suppress the mentions note even when it is unchanged. */
   mentionTurn?: boolean;
+  /** The bot will likely browse, so a driver may load browser tools up front rather than behind tool search. */
+  preloadBrowserTools?: boolean;
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
-    /** A local stdio bridge owns the remote Composio transport. Keeping the
-     * bridge harness-controlled lets it turn connection requests into trusted
-     * chat cards consistently across provider CLIs. */
+    /** A harness-owned stdio bridge to Composio, so connection requests become trusted chat cards. */
     composio?: { command: string; args: string[]; env: Record<string, string> };
-    /** Direct stdio connection to a computer MCP server: Cua Driver (host,
-     * sandbox, or VPS) or the harness's own cloud computer server (a Boat).
-     * Every engine reaches every computer this way, on its own model.
-     * `scope` is set only for the user's host desktop; isolated and
-     * remote computers intentionally omit it so host-only approval rules
-     * cannot change their semantics. */
+    /** Stdio connection to a computer MCP server. `scope` is set only for the host desktop, so host-only approval rules never apply elsewhere. */
     localComputer?: {
       command: string;
       args: string[];
@@ -197,40 +132,34 @@ export interface SendTurnInput {
       generation?: string;
       scope?: "local-computer";
     };
-    /** Engine lifecycle hooks (Claude Code hooks today): the harness's
-     * loopback URL and a turn-scoped bearer the engine's hook helper presents
-     * on POST /api/internal/hook. A driver that declares `capabilities.hooks`
-     * registers the helper with its engine; the harness only ever observes
-     * and injects context through this channel, never decides state. */
+    /** Loopback URL and turn-scoped bearer for the engine's hook helper; hooks observe and inject context, never decide state. */
     hooks?: { url: string; token: string };
-    /** Peer-agent comms: an MCP proxy (list_bots / ask_bot) that routes back
-     * through the harness so this bot can message other bots. The harness
-     * owns turns, permissions, and recursion limits; the proxy only forwards. */
+    /** Peer-agent MCP proxy (list_bots / coordinate_bots); the harness owns turns, permissions and recursion limits. */
     agents?: { command: string; args: string[]; env: Record<string, string> };
     /** Physical Android phone tools over authorized USB debugging. */
     phone?: { command: string; args: string[]; env: Record<string, string> };
-    /** The app's built-in browser: an MCP proxy (server/harness-mcp-proxy browser)
-     * that forwards to the Electron-owned WebContentsView the Browser tab
-     * shows. One tab per bot, in its own persistent session partition. */
+    /** The built-in browser's MCP proxy: one tab per bot, in its own persistent partition. */
     browser?: { command: string; args: string[]; env: Record<string, string> };
-    /** dweb network daemon: an MCP proxy exposing dweb status, repo, and
-     * opencode model access as tools. url is the dweb HTTP base. */
+    /** The Data tools' MCP proxy: DuckDB on this bot's own database. */
+    data?: { command: string; args: string[]; env: Record<string, string> };
+    /** The HighLevel CRM tools' MCP proxy: the harness holds the tokens and the per-bot verdict. */
+    highlevel?: { command: string; args: string[]; env: Record<string, string> };
+    /** dweb daemon tools; `url` is the dweb HTTP base. */
     dweb?: { url: string };
-    /** User-configured MCP servers (config.json `mcpServers`), already
-     * validated and normalized by customMcpServers(). Mounted WITHOUT any
-     * pre-allow: their tools ride each driver's normal permission flow.
-     * A server is either a command this machine runs (stdio) or a server
-     * reached at a URL; a driver that cannot speak to one kind skips it. */
+    /** The user's MCP servers, mounted without any pre-allow; a driver skips a kind it cannot speak. */
     custom?: Record<string, McpServerSpec>;
+    /** Characters of one tool result per `custom` server; 0 = never trim, a missing name = the app default. */
+    customResultBudgets?: Record<string, number>;
   };
   cwd?: string;
-  /** Let the engine also load the MCP servers from the person's own CLI
-   * setup (Claude Code's user-scope servers and claude.ai connectors). Off
-   * by default: a bot gets the servers its owner gave it, and each extra
-   * tool costs tokens on every model call. Codex already reads its own
-   * config.toml and ignores this; the Claude driver drops
-   * --strict-mcp-config for the turn. */
+  /** Also load the person's own CLI MCP setup (Claude Code user scope, claude.ai connectors). */
   mcpFromUserConfig?: boolean;
+  /** Claude Code loads the person's own `~/.claude/skills` from this folder's `.claude/skills` (`--add-dir`). */
+  userSkillsDir?: string;
+  /** Per-call ceiling (ms) for this turn's MCP tools; absent is the driver's default (10 min). */
+  mcpCallTimeoutMs?: number;
+  /** Times an API-model turn that answers after a failed tool call is sent back to re-run it (`loopGuard.correctiveRounds`); never after a denial. */
+  toolErrorCorrectiveRounds?: number;
 }
 
 /** An MCP server this machine starts and talks to over stdio. */
@@ -240,9 +169,7 @@ export interface StdioMcpSpec {
   env: Record<string, string>;
 }
 
-/** An MCP server reached over HTTP: streamable HTTP (`http`, the current
- * transport) or the older SSE transport. Header values are credentials
- * (`Authorization: Bearer …`) and travel like env values: never on argv. */
+/** An MCP server over streamable HTTP (`http`) or the older SSE transport; header values are credentials and never go on argv. */
 export interface RemoteMcpSpec {
   type: "http" | "sse";
   url: string;
@@ -259,110 +186,84 @@ export interface ProviderAdapter {
   readonly provider: DriverKind;
   readonly capabilities: {
     sessionModelSwitch: "in-session" | "unsupported";
-    /** True when the driver mounts turn.integrations.agents as MCP tools —
-     * the harness only offers agents tooling (and prompts about it) to
-     * drivers that can actually hand it to the agent. */
+    /** The driver mounts integrations.agents. Every *Mcp flag guards one rule: never tell a bot about tools its driver cannot mount. */
     agentsMcp?: boolean;
-    /** True when the driver mounts isolated computer MCP descriptors (the
-     * screenshot/click tools). Same rule as agentsMcp: a bot must never be
-     * told it has a computer whose tools its driver cannot mount — it
-     * burns turns hunting for tools that aren't there. */
+    /** The driver mounts isolated computer MCP descriptors. */
     computerMcp?: boolean;
-    /** True when the driver mounts turn.integrations.composio (the user's
-     * connected apps). Same rule again: a key in the config says the user
-     * HAS those connections, not that this driver can reach them. */
+    /** The driver mounts integrations.composio. */
     composioMcp?: boolean;
     /** True when the driver can mount the first-party physical-phone MCP. */
     phoneMcp?: boolean;
-    /** True when the driver can mount the built-in browser MCP. Same rule:
-     * a bot must never be told it has a browser its driver cannot hand it. */
+    /** The driver can mount the built-in browser MCP. */
     browserMcp?: boolean;
-    /** True when this engine accepts images in the prompt — gates image
-     * paste in the composer. Same rule as computerMcp: never offer an
-     * attachment an engine cannot open (a bot told it has an image it
-     * cannot read burns the turn). */
+    /** The driver can mount the Data tools MCP. */
+    dataMcp?: boolean;
+    /** The driver can mount the HighLevel CRM tools MCP. */
+    highlevelMcp?: boolean;
+    /** The engine accepts images in the prompt (gates composer paste). */
     images?: boolean;
-    /** True only when sendTurn consumes `images` as structured provider
-     * input. Image-capable legacy drivers may instead read the attachment
-     * path kept in `text`; central dispatch strips that tag only here. */
+    /** sendTurn consumes `images` as structured input, so dispatch strips the attachment path from `text`. */
     nativeImageInput?: boolean;
-    /** Effort levels this driver can pass to its CLI, ascending. Absent =
-     * the driver cannot set effort, so the app never offers the control —
-     * same rule as computerMcp: never show a knob the driver cannot turn. */
+    /** Effort levels the driver can pass to its CLI, ascending; absent hides the control. */
     effortLevels?: readonly EffortLevel[];
     /** The driver validates and applies model-specific variant IDs per session. */
     modelVariants?: boolean;
-    /** True when the driver keeps a live session across turns and can take
-     * a user message MID-TURN (delivered before the model's next call —
-     * "steer"). The composer stays open during a turn on such an engine;
-     * others keep the queue-one-and-wait behaviour. Same rule as the other
-     * flags: never show a control the driver cannot honour. */
+    /** The driver keeps a live session and can take a user message mid-turn (steer). */
     queueing?: boolean;
-    /** True only when local MCP calls can reach the human approval channel.
-     * Full-auto/bypass provider instances must leave this false. */
+    /** steer() delivers `images` as structured input; requires queueing and nativeImageInput. */
+    steerImages?: boolean;
+    /** True only when local MCP calls can reach the human approval channel; full-auto/bypass instances must leave this false. */
     localComputerMcp?: boolean;
-    /** True when the driver mounts turn.integrations.custom (the user's own
-     * MCP servers from config). Same rule as composioMcp: an entry in the
-     * config says the servers exist, not that this engine can reach them. */
+    /** The driver mounts integrations.custom. */
     customMcp?: boolean;
-    /** True when a turn given a resumeCursor runs in that exact native
-     * session, or, if the provider refuses the session before accepting the
-     * prompt, fails or starts a new session from recoveryText — never a blank
-     * session that silently lacks the history; session.started says `rebuilt`
-     * for that new session. The harness then keeps such a session across
-     * externally appended messages and sends only those. */
+    /** A resumeCursor turn runs in that exact native session, or fails, or starts a new one from recoveryText (session.started says
+     * `rebuilt`), never a blank one. */
     strictResume?: boolean;
-    /** True when sendTurn can register the harness's hook helper with the
-     * engine (integrations.hooks). Only Claude Code today; other engines
-     * deliver the same information through their protocols. */
+    /** sendTurn can register the harness's hook helper with the engine (integrations.hooks). */
     hooks?: boolean;
-    /** How a guest-driven turn on an OMB Cloud home can run on this engine:
-     * "confined" = sendTurn honours `guestConfined` (no shell or command
-     * execution, no reads outside its folder). Absent: such a turn is
-     * refused. */
+    /** "confined": sendTurn honours `guestConfined`; absent, a guest turn is refused. */
     guestTurns?: "confined";
+    /** "meter": `contextTokens` / `contextWindow` are the engine's own report, shown on the context meter but never used to time compaction. */
+    contextReading?: "meter";
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
-  /** Answer a pending ask. Resolves with what actually happened — never
-   * throws for an ask that is no longer there: `unavailable` means nobody
-   * could take the answer (the turn ended, the broker died, the driver
-   * has no asks), and the caller treats it as a deny. Callers branch on the
-   * outcome, not on prose. */
+  /** Never throws for a vanished ask: `unavailable` means nobody could take the answer, and the caller treats it as a deny. */
   respondToRequest(
     threadId: ThreadId,
     requestId: string,
     decision: {
       behavior: "allow" | "deny" | "answer";
       message?: string;
-      /** "Always allow this session": hand the provider its own remembered
-       * approval (Claude's suggested permission rules, ACP `allow_always`)
-       * so it stops asking about this operation for the rest of the
-       * session. The app keeps no grant of its own. */
+      /** "Always allow this session": the provider's own remembered approval; the app keeps no grant of its own. */
       always?: boolean;
     },
   ): Promise<RequestOutcome>;
-  /** Deliver a user message into the RUNNING turn on this thread. Only
-   * drivers with `capabilities.queueing` implement it.
-   *
-   * - "steered" — the engine accepted the input into the live turn.
-   * - "refused" — provably NOT delivered (no live turn, explicit RPC
-   *   refusal, failed stdin write): the caller may queue it for the next
-   *   turn without risk of running it twice.
-   * - "indeterminate" — delivered, but the outcome is unknown (the RPC
-   *   timed out after accept, transport failed, or the turn settled while
-   *   the answer was in flight). The caller must NOT re-queue: the words
-   *   may already be running, and replaying them would execute them twice. */
-  steer?(threadId: ThreadId, text: string): Promise<SteerOutcome>;
+  /** Deliver a user message into the running turn (drivers with `capabilities.queueing`).
+   * - "steered": accepted into the live turn.
+   * - "refused": provably not delivered; the caller may queue it.
+   * - "indeterminate": maybe delivered; the caller must NOT re-queue, or it could run twice.
+   * A driver that cannot read an attached image refuses the whole steer. */
+  steer?(threadId: ThreadId, text: string, images?: readonly TurnImageInput[]): Promise<SteerOutcome>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
   onEvent(listener: RuntimeEventListener): () => void;
+  /** `ping` sends one tool-less forked request without touching the thread's session; `hold` keeps the live session open until
+   * `until` (epoch ms; null releases) and says whether one exists. */
+  cacheKeepWarm?: {
+    ping(threadId: ThreadId, options?: { signal?: AbortSignal }): Promise<CacheWarmPingResult>;
+    hold(threadId: ThreadId, until: number | null): boolean;
+  };
 }
 
-/** The tri-state result of Adapter.steer — see the contract above. */
+/** Tokens are the ping's own; `costUsd` is notional on a subscription. `busy`: a turn was running and nothing was sent;
+ * `limit`: the account's usage limit refused it. */
+export type CacheWarmPingResult =
+  | { ok: true; input: number; cacheRead: number; cacheWrite: number; output: number; costUsd: number | null; model: string | null }
+  | { ok: false; reason: string; busy?: boolean; limit?: boolean };
+
 export type SteerOutcome = "steered" | "refused" | "indeterminate";
 
-// ── provider snapshot (upstream ServerProviderShape, reduced) ────────────
 export interface ProviderSnapshot {
   /** Separate, explicitly authorized ChatGPT-plan billing (not Codex login). */
   chatgptPlan?: boolean;
@@ -370,43 +271,29 @@ export interface ProviderSnapshot {
   state: "available" | "unavailable";
   reason?: string;
   authenticated?: boolean;
-  /** Vetted display identity from the provider CLI, never credentials.
-   * `method` says how it is signed in when the CLI reports it: a personal
-   * login, or the workspace API key. */
+  /** Display identity from the provider CLI, never credentials; `method` is a personal login or the workspace API key. */
   account?: { email?: string; organization?: string; method?: "login" | "api-key" };
   version?: string | null;
-  /** A non-blocking provider update that unlocks newer capabilities. The
-   * engine remains usable; renderer surfaces the exact terminal command. */
+  /** A non-blocking provider update; the renderer shows the exact terminal command. */
   update?: {
     title: string;
     message: string;
     command: string;
   };
-  /** How this instance is paid for, when the driver can tell: a reported
-   * cost on a subscription is notional and the UI labels it as such. */
+  /** On a subscription a reported cost is notional. */
   billing?: "metered" | "subscription";
-  /** A standing condition worth a look but with nothing to run: the engine
-   * works, and something about how it is set up is costing the person
-   * without their asking. Shown beside the update notice on Engines. */
+  /** A setup condition costing the person without their asking, with nothing to run. */
   warning?: {
     title: string;
     message: string;
   };
 }
 
-// ── engine install descriptor ───────────────────────────────────────────
-// How a user gets this engine onto their machine. Declared by the driver so
-// that adding a provider stays "one file in drivers/ plus a registration":
-// onboarding, the model picker, and settings all render from this instead of
-// hardcoding per-engine copy in the UI.
-//
-// Installing is rarely the whole job — most CLIs then need an interactive
-// sign-in, which is why signInCommand exists and why the UI sends people to a
-// terminal rather than trying to shell out silently.
+// How a user installs this engine; onboarding, the picker and settings render from it.
 export interface EngineInstall {
-  /** One-liner per platform. Omit a platform that has no such command —
-   * the UI falls back to docsUrl rather than offering something that
-   * cannot work there (a curl|bash line is not a Windows command). */
+  /** Added by the registry: commands run on this server, not its web client. */
+  platform?: "darwin" | "win32" | "linux";
+  /** One-liner per platform; omit a platform with no such command and the UI falls back to docsUrl. */
   command?: Partial<Record<"darwin" | "win32" | "linux", string>>;
   /** Docs or download page. The only route for GUI-installed engines. */
   docsUrl?: string;
@@ -419,13 +306,9 @@ export interface EngineInstall {
     label: string;
     downloadBytes: number;
   };
-  /** Set up inside the app rather than in a terminal: the engine needs a key
-   * saved under Settings → API keys, and the setup card links there. */
+  /** The engine needs a key saved in the app rather than a terminal step. */
   settings?: "connections";
-  /** Settings can install or update this engine on the machine running the
-   * server, as the server's own user, into a directory the app owns. Set by
-   * the registry when the install one-liner is an npm package and npm is on
-   * PATH; never something a client chooses. */
+  /** Settings can npm-install this package as the server's own user into an app-owned dir; set by the registry, never by a client. */
   server?: { package: string };
 }
 
@@ -444,10 +327,6 @@ export interface ProviderAuthenticationStatus extends Omit<ProviderAuthenticatio
   message?: string;
 }
 
-// ── driver SPI (upstream ProviderDriver — a plain record, not a service) ─
-// `create` owns ALL per-instance state; two create calls share nothing.
-// Failures must reject, never throw synchronously — the registry downgrades
-// a rejection to an unavailable shadow snapshot.
 export interface ModelCatalog {
   default: string;
   options: Array<{
@@ -455,23 +334,16 @@ export interface ModelCatalog {
     label: string;
     custom?: boolean;
     loaded?: boolean;
-    /** upstream provider id (e.g. "zai", "nous") when the engine can report
-     * it — the picker shows it as a muted badge so BYOK duplicates of the
-     * same model id stay distinguishable. */
+    /** Upstream provider id (e.g. "zai"), shown as a badge so BYOK duplicates stay distinguishable. */
     provider?: string;
-    /** total context window in tokens, when the driver knows it — sizes
-     * the model-facing rebuild (server/context-rebuild.ts). Unknown falls
-     * back to a pattern table over the model id, then a conservative default. */
+    /** Context window in tokens, when known; sizes the model-facing rebuild. */
     contextWindow?: number;
     /** Discovery hints; the native session revalidates these before each turn. */
     variants?: ModelVariantOption[];
   }>;
 }
 
-/** The picker label for a model id when the catalog row carries no display
- * name: split on the word breaks the catalog treats as separators and
- * capitalize each part ("gpt-5.4-mini" → "Gpt 5.4 Mini"). Each harness
- * passes its own break class so existing labels stay byte-for-byte. */
+/** "gpt-5.4-mini" → "Gpt 5.4 Mini", splitting on the caller's word breaks. */
 export function titleCaseModelId(id: string, wordBreaks: RegExp): string {
   return id
     .split(wordBreaks)
@@ -480,11 +352,7 @@ export function titleCaseModelId(id: string, wordBreaks: RegExp): string {
     .join(" ");
 }
 
-/** A picker label that carries a second facet — a display name, a provider
- * host — beside the model id, unless the facet is already what the id says.
- * `redundantWhen` decides what counts as "already said" and `decorate` how
- * the facet is appended, so every harness's labels stay exactly what they
- * were while the shape is written once. */
+/** A picker label with a second facet (display name, provider host) unless the id already says it. */
 export function qualifiedModelLabel(
   id: string,
   qualifier: string | null | undefined,
@@ -517,6 +385,10 @@ export interface TextGenerationUsage {
 export interface TextGenerationOptions {
   signal?: AbortSignal;
   onUsage?: (usage: TextGenerationUsage) => void;
+  /** Only the helper model setting passes it: one of this instance's models instead of the driver's quick-call choice. */
+  model?: string;
+  /** How long the caller will wait; drivers with their own process timer use it instead of their default. */
+  timeoutMs?: number;
 }
 
 export interface ProviderInstance {
@@ -527,6 +399,8 @@ export interface ProviderInstance {
   readonly models: ModelCatalog;
   /** Refresh a live catalog without recreating the provider instance. */
   readonly refreshModels?: () => Promise<void>;
+  /** Set while the last run's catalog is still refreshing; a turn awaits it, listen does not. */
+  readonly startupModelRefresh?: Promise<void>;
   /** Optional first-party runtime installation and account setup. */
   readonly installRuntime?: () => Promise<void>;
   readonly startAuthentication?: () => Promise<ProviderAuthenticationStart>;
@@ -534,18 +408,15 @@ export interface ProviderInstance {
   readonly getAuthentication?: (flowId: string) => Promise<ProviderAuthenticationStatus>;
   readonly completeAuthentication?: (flowId: string, callbackUrl: string) => Promise<void>;
   readonly cancelAuthentication?: () => Promise<void>;
-  /** Remove the sign-in the provider CLI stores on this server, so a
-   * different account can connect. Never touches another instance's home. */
+  /** Remove the provider CLI's stored sign-in on this server; never touches another instance's home. */
   readonly signOut?: () => Promise<void>;
   readonly adapter: ProviderAdapter;
   snapshot(): Promise<ProviderSnapshot>;
-  /** Cheap one-shot text call (upstream TextGeneration) — titles, summaries.
-   * The signal is a best-effort cap: drivers that can honor it abort the
-   * underlying provider call; the rest keep their own timeout. */
+  /** Cheap one-shot text call (titles, summaries); the signal is a best-effort cap. */
   generateText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
-  /** Isolated, tool-free permission review on this same provider. Kept
-   * separate from generateText so the UI never infers a security capability
-   * from a generic helper that may expose prompts in argv or lack approvals. */
+  /** One-shot text for background steps only, on engines whose turns are whole agent processes; never for titles or compaction. */
+  generateMemoryText?(prompt: string, options?: TextGenerationOptions): Promise<string>;
+  /** Isolated, tool-free permission review; separate from generateText so no security capability is inferred from a generic helper. */
   reviewPermission?(prompt: string, signal?: AbortSignal): Promise<string>;
   dispose(): Promise<void>;
 }
@@ -563,13 +434,13 @@ export interface ProviderDriver<Config = unknown> {
     supportsMultipleInstances?: boolean;
     access?: EngineAccess;
   };
-  /** How to get this engine installed. Omit for engines that need no local
-   * binary (API-key drivers), which is what makes it optional. */
+  /** Omit for engines that need no local binary (API-key drivers). */
   readonly install?: EngineInstall;
   /** Decode the opaque config envelope; throw on invalid (→ shadow). */
   decodeConfig(raw: unknown): Config;
   defaultConfig(): Config;
   readonly models: ModelCatalog;
+  /** Owns all per-instance state; must reject, never throw synchronously (a rejection becomes an unavailable shadow snapshot). */
   create(input: DriverCreateInput<Config>): Promise<ProviderInstance>;
 }
 

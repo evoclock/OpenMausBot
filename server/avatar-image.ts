@@ -61,11 +61,7 @@ export function avatarGenerationStateMatches(
   return current.avatarUrl === initial.avatarUrl && current.avatarCrop === initial.avatarCrop;
 }
 
-/**
- * Wrap free-form direction in a product-owned art brief. The fixed crop and
- * no-text constraints make the low-cost first result useful as a 28px avatar,
- * while JSON quoting prevents the user's direction from blurring its bounds.
- */
+/** A product-owned art brief: fixed crop, no text, and the user's direction JSON-quoted so it cannot blur the brief's bounds. */
 export function avatarGenerationPrompt(bot: AvatarIdentity, direction: string): string {
   const bounded = direction.trim().slice(0, AVATAR_DIRECTION_MAX_CHARS);
   return [
@@ -86,11 +82,7 @@ export interface GeneratedAvatarImage {
   mime: "image/png" | "image/jpeg" | "image/webp";
 }
 
-/**
- * Read an untrusted provider response without first materialising an
- * arbitrarily large body. The image API returns base64 JSON, so a byte cap is
- * the real memory boundary; decoding happens only after the bounded read.
- */
+/** The image API returns base64 JSON, so a byte cap on the untrusted body is the real memory boundary. */
 async function boundedResponseText(response: Response): Promise<string> {
   const advertised = Number(response.headers.get("content-length"));
   if (Number.isFinite(advertised) && advertised > MAX_UPSTREAM_RESPONSE_BYTES) {
@@ -181,17 +173,14 @@ export async function generateAvatarImage(
   try {
     text = await boundedResponseText(response);
   } catch (error) {
-    // A fetch can resolve its headers before the provider stalls. When the
-    // same timeout later aborts the response body, undici may surface either
-    // TimeoutError or AbortError; the signal is the authoritative cause.
+    // When the timeout aborts the body after headers, undici may surface TimeoutError or AbortError; the signal decides.
     if (timeoutSignal.aborted || (error instanceof Error && error.name === "TimeoutError")) {
       throw Object.assign(new Error("Avatar generation timed out"), { status: 502 });
     }
     throw error;
   }
   if (!response.ok) {
-    // Upstream errors can repeat authorization headers, signed URLs, or other
-    // secrets. Return only the provider and HTTP status, never its raw body.
+    // Upstream errors can repeat authorization headers or signed URLs: return only the provider and status, never the body.
     const message = `${providerName} image generation failed (HTTP ${response.status})`;
     throw Object.assign(new Error(message), { status: response.status === 401 ? 401 : 502 });
   }
@@ -208,8 +197,7 @@ export async function generateAvatarImage(
   }
   const encoded = parsed.data.data[0]!.b64_json;
   if (!encoded) {
-    // Do not fetch arbitrary URLs returned by a provider. Compatible gateways
-    // must support the requested inline base64 response format.
+    // Never fetch a URL a provider returns; compatible gateways must answer with inline b64_json.
     throw Object.assign(new Error(`${providerName} image generation must return base64 image data (b64_json)`), { status: 502 });
   }
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {

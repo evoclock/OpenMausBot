@@ -23,7 +23,7 @@ if (mode === 'fail') { console.error('npm ERR! code E404\\nnpm ERR! 404 Not Foun
 if (mode === 'hang' || mode === 'stubborn') { setInterval(() => {}, 1000); }
 else {
   const prefix = args[args.indexOf('--prefix') + 1];
-  // Like npm in #2064: exit 0 having dropped the platform package, so the
+  // Like a broken npm install: exit 0 having dropped the platform package, so the
   // launcher is there but cannot start. 'broken-once' does it on run one only.
   const runs = readFileSync(process.env.FAKE_NPM_LOG, 'utf8').trim().split('\\n').length;
   const broken = mode === 'broken' || (mode === 'broken-once' && runs === 1);
@@ -126,7 +126,6 @@ describe.skipIf(process.platform === "win32")("installing with npm", () => {
     // The child reports its cwd resolved; macOS puts the temp dir under /private.
     expect(realpathSync(calls()[0]!.cwd)).toBe(realpathSync(enginesPrefix(ctx.base)));
     expect(calls()[0]!.secret).toBeNull();
-    // The freshly installed binary is what a bare name now resolves to.
     expect(realpathSync(findCliCandidates("fakebin")[0]!)).toBe(realpathSync(join(enginesBinDir(ctx.base), "fakebin")));
     expect(augmentedPath().split(delimiter)[0]).toBe(enginesBinDir(ctx.base));
   });

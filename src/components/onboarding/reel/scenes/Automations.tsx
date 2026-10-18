@@ -1,13 +1,3 @@
-// The "set it and forget it" scene. One authored moment: the clock line
-// reaches 9:00 and the routine fires. Everything before it is setup (the
-// calendar surfaces, a pointer drops the routine onto Monday), everything
-// after is resolution (the receipt lands in chat, then an outside app calls
-// the webhook and the same bot wakes). Three layers throughout: the primary
-// action, a secondary reaction (the tile's shadow tightening as it lands,
-// the ripple when it fires), and ambient life (the guide's glow, the vignette).
-//
-// Drawn to match the real Automations page and the real run receipt card,
-// so a user recognises both when they meet them for real.
 import { useEffect, useState } from "react";
 import { CheckCircle2, Loader2, MousePointer2, Zap } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -17,7 +7,6 @@ import type { SceneProps } from "./types";
 
 const AUTOMATIONS_MS = 6200;
 
-/** Beats, in ms from play. Setup → action → resolution → second story. */
 const POINTER_AT = 500;
 const DROP_AT = 1100;
 const FIRE_AT = 2200;
@@ -103,10 +92,8 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-inset" role="img" aria-label={label}>
-      {/* ambient: a quiet vignette so the surfaces have something to sit on */}
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_0%,transparent_55%,rgba(0,0,0,0.28)_100%)]" aria-hidden="true" />
 
-      {/* the calendar, as the Automations page draws it */}
       <div className="animate-rise absolute inset-x-5 top-4 overflow-hidden rounded-xl border border-hairline/40 bg-app shadow-[0_18px_44px_-20px_rgba(0,0,0,0.6)]">
         <div className="stagger grid grid-cols-[34px_repeat(5,1fr)] border-b border-hairline/40">
           <div />
@@ -138,7 +125,6 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
               ))}
               {i === 0 && (
                 <>
-                  {/* the drop target glows while the pointer hovers it */}
                   <div
                     className={cn("absolute inset-x-0.5 rounded-md transition-opacity duration-300", pointer ? "opacity-100" : "opacity-0")}
                     style={{ top: ROW + 1, height: ROW - 2, background: "color-mix(in oklab, var(--color-accent) 12%, transparent)", outline: "1px dashed color-mix(in oklab, var(--color-accent) 45%, transparent)", outlineOffset: -1 }}
@@ -163,7 +149,6 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
               )}
             </div>
           ))}
-          {/* the clock line: eases to 9:00, glowing where it meets the gutter */}
           <div
             className="pointer-events-none absolute left-[34px] right-0 z-10 h-px bg-gradient-to-r from-danger via-danger/70 to-danger/20 transition-transform duration-[1100ms] ease-[cubic-bezier(0.77,0,0.175,1)]"
             style={{ top: 6, transform: `translateY(${firing ? ROW - 6 : 0}px)` }}
@@ -173,7 +158,6 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
         </div>
       </div>
 
-      {/* the pointer that drops the routine in */}
       {(pointer || (dropped && !firing)) && (
         <MousePointer2
           size={16}
@@ -185,13 +169,11 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
         />
       )}
 
-      {/* receipts land in the bot's chat */}
       <div className="absolute bottom-4 right-5 z-20 flex flex-col items-end gap-2">
         {firing && <Receipt name="Weekly report" running={!done} tone="accent" />}
         {hook && <Receipt name="Webhook task" running={!hookDone} tone="warning" />}
       </div>
 
-      {/* an outside app calls the address; the bolt travels to the bot */}
       {hook && (
         <div className="absolute bottom-4 left-5 z-20 flex items-center gap-3">
           <div className="animate-rise flex items-center gap-1.5 rounded-lg border border-hairline/50 bg-panel px-2.5 py-1.5 font-mono text-[9.5px] text-ink-secondary shadow-[0_10px_30px_-12px_rgba(0,0,0,0.55)]">
@@ -205,7 +187,6 @@ export function Automations({ playing, onCue, onEnded, label }: SceneProps) {
         </div>
       )}
 
-      {/* the guide, asleep until something needs it */}
       <div className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2">
         <div className={cn("absolute inset-0 -m-4 rounded-full bg-accent/20 blur-xl transition-opacity duration-500", busy ? "opacity-100" : "opacity-0")} aria-hidden="true" />
         <div className="relative drop-shadow-[0_8px_18px_rgba(0,0,0,0.45)]">

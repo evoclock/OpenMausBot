@@ -1,5 +1,4 @@
-// MiniMax API driver. The wire protocol is OpenAI chat completions; this file
-// keeps only MiniMax's credentials, catalog, and request differences.
+// MiniMax API driver over the OpenAI chat-completions protocol.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +13,7 @@ const DEFAULT_URL = "https://api.minimax.io/v1";
 const CN_URL = "https://api.minimaxi.com/v1";
 const MODELS: ModelCatalog = {
   default: "MiniMax-M3",
-  // `custom: true` because the driver is access "custom": the picker opens
-  // custom-access engines in the pane that lists only custom-flagged models.
+  // `custom: true` is load-bearing: a custom-access engine's picker pane lists only custom-flagged models.
   options: [
     { id: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000, custom: true },
     { id: "MiniMax-M2.7", label: "MiniMax M2.7", contextWindow: 204_800, custom: true },

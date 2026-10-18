@@ -1,7 +1,3 @@
-// Chips for what is attached to the next message, plus the window-wide
-// file drop that creates them. A long paste collapses into a card of its
-// first lines instead of flooding the composer; a file dropped anywhere
-// on the window attaches by path.
 import { useEffect, useRef, useState } from "react";
 import { ClipboardPaste, File as FileIcon, Image as ImageIcon, LoaderCircle, MessageSquareText, X } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -22,7 +18,6 @@ export function pathForFile(file: File): string {
   return window.ogb?.getPathForFile?.(file) ?? "";
 }
 
-/** Renders pending attachments and their composer actions. */
 export function ComposerAttachments({
   items,
   onAdd,
@@ -48,8 +43,7 @@ export function ComposerAttachments({
 }) {
   const [dragging, setDragging] = useState(false);
   const [preview, setPreview] = useState<PreviewImage | null>(null);
-  // dragenter/dragleave fire once per element crossed, so the overlay
-  // tracks depth rather than the last event it happened to see
+  // dragenter/dragleave fire once per element crossed, so the overlay tracks depth.
   const depth = useRef(0);
   const callbacks = useRef({ onAdd, onNotice, onPendingChange, allowImages, uploadImage });
   callbacks.current = { onAdd, onNotice, onPendingChange, allowImages, uploadImage };
@@ -68,8 +62,7 @@ export function ComposerAttachments({
       depth.current = Math.max(0, depth.current - 1);
       if (depth.current === 0) setDragging(false);
     };
-    // without preventDefault the window navigates to the dropped file and
-    // the app is simply gone
+    // Without preventDefault the window navigates to the dropped file.
     const onOver = (e: DragEvent) => {
       if (carriesFiles(e)) e.preventDefault();
     };
@@ -79,8 +72,6 @@ export function ComposerAttachments({
       depth.current = 0;
       setDragging(false);
       const files = Array.from(e.dataTransfer?.files ?? []);
-      // Same intake the attach button uses: a dropped file and a picked one
-      // must not appear in a different order.
       const operation = Symbol("attachment-drop");
       pendingDrops.current.add(operation);
       callbacks.current.onPendingChange?.(true);
@@ -244,8 +235,7 @@ function Chip({
           {label}
         </span>
       </div>
-      {/* hover reveals it, but so must focus: `hidden` would take the only
-          way to drop a chip out of reach of the keyboard */}
+      {/* Not `hidden`: that would take the only way to remove a chip out of the keyboard's reach. */}
       <button
         onClick={onRemove}
         aria-label={`Remove ${label === "PASTED" ? "pasted text" : "file"}`}

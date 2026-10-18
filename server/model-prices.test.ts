@@ -54,10 +54,8 @@ describe("what the ledger books for a settled turn", () => {
     const booked = ledgerCost({ ...codex, costUsd: null }, null);
     expect(booked.costSource).toBe("estimated");
     expect(booked.costUsd).toBeCloseTo(codexListCost, 9);
-    // a nonsense figure from an engine is not a price either
     expect(ledgerCost({ ...codex, costUsd: Number.NaN }, null).costUsd).toBeCloseTo(codexListCost, 9);
     expect(ledgerCost({ ...codex, costUsd: -1 }, null).costSource).toBe("estimated");
-    // an OpenRouter id, at OpenRouter's own price
     expect(ledgerCost({ driverKind: "openaiCompat", model: "x-ai/grok-4.7", input: 1_000_000, output: 1_000_000, costUsd: null }, null).costUsd).toBeCloseTo(1.6 + 4.8, 9);
   });
 
@@ -69,9 +67,7 @@ describe("what the ledger books for a settled turn", () => {
     };
     expect(ledgerCost({ ...codex, costUsd: null }, operator).costUsd).toBeCloseTo(1 * 1 + 0.1 * 2, 9);
     expect(estimatePriceFor({ driverKind: "grok", model: "grok-4.7" }, operator)).toEqual({ inputPerMillion: 3, outputPerMillion: 3 });
-    // a listed model keeps its list price over the operator's catch-all
     expect(estimatePriceFor({ driverKind: "codex", model: "gpt-5.4" }, operator)?.inputPerMillion).toBe(2.5);
-    // an unlisted one falls to it
     expect(ledgerCost({ driverKind: "acp", model: "fake-model", input: 1_000_000, output: 0, costUsd: null }, operator)).toEqual({ costUsd: 10, costSource: "estimated" });
   });
 

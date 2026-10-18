@@ -38,12 +38,10 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: `#signin=${credential}` });
     expect(takeBrowserSignInFromLocation()).toBe(credential);
     expect(replaceState).toHaveBeenCalledWith(null, "", "/pair");
-    // A malformed one is still removed, and is not a code for the pair form either.
     replaceState.mockClear();
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: "#signin=ABCD-EFGH-JKLM" });
     expect(takeBrowserSignInFromLocation()).toBeNull();
     expect(replaceState).toHaveBeenCalledWith(null, "", "/pair");
-    // An ordinary pairing link is left to the pair form.
     replaceState.mockClear();
     vi.stubGlobal("location", { pathname: "/pair", search: "", hash: "#code=ABCD-EFGH-JKLM" });
     expect(takeBrowserSignInFromLocation()).toBeNull();
@@ -70,7 +68,6 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     const requests: Array<{ path: string; body: unknown }> = [];
     const server = (async (path: string, init?: RequestInit) => {
       requests.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-      // Whatever this browser already has here, the grant is redeemed (and its old session replaced).
       if (path === "/api/auth/session") return new Response(JSON.stringify({ kind: "session", id: "s", label: "Chrome on Mac", scopes: ["client"], expiresAt: 1 }), { status: 200 });
       return new Response(JSON.stringify({ session: {} }), { status: 200 });
     }) as unknown as typeof fetch;
@@ -78,7 +75,6 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
     expect(await signInWithBrowserGrant(credential, "attempt-page-0001", server)).toEqual({ ok: true });
     expect(requests.map((r) => r.path)).toEqual(["/api/auth/pair", "/api/auth/pair"]);
     for (const request of requests) expect(request.body).toMatchObject({ code: credential, cookie: true, browser: true, attemptId: "attempt-page-0001" });
-    // A spent or expired one says so.
     const spent = (async () => new Response(JSON.stringify({ error: "pairing code is wrong or has expired" }), { status: 401 })) as unknown as typeof fetch;
     expect(await signInWithBrowserGrant(credential, "attempt-page-0002", spent)).toEqual({ ok: false, error: "pairing code is wrong or has expired" });
     expect(reasonWorthShowing(BROWSER_SIGN_IN_FAILED)).toBe(BROWSER_SIGN_IN_FAILED);

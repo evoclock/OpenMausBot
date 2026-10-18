@@ -1,17 +1,4 @@
-// Hand-kept facts about model providers that models.dev does not carry:
-// - which providers we recommend, in what order, and under what name;
-// - a pinned OpenAI-compatible base URL for each (models.dev lists some
-//   providers without one, and a pinned URL means a catalog refresh can never
-//   change where a newly pasted key for a recommended provider is sent);
-// - the Anthropic-compatible endpoint Claude Code can use, where one exists;
-// - whether the provider documents Codex support, and its exceptions;
-// - how to prove a key when the provider's model list is public.
-// Every row was checked by hand on its `checkedAt` date.
-//
-// Codex rules (see codexVerdict): Codex is offered only when the provider's
-// /responses route passed the check AND either the provider documents Codex
-// or the person turned on the experimental switch. Documented exceptions
-// (Fireworks: no MiniMax models, no Fire Pass keys) always apply.
+// Pinned base URLs: a catalog refresh can never change where a newly pasted key for a recommended provider is sent.
 
 export type AnthropicAuth = "bearer" | "x-api-key";
 
@@ -23,38 +10,28 @@ export interface AnthropicEndpoint {
   doc?: string;
 }
 
-/** Why a provider can never be used with Codex. */
 export type CodexUnsupportedReason = "no-responses-api" | "not-supported";
 
 export type CodexSupport =
   | {
     kind: "documented";
     doc: string;
-    /** Models the provider says do not work with Codex. */
     denyModels?: RegExp;
-    /** Key kinds (by prefix) the provider says do not work with Codex. */
     denyKeyPrefixes?: readonly string[];
   }
   | { kind: "unsupported"; reason: CodexUnsupportedReason };
 
 export interface ProviderPreset {
-  /** models.dev id, or an OpenMausBot-only id when models.dev has no entry. */
   id: string;
-  /** The models.dev provider this row describes; absent for OpenMausBot-only rows. */
   catalogId?: string;
   label: string;
-  /** Position in the Recommended group, from 1. */
   recommended?: number;
   /** OpenAI-compatible base URL. Wins over models.dev's `api`. */
   api: string;
-  /** The AI SDK package OpenCode must load to reach `api`, when models.dev's
-   * `npm` is for a different endpoint (MiniMax: its Anthropic one). */
+  /** For when models.dev's `npm` is for a different endpoint (MiniMax: its Anthropic one). */
   npm?: string;
-  /** Key variable name, for rows models.dev does not list. */
   env?: string;
-  /** "Get a key" link, for rows models.dev does not list. */
   doc?: string;
-  /** Claude Code can use this provider through this endpoint. */
   anthropic?: AnthropicEndpoint;
   /** Absent: Codex only as an experiment, and only if the check passes. */
   codex?: CodexSupport;
@@ -62,15 +39,13 @@ export interface ProviderPreset {
   keyCheck?: string;
   /** GET {api}/models answers without a key, so it proves nothing about one. */
   publicModels?: true;
-  /** The chat engine is enabled only after the check passes. */
   chat?: "after-check";
-  /** Date this row was last checked by hand (YYYY-MM-DD). */
+  /** Last checked by hand (YYYY-MM-DD). */
   checkedAt: string;
 }
 
 const CHECKED = "2026-09-30";
 
-/** The AI SDK package for any OpenAI-compatible base URL. */
 export const OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible";
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
@@ -132,8 +107,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     checkedAt: CHECKED,
   },
   {
-    // Cline's pay-as-you-go credits: the same API as ClinePass with a larger,
-    // OpenRouter-style model list. Not in models.dev.
+    // Cline's pay-as-you-go credits: the ClinePass API with a larger model list. Not in models.dev.
     id: "cline-credits",
     label: "Cline (credits)",
     recommended: 5,
@@ -167,9 +141,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     checkedAt: CHECKED,
   },
   {
-    // models.dev lists MiniMax's Anthropic endpoint as its `api` (with
-    // @ai-sdk/anthropic); the chat engine and OpenCode need the OpenAI one,
-    // and OpenCode needs the matching SDK with it.
+    // models.dev lists MiniMax's Anthropic endpoint (with @ai-sdk/anthropic); the chat engine and OpenCode need the OpenAI one.
     id: "minimax",
     catalogId: "minimax",
     label: "MiniMax",
@@ -213,7 +185,6 @@ export function providerPreset(id: string): ProviderPreset | undefined {
   return BY_ID.get(id);
 }
 
-/** Result of the /responses check (section 4.7, step 4). */
 export type ResponsesCheck = "works" | "missing" | "key-refused" | "unchecked";
 
 export type CodexNoReason =
@@ -227,7 +198,6 @@ export type CodexNoReason =
   | "route-missing"
   /** /responses refused a key that /models accepted. */
   | "key-refused"
-  /** No check has run yet. */
   | "not-checked"
   /** Not documented; available once the experimental switch is on. */
   | "experimental-off";
@@ -247,7 +217,6 @@ export function codexModelAllowed(preset: ProviderPreset | undefined, model: str
   return !(codex?.kind === "documented" && codex.denyModels?.test(model));
 }
 
-/** The models Codex may be offered for this provider. */
 export function codexModels(preset: ProviderPreset | undefined, models: readonly string[]): string[] {
   return models.filter((model) => codexModelAllowed(preset, model));
 }

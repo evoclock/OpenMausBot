@@ -65,8 +65,7 @@ it.each(["explicit", "inherited"] as const)("persists the %s tool selection befo
     }
     const database = new DatabaseSync(join(dataDir, "messages.db"));
     try {
-      // Interrupt the real creation after its first durable record, before
-      // the route can apply any remaining template settings.
+      // Interrupt the real creation after its first durable record, before the route applies the remaining settings.
       database.exec("CREATE TRIGGER reject_scope_fixture_greeting BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'fixture greeting failure'); END");
       const name = `Interrupted ${source} scope fixture`;
       const result = await api("POST", "/api/bots", { name, ...(source === "explicit" ? { settings: { toolScope } } : {}) });

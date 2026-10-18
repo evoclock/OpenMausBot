@@ -56,7 +56,7 @@ registerHooks({
       }
     ` };
     const result = nextLoad(url, context);
-    if (url.endsWith('/local-vm-idle.ts')) {
+    if (url.endsWith('/computer-idle.ts')) {
       return { ...result, source: `import { readFileSync as readVmIdle } from 'node:fs';\n` +
         String(result.source).replaceAll('checkedIdleMs(idleMs)', `(JSON.parse(readVmIdle(${JSON.stringify(state)}, 'utf8')).idleMs ?? checkedIdleMs(idleMs))`) };
     }
@@ -75,12 +75,7 @@ registerHooks({
           .replace('at - turn.lastEventAt < this.opts.stallMs', `at - turn.lastEventAt < (JSON.parse(readVmWatch(${JSON.stringify(state)}, 'utf8')).stall ? 0 : JSON.parse(readVmWatch(${JSON.stringify(state)}, 'utf8')).stallThread === turn.threadId ? 100 : this.opts.stallMs)`) };
     }
     if (url.endsWith('/turn-dispatch-guard.ts')) {
-      // wedgeClear parks a room turn inside waitForClear, the pre-id
-      // quarantine a prior turn's cancelled handshake can hold open while
-      // its TTL runs — the real delayed-setup window where a stall used to
-      // find no completion handler. The clearwait marker lets a test prove
-      // the turn reached that park before it flips the stall on; entry into
-      // containerComputerStatus alone only proves readiness started.
+      // wedgeClear parks a room turn inside waitForClear; the clearwait marker proves it got there.
       return { ...result, source: `import { readFileSync as readVmClear, writeFileSync as writeVmClear } from 'node:fs';\n` +
         String(result.source).replace('async waitForClear(threadId: string): Promise<void> {',
           `async waitForClear(threadId: string): Promise<void> {\n      writeVmClear(${JSON.stringify(state)} + '.clearwait', '1');\n      while (JSON.parse(readVmClear(${JSON.stringify(state)}, 'utf8')).wedgeClear) await new Promise((resolve) => setTimeout(resolve, 20));`) };

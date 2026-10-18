@@ -1,17 +1,10 @@
-// Standalone skills-library migration for a stopped server (skills lane S1).
+// Standalone skills-library migration for a stopped server:
 //
-// Run:  node --experimental-strip-types scripts/migrate-skills-library.ts [--data-dir <dir>]
+//   node --experimental-strip-types scripts/migrate-skills-library.ts [--data-dir <dir>]
 //
-// Migrates every bot's per-bot skill copies into DATA_DIR/skills-library
-// (sha256 dedup, originals archived, never deleted) and records the
-// resulting assignments in pending-assignments.json. It never writes
-// bots.json: the next boot with features.skillsLibrary on applies the
-// pending assignments through the Store, the single writer of bot records.
-// This script migrates unconditionally — it does not read the flag: each
-// migrated skill's per-bot copy is archived away and its manifest entry
-// cleared, so until a boot with features.skillsLibrary on applies the
-// pending assignments, bots see those skills gone. Run it only when the
-// flag is on.
+// It never writes bots.json and does not read features.skillsLibrary: migrated
+// skills disappear from bots until a boot with the flag on applies the pending
+// assignments. Run it only when the flag is on.
 import { resolve } from "node:path";
 
 const args = process.argv.slice(2);

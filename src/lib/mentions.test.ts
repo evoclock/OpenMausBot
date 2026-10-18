@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mentionChoicesForQuery, mentionRanges } from "./mentions";
+import { mentionChoicesForQuery, mentionRanges, mentionRowDescription } from "./mentions";
 
 const peers = [{ name: "Atlas" }, { name: "New Bot" }, { name: "New Bot 2" }, { name: "調査担当" }, { name: "Hidden", hidden: true }];
 const matches = (text: string, everyone = false) => mentionRanges(text, peers, everyone).map(({ start, end }) => text.slice(start, end));
@@ -36,6 +36,28 @@ describe("mention display ranges", () => {
   });
 });
 
+describe("the person's tag in display ranges", () => {
+  const person = { profileName: "Sam" };
+  const ranges = (text: string, roster = peers, everyone = false) => mentionRanges(text, roster, everyone, person)
+    .map(({ start, end, you }) => [text.slice(start, end), you ?? false]);
+
+  it("marks @you and the profile name as the person's, beside bot tags", () => {
+    expect(ranges("@Atlas asks @you and @SAM; mail sam@you.com")).toEqual([
+      ["@Atlas", false], ["@you", true], ["@SAM", true],
+    ]);
+  });
+  it("is off unless a caller asks for it, as in the composer", () => {
+    expect(matches("@you @Sam")).toEqual([]);
+  });
+  it("lets a bot with the same name keep its mentions", () => {
+    expect(ranges("@you @Sam", [{ name: "You" }, { name: "Sam" }])).toEqual([["@you", false], ["@Sam", false]]);
+    expect(ranges("@you", [{ name: "You", hidden: true }])).toEqual([["@you", true]]);
+  });
+  it("leaves @everyone as it was", () => {
+    expect(ranges("@everyone then @you", peers, true)).toEqual([["@everyone", false], ["@you", true]]);
+  });
+});
+
 describe("mention picker choices", () => {
   const choices = ["everyone", "One", "Two", "Three", "Four", "Five", "Six"]
     .map((name, index) => ({ id: String(index), name }));
@@ -47,5 +69,23 @@ describe("mention picker choices", () => {
   it("filters before display and closes after a completed exact tag", () => {
     expect(mentionChoicesForQuery(choices, "si").map((choice) => choice.name)).toEqual(["Six"]);
     expect(mentionChoicesForQuery(choices, "Six ")).toEqual([]);
+  });
+
+  it("filters by name only, so a title never opens a row the insert would not match", () => {
+    const titled = [{ name: "Atlas", title: "Research lead" }];
+    expect(mentionChoicesForQuery(titled, "research")).toEqual([]);
+    expect(mentionChoicesForQuery(titled, "atl")).toEqual(titled);
+  });
+});
+
+describe("mention row description", () => {
+  it("uses a bot title and omits a blank one", () => {
+    expect(mentionRowDescription({ kind: "bot", title: "  Research lead  " })).toBe("Research lead");
+    expect(mentionRowDescription({ kind: "bot", title: "  " })).toBe("");
+  });
+
+  it("counts the bots @everyone reaches", () => {
+    expect(mentionRowDescription({ kind: "everyone", count: 1 })).toBe("1 bot in this chat");
+    expect(mentionRowDescription({ kind: "everyone", count: 6 })).toBe("6 bots in this chat");
   });
 });

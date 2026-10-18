@@ -1,7 +1,4 @@
-// What a client learns about this server before it authenticates: a stable
-// identity, a label, the version, and what it can do. Served without auth at
-// /.well-known/openmausbot/environment so a saved connection can check it is
-// still talking to the same server, and so version skew is visible.
+// Served without auth at /.well-known/openmausbot/environment, so a saved connection can check it still reaches the same server.
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -26,16 +23,16 @@ export interface EnvironmentDescriptor {
   capabilities: {
     /** Pairing and sessions are available (this build). */
     remoteSessions: true;
-    /** This server accepts computer sharing. Present only while the
-     * maintainer flag `features.sharedComputers` is on: a server with it off
-     * advertises nothing, exactly like a build that predates the feature. */
+    /** Only while the maintainer flag `features.sharedComputers` is on; otherwise absent, like a build without the feature. */
     sharedComputers?: true;
-    /** A person's own OMB Cloud home (docs/cloud-pro.md). Absent elsewhere. */
+    /** A person's own OMB Cloud home. */
     cloudHome?: true;
     /** Who can update the server: the desktop app that runs it, or the operator. */
     selfUpdate: "desktop-managed" | "operator";
     /** Whether /pair offers "sign in with your email" (an allow-list is set). */
     emailSignIn?: boolean;
+    /** GET /api/threads/:id/job answers, long-polled (the headless CLI needs it). */
+    jobs: true;
   };
 }
 
@@ -84,9 +81,7 @@ export function loadEnvironmentId(dataDir: string): string {
     descriptor = undefined;
 
     try {
-      // The temporary file is complete before it becomes visible at the final
-      // path. A hard link is an atomic, no-replace publish on every supported
-      // desktop platform, unlike rename (which overwrites on POSIX).
+      // A hard link publishes atomically without replacing, unlike rename, which overwrites on POSIX.
       linkSync(temporaryFile, file);
       return id;
     } catch (error) {
@@ -100,14 +95,10 @@ export function loadEnvironmentId(dataDir: string): string {
     try {
       unlinkSync(temporaryFile);
     } catch {
-      // A leftover private temporary file is harmless and must not make a
-      // successfully published identity unusable.
     }
   }
 }
 
-/** The desktop app passes its own version; a checkout reads package.json;
- * an image sets OMB_APP_VERSION at build time. */
 export function serverVersion(): string {
   const fromEnv = process.env.OMB_APP_VERSION?.trim();
   if (fromEnv) return fromEnv;
@@ -116,7 +107,6 @@ export function serverVersion(): string {
     const version = Reflect.get(Object(pkg), "version");
     if (typeof version === "string" && version) return version;
   } catch {
-    /* no package.json next to the bundle */
   }
   return "unknown";
 }
@@ -129,14 +119,12 @@ export function environmentDescriptor(input: { environmentId: string; desktopMan
     version: serverVersion(),
     capabilities: {
       remoteSessions: true,
-      // Never advertise a protocol this server would refuse: the routes are
-      // gone unless features.sharedComputers is on, so the capability is too.
+      // Never advertise a protocol this server would refuse.
       ...(input.sharedComputers === true ? { sharedComputers: true as const } : {}),
-      // An OMB Cloud home: its pairing page says "Opening your Cloud…" and
-      // where to connect from, not "the code shown on the server".
       ...(input.cloudHome === true ? { cloudHome: true as const } : {}),
       selfUpdate: input.desktopManaged ? "desktop-managed" : "operator",
       emailSignIn: input.emailSignIn === true,
+      jobs: true,
     },
   };
 }

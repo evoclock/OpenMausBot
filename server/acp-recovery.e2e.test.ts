@@ -1,5 +1,3 @@
-// A real OMB conversation must survive a poisoned ACP process without the
-// person deleting its thread, and without replaying the failed turn's tools.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -95,7 +93,6 @@ it.each([false, true])("recovers the same conversation after an ACP internal err
     expect(prompts()[2].pid).not.toBe(firstProcess);
     const prompt = JSON.stringify(JSON.parse(readFileSync(`${dumpFile}.prompt.json`, "utf8")));
     expect(prompt.split(retryText).length - 1).toBe(1);
-    // Native resume owns the old history; it must not receive it twice.
     expect(prompt).not.toContain(firstText);
     expect(prompt).not.toContain(failedText);
     const finalMessages = await messages();

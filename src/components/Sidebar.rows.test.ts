@@ -1,11 +1,5 @@
 // @vitest-environment happy-dom
-// Sidebar rows re-render only when their own bot or thread changes. A store
-// event for one bot renders that bot's row and no other; a renamed thread
-// renders that thread's row; the list's 30-second clock renders only the
-// thread rows whose stamp reads relative ("5 min ago"), not the ones that
-// show a fixed date. Counted through a leaf each row draws, which is not
-// memoized here, so it renders exactly when its row does: the bot name
-// (RenameTitle) for a bot row, the delete confirmation for a thread row.
+// Counted through a leaf each row draws, which is not memoized here, so it renders exactly when its row does.
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
@@ -21,12 +15,16 @@ vi.mock("./RenameTitle", () => ({
 }));
 vi.mock("./ConfirmDialog", async (importOriginal) => ({
   ...await importOriginal<typeof import("./ConfirmDialog")>(),
-  // every thread row keeps its (closed) delete confirmation mounted; its
-  // body names the thread
+  // Every thread row keeps its closed delete confirmation mounted, and its body names the thread.
   ConfirmDialog: ({ body }: { body?: unknown }) => {
     if (typeof body === "string") renders.threads.push(body);
     return null;
   },
+}));
+// Threads are an Advanced-mode surface (Simple keeps one conversation per bot), so these render as Advanced.
+vi.mock("@/lib/interface-mode", async (original) => ({
+  ...await original<typeof import("@/lib/interface-mode")>(),
+  useAdvancedMode: () => true,
 }));
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
   ...await importOriginal<typeof import("./DesktopCapabilities")>(),
@@ -62,7 +60,6 @@ let state: AppState = {
     profile("atlas", "Atlas", [
       thread("atlas-now", "Report draft", NOW - HOUR),
       thread("atlas-earlier", "Budget check", NOW - 2 * HOUR),
-      // a month old: its stamp is a date, so the clock has nothing to change
       thread("atlas-old", "Old notes", NOW - 30 * 24 * HOUR),
     ], { messages: atlasMessages, activeLeafId: "a2" }),
     profile("scout", "Scout", [thread("scout-now", "Scout plan", NOW - HOUR), thread("scout-earlier", "Scout list", NOW - 3 * HOUR)]),
@@ -111,7 +108,6 @@ beforeAll(async () => {
   document.body.append(container);
   root = createRoot(container);
   await draw();
-  // open Atlas's thread list, as a person would
   const toggle = document.querySelector<HTMLButtonElement>(`button[aria-label="${t("task.expandNamed", { name: "Atlas" })}"]`);
   toggle!.click();
   await settle();
@@ -144,7 +140,7 @@ describe("sidebar rows", () => {
     const message = { ...reply("a3", "a2", "One more thing."), at: NOW };
     const changed = await rowRendersAfter(update((current) => reducer(current, { type: "messageAdded", threadId: "atlas-now", message })));
     expect(changed).toEqual({ bots: { Atlas: 1 }, threads: { "Report draft": 1 } });
-    expect(document.querySelector('[data-sidebar-thread-row="atlas-now"]')?.textContent).toContain(t("task.updated.justNow"));
+    expect(document.querySelector('[data-sidebar-thread-row="atlas-now"]')?.parentElement?.textContent).toContain(t("task.updated.justNow"));
   });
 
   it("renders only the renamed thread's row among the threads", async () => {
@@ -171,7 +167,7 @@ describe("sidebar rows", () => {
       const changed = await rowRendersAfter(draw);
       expect(changed.bots).toEqual({ Atlas: 1, Scout: 1, Pepper: 1 });
       expect(Object.keys(changed.threads)).toHaveLength(3);
-      expect(document.querySelector('[data-sidebar-thread-row="atlas-earlier"]')?.textContent).toContain("vor 2 Std.");
+      expect(document.querySelector('[data-sidebar-thread-row="atlas-earlier"]')?.parentElement?.textContent).toContain("vor 2 Std.");
     } finally {
       setLocale("en");
       await draw();

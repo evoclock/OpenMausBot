@@ -1,11 +1,3 @@
-// The "they have hands" scene. One authored moment: the bot's pointer
-// clicking a real button on a live desktop. Setup is the chat with the ask
-// and the Computer panel sliding in from the right, drawn as ComputerPanel
-// draws it (the view tabs, the preview status, Open live desktop and Take
-// control). The panel arrives already connected, the booking page on screen:
-// a spinner and "Starting…" here read as a broken demo, since people often
-// click Next inside the first second. Resolution is the click landing, the
-// tool chip in the chat, and the reply.
 import { useEffect, useState } from "react";
 import { Check, ExternalLink, Hand, Loader2, MousePointer2, Settings2, X } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
@@ -18,7 +10,6 @@ const HANDS_MS = 6400;
 const ASK = "Book the 3 pm slot on the clinic's site.";
 const REPLY = "Booked. 3:00 pm, confirmation #4821.";
 
-/** Beats, in ms from play. */
 const PANEL_AT = 500;
 const WAKE_AT = 1600;
 const MOVE_AT = 2500;
@@ -74,9 +65,7 @@ export function Hands({ playing, onCue, onEnded, label }: SceneProps) {
     <div className="relative flex h-full w-full overflow-hidden bg-inset" role="img" aria-label={label}>
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_90%_at_50%_0%,transparent_55%,rgba(0,0,0,0.28)_100%)]" aria-hidden="true" />
 
-      {/* the app: chat on the left, the panel arriving on the right */}
       <div className="animate-rise relative m-4 flex flex-1 overflow-hidden rounded-xl border border-hairline/40 bg-app shadow-[0_18px_44px_-20px_rgba(0,0,0,0.6)]">
-        {/* chat */}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center justify-between border-b border-hairline/40 px-3 py-2">
             <div className="flex items-center gap-2">
@@ -111,7 +100,6 @@ export function Hands({ playing, onCue, onEnded, label }: SceneProps) {
           </div>
         </div>
 
-        {/* the Computer panel, as ComputerPanel draws it */}
         <aside
           className={cn(
             "flex w-[58%] shrink-0 flex-col border-l border-hairline/40 bg-panel transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -130,16 +118,13 @@ export function Hands({ playing, onCue, onEnded, label }: SceneProps) {
             <X size={13} className="text-ink-secondary" />
           </div>
 
-          {/* the screen */}
           <div className="relative mx-2.5 aspect-[16/10] overflow-hidden rounded-lg border border-hairline/40 bg-black">
-            {/* desktop */}
             <div className="absolute inset-0">
               <div className="absolute inset-0 bg-[linear-gradient(135deg,#1f3a5f_0%,#2a5d8c_45%,#6b3fa0_100%)]" />
               <div className="absolute inset-x-0 top-0 flex h-3 items-center justify-between bg-black/30 px-1.5 text-[6px] text-white/80">
                 <span>Ubuntu</span>
                 <span className="tabular-nums">14:58</span>
               </div>
-              {/* the browser window with the booking form */}
               <div className="absolute left-[10%] right-[10%] top-[16%] bottom-[18%] overflow-hidden rounded-md bg-[#f4f5f7] shadow-[0_10px_30px_-8px_rgba(0,0,0,0.7)]">
                 <div className="flex h-3.5 items-center gap-1 bg-[#e4e6ea] px-1.5">
                   <span className="size-1.5 rounded-full bg-[#ff5f57]" />
@@ -167,14 +152,11 @@ export function Hands({ playing, onCue, onEnded, label }: SceneProps) {
                   </div>
                 </div>
               </div>
-              {/* dock */}
               <div className="absolute bottom-1 left-1/2 flex -translate-x-1/2 gap-1 rounded-md bg-white/15 px-1.5 py-0.5">
                 {[0, 1, 2, 3].map((i) => (
                   <span key={i} className="size-2 rounded-sm bg-white/70" />
                 ))}
               </div>
-              {/* the bot's pointer: a full-size layer, so its percentages are
-                  the screen's, gliding from the corner to the Book button */}
               <div
                 className={cn(
                   "pointer-events-none absolute inset-0 z-20 transition-transform duration-[900ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -187,7 +169,6 @@ export function Hands({ playing, onCue, onEnded, label }: SceneProps) {
             </div>
           </div>
 
-          {/* status and actions, as the panel shows them */}
           <div className="mx-2.5 mt-2 flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-[9.5px] text-ink-secondary">
               <span className="size-1.5 rounded-full bg-success" />

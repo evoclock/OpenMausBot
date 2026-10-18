@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { describeRun, groupActivityRuns, groupTranscript, isRecoveryActivity, statusActivity } from "./activity-runs";
+import { describeRun, groupActivityRuns, groupTranscript, isRecoveryActivity, isToolStep, statusActivity } from "./activity-runs";
 import type { Message } from "@/state/store";
 
 let seq = 0;
 const tool = (name: string, ok = true): Message =>
   ({ id: `t${++seq}`, at: seq, role: "bot", kind: "activity", tool: { name, ok } });
-/** a step with no verdict yet — `ok` absent, not `ok: undefined`, which a
- * default parameter would quietly turn back into a finished step */
+/** `ok` absent, not `ok: undefined`: a default parameter would turn that back into a finished step. */
 const running = (name: string): Message =>
   ({ id: `t${++seq}`, at: seq, role: "bot", kind: "activity", tool: { name } });
 const text = (body: string): Message => ({ id: `m${++seq}`, at: seq, role: "bot", kind: "text", text: body });
@@ -29,6 +28,13 @@ describe("groupActivityRuns", () => {
     const opened: Message = { ...tool("Opened thread #QA PR 245 on Scout"),
       threadRef: { botId: "scout", threadId: "qa-245", title: "QA PR 245" } };
     const items = groupActivityRuns([tool("Edit"), tool("Edit"), opened, tool("Write"), tool("Write")]);
+    expect(items.map((i) => i.kind)).toEqual(["run", "message", "run"]);
+  });
+
+  it("never folds a bot-to-bot chip into a run — it links to the other conversation", () => {
+    const messaged: Message = { ...tool("Messaged @Ada"),
+      comm: { groupId: "g1", withBotId: "ada", withName: "Ada", withColor: "blue" } };
+    const items = groupActivityRuns([tool("Edit"), tool("Edit"), messaged, tool("Write"), tool("Write")]);
     expect(items.map((i) => i.kind)).toEqual(["run", "message", "run"]);
   });
 
@@ -57,6 +63,17 @@ describe("groupActivityRuns", () => {
       const items = group(messages);
       expect(items.map(item => item.kind)).toEqual(["run", "message", "run"]);
       expect(items[1]).toEqual({ kind: "message", message: recovery });
+    }
+  });
+
+  it("keeps a stopped turn visible between successful tool runs", () => {
+    const stopped = tool("stopped: Stopped");
+    const messages = [tool("Read"), tool("Edit"), stopped, tool("Bash"), tool("Write")];
+    expect(statusActivity(stopped)).toEqual({ kind: "stopped", text: "Stopped" });
+    for (const group of [groupActivityRuns, groupTranscript]) {
+      const items = group(messages);
+      expect(items.map(item => item.kind)).toEqual(["run", "message", "run"]);
+      expect(items[1]).toEqual({ kind: "message", message: stopped });
     }
   });
 
@@ -124,6 +141,46 @@ describe("groupActivityRuns", () => {
   });
 });
 
+describe("isToolStep", () => {
+  const opened: Message = { ...tool("Opened thread #QA PR 245 on Scout"),
+    threadRef: { botId: "scout", threadId: "qa-245", title: "QA PR 245" } };
+  const messaged: Message = { ...tool("Messaged @Ada"),
+    comm: { groupId: "g1", withBotId: "ada", withName: "Ada", withColor: "blue" } };
+
+  it("is true for a tool the bot ran, whether it is running, finished or failed", () => {
+    const steps = [tool("Edit"), running("Bash"), tool("Bash", false)];
+    expect(steps.filter((step) => isToolStep(step))).toEqual(steps);
+    const step = tool("Edit");
+    expect(isToolStep(step) && step.tool.name).toBe("Edit");
+  });
+
+  it("is false for what is not work: chips that link elsewhere, status rows and a failed turn", () => {
+    const rows = [
+      opened,
+      messaged,
+      tool("notice: the engine runs another model"),
+      tool("recovery: Automatic recovery: trying a backup once."),
+      tool("error: the CLI exited"),
+    ];
+    expect(rows.filter((row) => isToolStep(row))).toEqual([]);
+  });
+
+  it("does not ask for a provider item id: the chat still folds the harness's own chips", () => {
+    const receipt = tool("approved Bash (full access): pnpm test");
+    expect(receipt.tool).not.toHaveProperty("itemId");
+    expect(isToolStep(receipt)).toBe(true);
+    const items = groupActivityRuns([tool("Edit"), receipt, tool("Write")]);
+    expect(items.map((i) => i.kind)).toEqual(["run"]);
+    expect(items[0].kind === "run" && items[0].messages).toHaveLength(3);
+  });
+
+  it("is false for anything that is not an activity row with a tool", () => {
+    const noTool: Message = { id: "n1", at: 1, role: "bot", kind: "activity" };
+    const notActivity: Message = { ...tool("Edit"), kind: "text" };
+    expect([text("hi"), noTool, notActivity].filter((row) => isToolStep(row))).toEqual([]);
+  });
+});
+
 describe("describeRun", () => {
   it("counts repeats and names the tools in order of first use", () => {
     expect(describeRun([tool("Edit"), tool("Bash"), tool("Edit"), tool("Edit")])).toBe("4 steps · Edit ×3, Bash");
@@ -137,6 +194,11 @@ describe("describeRun", () => {
     expect(describeRun([tool("Edit"), tool("Bash"), tool("Write"), tool("Grep"), tool("Read")])).toBe(
       "5 steps · Edit, Bash, Write +2 more",
     );
+  });
+
+  it("names steps by the label it is given, counting steps that read the same together", () => {
+    const plain = ({ name }: { name: string }) => (name === "Bash" || name.includes(" ") ? "Run a command" : name);
+    expect(describeRun([tool("Bash"), tool("ls -la"), tool("Edit")], plain)).toBe("3 steps · Run a command ×2, Edit");
   });
 });
 

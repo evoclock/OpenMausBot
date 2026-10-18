@@ -1,24 +1,16 @@
-// The voice, driven against a stub rather than the live service — same
-// rule as the boat and computer-proxy contract tests: what we send, and how
-// a refusal is reported, are the things that break.
 import { createServer, type Server } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "../config.ts";
 
 let server: Server;
-/** every request the stub saw, so tests can assert on what we sent */
 const seen: Array<{ method: string; url: string; headers: Record<string, string>; body: string }> = [];
-/** flipped by tests that want ElevenLabs to refuse */
 let refuse: { status: number; body: unknown } | null = null;
 
 const MP3 = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44]);
 const WAV = Buffer.from("RIFF....WAVEfmt ");
-/** flipped by tests that want the server to have no /v1/models route */
 let modelsFail = false;
-/** flipped by tests that want /v1/models to drop the connection */
 let modelsDrop = false;
-/** flipped by tests that want the server to have no /v1/audio/voices route */
 let audioVoicesFail = false;
 let stubBase = "";
 
@@ -40,9 +32,7 @@ beforeAll(async () => {
       if (refuse) return send(refuse.status, refuse.body);
       // /relay plays Cloud Pro's voice relay: same routes, another base URL
       const path = (req.url ?? "").split("?")[0].replace(/^\/relay\//, "/");
-      // A RESTRICTED key — the common real-world case. It can read voices
-      // and speak, but has no user_read. Verifying against /user would
-      // reject it, which is exactly the bug this stub exists to catch.
+      // A restricted key (the common real case) has no user_read: verifying against /user would reject it.
       if (path === "/v1/user") return send(401, { detail: { status: "missing_permissions" } });
       if (path === "/v1/voices") {
         return send(200, {
@@ -123,8 +113,7 @@ beforeAll(async () => {
 
 afterAll(() => new Promise<void>((r) => server.close(() => r())));
 
-/** The module reads its base URL at import time, so tests import after the
- * stub is listening. */
+/** The module reads its base URL at import time, so tests import after the stub is listening. */
 const voice = () => import("./index.ts");
 const fish = () => import("./fish.ts");
 
@@ -149,7 +138,6 @@ describe("configuration", () => {
   });
 
   it("distinguishes 'no key' from 'no voice picked'", async () => {
-    // the two need different instructions, so they are different errors
     const { speak, NoVoiceConfigured } = await voice();
     expect(() => speak({}, "hi")).toThrow(NoVoiceConfigured);
     expect(() => speak({}, "hi")).toThrow(
@@ -172,9 +160,6 @@ describe("ElevenLabs", () => {
   const ready = { key: "el-key", voice: "v-1" };
 
   it("accepts a restricted key that can read voices and speak", async () => {
-    // ElevenLabs keys carry per-endpoint scopes. A key limited to speech
-    // has no user_read, so verifying against /user rejects a key that
-    // works perfectly — the stub 401s /user to hold that line.
     refuse = null;
     seen.length = 0;
     const { verifyKey } = await voice();
@@ -188,8 +173,6 @@ describe("ElevenLabs", () => {
     const result = await verifyKey("elevenlabs", "nope");
     refuse = null;
     expect(result.ok).toBe(false);
-    // names scopes, because "get a fresh key" is the wrong advice when the
-    // key is real but restricted
     if (!result.ok) expect(result.message).toMatch(/permission|restricted/i);
   });
 
@@ -274,10 +257,7 @@ describe("Fish Audio", () => {
       { id: "fish-1", label: "Narrator", description: "Warm and measured" },
       { id: "fish-2", label: "Studio Voice", description: undefined },
     ]);
-    // The public page and the owned-page walk run concurrently (fish.ts:102,
-    // Promise.all), so how they interleave is not deterministic — asserting a
-    // fixed order made this fail on loaded runners. What IS ordered is the
-    // owned walk itself: page 2 is only fetched after page 1 reports hasMore.
+    // The public page and the owned-page walk run concurrently, so only the owned walk's own order is asserted.
     const urls = seen.slice(-3).map((call) => call.url);
     expect([...urls].sort()).toEqual([
       "/model?page_size=100&self=true&sort_by=created_at&page_number=1",
@@ -317,7 +297,6 @@ describe("Fish Audio", () => {
     expect(describeVoice(free)).toMatchObject({ provider: "fish", fishModel: "s2.1-pro-free" });
     await speak(free, "hello there");
     expect(seen.at(-1)!.headers.model).toBe("s2.1-pro-free");
-    // a Fish model saved earlier is not reported for another engine
     expect(describeVoice(cfg({ ...ready, provider: "elevenlabs", fishModel: "s2.1-pro-free" })))
       .not.toHaveProperty("fishModel");
   });
@@ -344,18 +323,15 @@ describe("Fish Audio", () => {
 });
 
 describe("built-in macOS voices", () => {
-  // `say -v ?` output: name, locale, then a # sample sentence. The header
-  // above the table is localized, and some voice names contain spaces.
+  // The header above `say -v ?`'s table is localized, and some voice names contain spaces.
   const LISTING = [
-    "Stimmen, die mit „say“ gesprochen werden können:", // localized header — must be ignored
+    "Stimmen, die mit „say“ gesprochen werden können:",
     "Albert              en_US    # Hello! My name is Albert.",
     "Bad News            en_US    # The things I could tell you…",
     "Amélie              fr_CA    # Bonjour! Je m’appelle Amélie.",
-    "", // trailing blank
+    "",
   ].join("\n");
 
-  /** A stand-in for `say`: records argv, writes a tiny WAV where -o points,
-   * and answers -v ? with the listing above. */
   const fakeSay = (record: string[][]) => async (_file: string, args: string[]) => {
     record.push(args);
     if (args[0] === "-v" && args[1] === "?") return { stdout: LISTING };
@@ -409,7 +385,6 @@ describe("built-in macOS voices", () => {
     expect(args[args.indexOf("-v") + 1]).toBe("Albert");
     expect(args.at(-1)).toBe("hello there");
 
-    // the utterance temp dir does not outlive the call
     const { access } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
     await expect(access(dirname(args[1]))).rejects.toThrow();
@@ -548,9 +523,6 @@ describe("Chatterbox (local server)", () => {
   });
 });
 
-// Cloud Pro includes ElevenLabs voice through the Admin's relay. The person's
-// own key wins and goes only to ElevenLabs; without one, the included token
-// goes only to the relay.
 describe("included voice", () => {
   const INCLUDED = "omb_voice_included-relay-token";
   const relayed = () => seen.filter((request) => request.url.startsWith("/relay/"));
@@ -615,7 +587,6 @@ describe("included voice", () => {
     expect(described).toEqual({ configured: true, ready: true, voice: "v-1", provider: "elevenlabs", baseUrl: "", model: "", included: true });
     expect(JSON.stringify(described)).not.toContain(INCLUDED);
     expect(describeVoice(cfg({ key: "sk-own", voice: "v-1" }))).not.toHaveProperty("included");
-    // another engine is the person's choice: it needs its own setup
     expect(describeVoice(cfg({ provider: "fish", voice: "v-1" }))).toMatchObject({ configured: false });
     expect(describeVoice(cfg({ provider: "fish", voice: "v-1" }))).not.toHaveProperty("included");
     vi.stubEnv("OMB_CLOUD_VOICE_TOKEN", undefined);

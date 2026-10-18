@@ -32,8 +32,7 @@ function renderProbe() {
   return renderToStaticMarkup(createElement(Probe));
 }
 
-/** Effects never run in a static render; calling them by hand registers the
- * timer the way a live list would, and each returns its cleanup. */
+/** Effects never run in a static render; calling them by hand registers the timer, and each returns its cleanup. */
 const runEffects = () => fixture.effects.map((effect) => effect());
 
 describe("relative clock tick", () => {
@@ -93,7 +92,6 @@ describe("relative clock tick", () => {
     documentStub.visibilityState = "hidden";
     vi.setSystemTime(start + 2 * 86_400_000);
     documentStub.listeners["visibilitychange"]![0]!();
-    // still hidden: the resync waits for visibility like the tick does
     expect(fixture.values[0]).toBe(start);
     documentStub.visibilityState = "visible";
     documentStub.listeners["visibilitychange"]![0]!();

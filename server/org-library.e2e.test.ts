@@ -33,9 +33,6 @@ function entry(packageId: string, rel: ReturnType<typeof release>) {
   };
 }
 
-// The recipe in docs/verification/org-library.md: a disposable fake-engine
-// server, a catalog relayed the way Electron relays it, the release files
-// where Electron stores them, then the renderer's routes.
 it("shows the organization's shelf, adds a team once, and keeps its stamps off the wire", async () => {
   const key = randomBytes(32).toString("hex");
   const fixture = await launchVerificationServer({ ...process.env, OMB_TEST_ORG_LIBRARY_KEY: key });
@@ -48,11 +45,9 @@ it("shows the organization's shelf, adds a team once, and keeps its stamps off t
     return { status: response.status, body: await response.json() as any };
   };
   try {
-    // No organization: nothing is visible and nothing can be added.
     expect(await call("GET", "/api/org-library")).toEqual({ status: 200, body: { organization: null, packages: [] } });
     expect((await call("POST", "/api/org-library/add", { packageId: TEAM_ID })).status).toBe(404);
     expect(await call("GET", "/api/org-library/skills")).toEqual({ status: 200, body: { organization: null, skills: [] } });
-    // The relay route needs the fixture's key.
     expect((await call("POST", "/api/testing/org-library", { library: null }, { "x-openmausbot-test-org-library": "wrong".repeat(13) })).status).toBe(404);
 
     const team = release("full-team.v2.json");
@@ -81,7 +76,6 @@ it("shows the organization's shelf, adds a team once, and keeps its stamps off t
     const again = await call("POST", "/api/org-library/add", { packageId: TEAM_ID });
     expect(again).toEqual({ status: 200, body: { alreadyAdded: true, installId: added.body.installId } });
 
-    // Stamps are server-private: never on bots, rooms or routines as clients see them.
     const everything = JSON.stringify([(await call("GET", "/api/bots")).body, (await call("GET", "/api/routines")).body, added.body]);
     expect(everything).not.toContain("packageBase");
     expect(everything).not.toContain("memberKeys");
@@ -96,7 +90,6 @@ it("shows the organization's shelf, adds a team once, and keeps its stamps off t
     const state = JSON.parse(readFileSync(join(fixture.info.dataDir, "org-library", "state.json"), "utf8"));
     expect(state.installs[added.body.installId]).toMatchObject({ packageId: TEAM_ID, status: "installed", section: "Sales desk" });
 
-    // Bot → Skills → From Customer Co: the team's unassigned skill, then the library's.
     const library = await call("POST", "/api/org-library/add", { packageId: LIBRARY_ID });
     expect(library.status).toBe(201);
     const offered = (await call("GET", `/api/org-library/skills?botId=${bots[0].id}`)).body;
@@ -104,7 +97,6 @@ it("shows the organization's shelf, adds a team once, and keeps its stamps off t
     const put = await call("POST", "/api/org-library/skills", { botId: bots[0].id, installId: library.body.installId, name: "follow-up" });
     expect(put).toMatchObject({ status: 201, body: { skill: { name: "follow-up", enabled: true } } });
 
-    // Signing out hides the shelf; what was added stays.
     await call("POST", "/api/testing/org-library", { library: null }, { "x-openmausbot-test-org-library": key });
     expect((await call("GET", "/api/org-library")).body).toEqual({ organization: null, packages: [] });
     expect((await call("GET", "/api/bots")).body.bots.filter((bot: any) => bot.section === "Sales desk")).toHaveLength(3);

@@ -1,7 +1,3 @@
-// The memory routes through a real, isolated harness server: containment
-// at the HTTP boundary, the 409 that keeps a settings save from erasing
-// what the bot just wrote, the journal, revert, and the turn-boundary diff
-// that catches a bot writing memory with nothing but a file tool.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -33,9 +29,7 @@ describe("memory routes through an isolated HTTP fixture", () => {
 
   beforeAll(async () => {
     fixture = await launchVerificationServer();
-    // A CLI stand-in that behaves like a bot writing memory with a file
-    // tool: on a real turn (stream-json) it drops a topic file into the
-    // workspace named by memory-target.txt, then hands over to the fake.
+    // A CLI stand-in that, on a real turn, drops a topic file into the workspace named by memory-target.txt, as a file tool would.
     const target = join(fixture.info.dataDir, "memory-target.txt");
     const wrapper = join(fixture.info.dataDir, "memory-fixture.mjs");
     writeFileSync(wrapper, [
@@ -98,7 +92,6 @@ describe("memory routes through an isolated HTTP fixture", () => {
     expect(created.body.entry.before).toBeUndefined();
     expect(created.body.overview.topics.map((t: { path: string }) => t.path)).toEqual(["memory/clients.md"]);
 
-    // the bot writes in between, with a file tool
     writeFileSync(join(workspace(), "memory", "clients.md"), "# Clients\n- Acme (bot)\n");
     const stale = await api("PUT", `/api/bots/${botId}/memory/file`, {
       path: "memory/clients.md",

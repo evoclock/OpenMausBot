@@ -1,7 +1,3 @@
-// The approval card's LIFECYCLE, as opposed to its verdict. A card that is
-// raised but never settled keeps matching the client's "unanswered" filter,
-// and the composer stays disabled behind it — so a gate that works
-// perfectly can still make a thread unusable. These tests pin the settle.
 import { rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -56,8 +52,6 @@ describe("peer approval card lifecycle", () => {
     expect(resolvePeerComms(bus, card!.card!.requestId!, "allow")).toBe(true);
     expect(await verdict).toBe("allow");
 
-    // the card the client renders must now be answered — this is the bit
-    // whose absence bricked the thread
     const settled = store.messagesFor(from.threadId).find((m) => m.id === card!.id);
     expect(settled?.card?.answered).toBe("allow");
     expect(settled?.card?.dismissed).toBe(false);
@@ -84,8 +78,6 @@ describe("peer approval card lifecycle", () => {
     expect(pendingCard(store, from)).toBeUndefined();
   });
 
-  // The card is the one bot-to-bot event that blocks on a person. Everything
-  // else a hop does is deliberately silent; this must not be.
   it("tells the person the bot is waiting on them: a waiting state and a notification", async () => {
     const frames: Array<Notification | null> = [];
     bus = { store, broadcast: () => {}, notify: (frame) => frames.push(frame) };
@@ -105,7 +97,6 @@ describe("peer approval card lifecycle", () => {
     expect(frames[0]?.body).toContain("@Asker wants to contact @Helper");
     expect(frames[0]?.body).toContain("Helper, can you take the deploy?");
 
-    // answered: the turn is working again, and nothing buzzes twice
     resolvePeerComms(bus, card.card!.requestId!, "allow");
     expect(await verdict).toBe("allow");
     expect(store.bot(from.id)?.activity).toBe("working");
@@ -216,7 +207,7 @@ describe("peer approval card lifecycle", () => {
     expect(resolvePeerComms(bus, card.card!.requestId!, "allow")).toBe(false);
     const settled = store.messagesFor(from.threadId).find((m) => m.id === card.id);
     expect(settled?.card?.answered).toBe("deny");
-    expect(settled?.card?.dismissed).toBe(true); // not the user's answer
+    expect(settled?.card?.dismissed).toBe(true);
   });
 
   it("cancels and settles approvals owned by an interrupted thread", async () => {
@@ -234,7 +225,6 @@ describe("peer approval card lifecycle", () => {
   });
 
   it("dismisses cards left by a previous run, which nothing can answer", () => {
-    // a card on disk whose in-memory approval died with the process
     const orphan = store.appendMessage(from.threadId, {
       role: "bot",
       kind: "options",
@@ -250,7 +240,6 @@ describe("peer approval card lifecycle", () => {
     expect(dismissStalePeerCards(bus)).toBe(1);
     const settled = store.messagesFor(from.threadId).find((m) => m.id === orphan.id);
     expect(settled?.card?.dismissed).toBe(true);
-    // and it is idempotent — a second boot must not re-dismiss or double count
     expect(dismissStalePeerCards(bus)).toBe(0);
   });
 
@@ -275,9 +264,6 @@ describe("peer approval card lifecycle", () => {
   });
 
   it("dismisses a stale card left in a room's thread, not just a bot's", () => {
-    // post_to_room and ask_bot both run from a room turn, and the card goes
-    // into the thread the caller is speaking from — the room's. Quitting the
-    // app with one open used to leave that room's composer blocked forever.
     const room = store.createGroup("Standup", [from.id, target.id]);
     const orphan = store.appendMessage(room.threadId, {
       role: "bot",

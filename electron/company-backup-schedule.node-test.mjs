@@ -139,7 +139,6 @@ test("late startup read cannot resurrect a disabled record", async () => {
 });
 
 test("locked or malformed storage is fail-closed and secret-free", async () => {
-  // A malformed schedule can never be read: it is removed and the schedule is off, saying so.
   for (const saved of [{ version: 1 }, { version: 1, scope: "scope", password: "synthetic old password", nextBackupAt: -1 }]) {
     const f = fixture(saved); await f.scheduler.start();
     assert.deepEqual(f.scheduler.state(), { enabled: false, status: "off", message: REMOVED });
@@ -169,7 +168,6 @@ test("a locked keychain never removes the saved schedule: it stays on, is read a
   const f = fixture(original.saved), stored = f.saved; let locked = true, reads = 0;
   f.read = async () => { reads++; if (locked) throw new Error("Your company connection could not be read. Unlock your system keychain and try again."); return stored; };
   await f.scheduler.start();
-  // Still on: the switch offers Off, and no manual step is asked for.
   assert.deepEqual(f.scheduler.state(), { enabled: true, status: "paused", message: WAITING });
   assert.equal(f.saved, stored); assert.deepEqual(f.writes, []);
   for (const delay of [15_000, 30_000, 60_000, 60_000]) {
@@ -191,7 +189,6 @@ test("turning daily backups off while the saved schedule is locked removes it, a
   f.read = async () => { throw new Error("Your company connection could not be read. Unlock your system keychain and try again."); };
   await f.scheduler.start();
   assert.equal(f.scheduler.state().enabled, true);
-  // The switch shows On, so its click is configure({ enabled: false }); clearing needs no keychain.
   assert.deepEqual(await f.scheduler.configure({ enabled: false }), { enabled: false, status: "off" });
   assert.deepEqual(f.writes, [null]); assert.equal(f.saved, null);
   assert.equal(f.timers.size, 0, "no read is left to bring it back"); assert.equal(f.calls.length, 0);
@@ -243,22 +240,20 @@ test("clock rollback never causes an early snapshot or an unbounded timer", asyn
   assert([...f.timers.values()].every(timer => timer.delay <= DAY && timer.delay >= 1000));
 });
 
-// Mirrors electron/main.mjs companyBackupScope: any deviceId, same person, organisation and folder.
+// Mirrors main.mjs companyBackupScope: any deviceId, same person, organisation and folder.
 const scopeFor = (org = "org", generation = 1) => ({ key: JSON.stringify(["portal", org, "email", "workspace"]), generation,
   adopts: saved => { try { const v = JSON.parse(saved); return Array.isArray(v) && v.length === 5 && v[0] === "portal" && v[1] === org && v[2] === "email" && v[4] === "workspace"; } catch { return false; } } });
 const legacyKey = device => JSON.stringify(["portal", "org", "email", device, "workspace"]);
 
 test("a schedule saved under an old device-scoped key survives the upgrade, even for an enrollment that has since expired", async () => {
-  // Saved by v0.1.85 for device D1; D1 then expired and this computer re-enrolled as D2.
+  // Saved for device D1; D1 then expired and this computer re-enrolled as D2.
   const f = fixture({ version: 2, scope: legacyKey("device-1"), nextBackupAt: 1_800_000_000_000 + HOUR });
   f.scope = scopeFor();
   const state = await f.scheduler.start();
   assert.equal(state.enabled, true); assert.equal(state.status, "waiting");
   assert.equal(f.saved.scope, scopeFor().key, "the saved key is rewritten, not forgotten");
-  // Losing the connection only pauses it.
   f.scope = null; f.scheduler.reconcile();
   assert.equal(f.scheduler.state().enabled, true);
-  // A different organisation or account still clears it.
   f.scope = scopeFor("other-org", 3);
   f.scheduler.reconcile(); await turn(); await turn();
   assert.equal(f.saved, null); assert.equal(f.scheduler.state().enabled, false);

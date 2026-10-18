@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-/** Provider-neutral policy for deciding when a computer observation needs vision. */
 export interface ObservationMetrics {
   screenshotsCaptured: number;
   screenshotsSentToModel: number;
@@ -32,11 +31,7 @@ export const emptyObservationMetrics = (): ObservationMetrics => ({
   verificationFailures: 0,
 });
 
-/**
- * Keeps observations cheap without claiming the screen is immutable. Every
- * requested observation still captures fresh pixels (pages can change without
- * an input action), while byte-identical frames are not sent to the model twice.
- */
+/** Every observation captures fresh pixels (pages change without input); byte-identical frames are not sent twice. */
 export class ObservationCoordinator {
   metrics = emptyObservationMetrics();
   private lastObservation: string | null = null;
@@ -58,8 +53,7 @@ export class ObservationCoordinator {
       : null;
     const view = crop ? `${crop.x},${crop.y},${crop.width},${crop.height}` : "full";
     const signature = hash ? `${hash}:${view}` : null;
-    // If the boat cannot provide a full-frame hash, fail open and send the
-    // valid image. Suppressing a possibly-new crop would be worse.
+    // No full-frame hash: fail open and send the image; suppressing a possibly new crop would be worse.
     const changed = signature === null || signature !== this.lastObservation;
     if (signature) this.lastObservation = signature;
     if (changed) {

@@ -2,7 +2,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { settleCloudOwnership, type CloudOwnershipOptions } from "./cloud-owner.ts";
+import { recordCloudSharing, settleCloudOwnership, type CloudOwnershipOptions } from "./cloud-owner.ts";
 import { ThreadStarters } from "./thread-starters.ts";
 
 const key = (name: string) => `p_${name.padEnd(22, "x")}`;
@@ -12,9 +12,7 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const folder = () => { const dir = mkdtempSync(join(tmpdir(), "omb-cloud-owner-")); dirs.push(dir); return dir; };
 
-/** A v0.1.91 Cloud home's data as it stands at a boot: sessions, thread
- * openers (a file), routines with their writers and fingerprints, and who
- * wrote which lines and answered which cards. */
+/** A v0.1.91 Cloud home's data at a boot: sessions, thread openers, routines with writers and fingerprints, and who wrote lines and answered cards. */
 interface World {
   dir: string;
   sessions: { id: string; scopes: string[] }[];
@@ -25,7 +23,7 @@ interface World {
   answerers: string[];
   /** A routine a bot proposed, who allowed its card, and the instructions it showed. */
   approvals: Array<[string, string, string]>;
-  /** What each routine runs as it stands (index.ts approvalShape). */
+  /** What each routine runs as it stands. */
   shapes: Record<string, string>;
   /** The conversation each routine reports into. */
   results: Record<string, string>;
@@ -43,7 +41,7 @@ function world(): World {
     dir,
     sessions: [{ id: "desktop", scopes: ["admin", "client"] }, { id: "guest", scopes: ["client"] }],
     // v0.1.91 had no writer map: none recorded. One of the owner's routines
-    // carries #2023's fingerprint.
+    // carries the owner's fingerprint.
     writers: {},
     fingerprinted: ["owners"],
     routines: ["owners", "template", "guests"],
@@ -96,16 +94,11 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
     expect(w.sessions.map((session) => session.id)).toEqual(["desktop"]);
     expect(log[0]).toBe("cloud home: revoked 1 session that was not the owner's own device");
     expect(log.join("\n")).not.toContain("guest");
-    // Adopted (who opened, level, folder): every earlier key but the revoked guest's.
     expect([...settled.adopted].sort()).toEqual([key("desktop"), key("former"), key("phone")].sort());
-    // Proven (lending, memory): a device still paired, and one that answered a card.
     expect([...settled.proven].sort()).toEqual([key("desktop"), key("phone")].sort());
     expect(settled.proven.has(key("former"))).toBe(false);
-    // Openers: proven → the owner's key; the revoked guest's → nobody's; the rest kept.
     expect(starters(w)).toEqual({ desk: OWNER, room: OWNER, phone: OWNER, guest: NOBODY, former: key("former") });
-    // Routines: the fingerprinted one is the owner's, every other nobody's.
     expect(w.writers).toEqual({ owners: OWNER, template: NOBODY, guests: NOBODY });
-    // Later starts only revoke: settled stays settled.
     w.sessions.push({ id: "late", scopes: ["client"] });
     w.routines.push("new");
     const again = settleCloudOwnership(options(w));
@@ -139,8 +132,7 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
       expect(settled.proven.has(key("phone")), step).toBe(true);
       expect(state.writers, step).toEqual({ owners: OWNER, template: NOBODY, guests: NOBODY });
     }
-    // Two guests, the second revoke failing to save (finding 7): the first
-    // guest's key is recorded, so the next start never adopts it.
+    // Two guests, the second revoke failing to save: the first guest's key is recorded, so the next start never adopts it.
     const w = world();
     w.sessions.push({ id: "second", scopes: ["client"] });
     let revokes = 0;
@@ -157,7 +149,7 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
     mkdirSync(join(w.dir, "cloud-owner.json"));
     const log: string[] = [];
     const settled = settleCloudOwnership(options(w, undefined, {}, log));
-    expect(w.sessions).toHaveLength(2); // inert anyway: sessions.requireAdmin
+    expect(w.sessions).toHaveLength(2);
     expect(settled.adopted.size + settled.proven.size).toBe(0);
     expect(starters(w).former).toBe(key("former"));
     expect(log.join("\n")).toContain("unreadable");
@@ -175,7 +167,7 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
     let crashed = false;
     try {
       settleCloudOwnership(options(w, (step) => { if (step === "routine") { crashed = true; throw new Error("killed"); } }, { restoredNow: "restore-1" }));
-    } catch { /* the crash */ }
+    } catch {}
     expect(crashed).toBe(true);
     const settled = settleCloudOwnership(options(w)); // no restoredNow: the record remembers
     expect(settled.adopted.has(key("mac"))).toBe(true);
@@ -194,7 +186,6 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
         expect(settled.adopted.size).toBe(0);
         expect(starters(w).desk).toBe(key("desktop"));
       } else {
-        // Another machine's record is ignored: this one settles its own.
         expect(settled.adopted.has(key("desktop"))).toBe(true);
         expect(JSON.parse(readFileSync(join(w.dir, "cloud-owner.json"), "utf8")).machineId).toBe(MACHINE);
       }
@@ -245,7 +236,6 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
   it("a restore whose start ended before it was recorded is settled at the next; an old one at the very first start is not", () => {
     const w = world();
     settleCloudOwnership(options(w, undefined, { lastRestore: "long-ago" }));
-    // The old restore was the first settlement's data: its routines needed proof.
     expect(w.writers).toEqual({ owners: OWNER, template: NOBODY, guests: NOBODY });
     expect(JSON.parse(readFileSync(join(w.dir, "cloud-owner.json"), "utf8")).settledRestore).toBe("long-ago");
     // A new restore is applied, and that start ends before the settlement
@@ -257,9 +247,36 @@ describe("a Cloud home is personal: settling who its owner was (server/cloud-own
     settleCloudOwnership(next);
     expect(w.writers).toEqual({ moved: OWNER });
     expect(JSON.parse(readFileSync(join(w.dir, "cloud-owner.json"), "utf8")).settledRestore).toBe("restore-2");
-    // …and only once.
     w.writers = { moved: NOBODY };
     settleCloudOwnership(options(w, undefined, { lastRestore: "restore-2" }));
     expect(w.writers).toEqual({ moved: NOBODY });
+  });
+
+  it("remembers that only the owner was found, and that someone else was, which nothing ever clears", () => {
+    const w = world();
+    w.sessions = [{ id: "desktop", scopes: ["admin", "client"] }];
+    const outsideKey = key("outside");
+    writeFileSync(join(w.dir, "thread-starters.json"), JSON.stringify({ desk: key("desktop"), hook: outsideKey }));
+    w.senders = [key("desktop")];
+    w.answerers = [];
+    const first = settleCloudOwnership(options(w, undefined, { outsideKey }));
+    expect(first).toMatchObject({ soloBefore: false, unreadable: false, restoring: false });
+    expect(first.revoked.size).toBe(0);
+    expect(first.adopted.has(outsideKey)).toBe(false);
+    const file = { file: join(w.dir, "cloud-owner.json"), machineId: MACHINE, log: () => {} };
+    expect(recordCloudSharing(file, { peopleChecked: true })).toBe(true);
+    expect(settleCloudOwnership(options(w, undefined, { outsideKey }))).toMatchObject({ soloBefore: true });
+    expect(recordCloudSharing(file, { sharedSince: 1_000 })).toBe(true);
+    expect(recordCloudSharing(file, { sharedSince: 2_000 })).toBe(true);
+    expect(recordCloudSharing(file, { peopleChecked: true })).toBe(true);
+    const later = settleCloudOwnership(options(w, undefined, { outsideKey }));
+    expect(later).toMatchObject({ soloBefore: false, sharedSince: 1_000 });
+    expect(JSON.parse(readFileSync(file.file, "utf8"))).toMatchObject({ sharedSince: 1_000 });
+  });
+
+  it("an unreadable record says so, so nothing can show the Cloud was only ever the owner's", () => {
+    const w = world();
+    writeFileSync(join(w.dir, "cloud-owner.json"), "{ not json");
+    expect(settleCloudOwnership(options(w))).toMatchObject({ unreadable: true, soloBefore: false });
   });
 });

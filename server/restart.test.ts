@@ -1,8 +1,3 @@
-// Exit code 75, "start me again" (server/restart.ts): a server whose copied
-// workspace committed exits with it, and every launcher in this repo starts
-// it again: the `openmausbot serve` loop (systemd, launchd, fleet and a
-// terminal all run that) and the container launcher. The Cloud launcher and
-// the desktop's supervisor are covered where they live.
 import { EventEmitter } from "node:events";
 import type { ChildProcess } from "node:child_process";
 import { expect, it, vi } from "vitest";
@@ -18,11 +13,9 @@ it("one policy counts for every launcher: again only on 75, not while stopping, 
   for (const code of [0, 1, 130, null]) expect(restartPolicy(() => clock).again(code)).toBe(false);
   expect(restartPolicy(() => clock).again(RESTART_EXIT_CODE, true)).toBe(false);
   for (let run = 0; run < 5; run++) expect(policy.again(RESTART_EXIT_CODE), `restart ${run + 1}`).toBe(true);
-  // A loop: the sixth in a row is refused, and stays refused until a run stays up.
   expect(policy.again(RESTART_EXIT_CODE)).toBe(false);
   clock += STABLE_RUN_MS - 1;
   expect(policy.again(RESTART_EXIT_CODE)).toBe(false);
-  // Each "again" times the next run from that answer: one that stays up a minute is not a loop.
   clock += 1;
   expect(policy.again(RESTART_EXIT_CODE)).toBe(true);
   clock += STABLE_RUN_MS - 1;
@@ -53,7 +46,6 @@ it("`serve` stops after five restarts in a row, and passes any other exit straig
     runs = 0;
     expect(await serveUntilStopped(options, async () => { runs++; return 1; })).toBe(1);
     expect(runs).toBe(1);
-    // Each run stayed up a while: no loop, so it keeps coming back.
     let clock = 0;
     runs = 0;
     expect(await serveUntilStopped(options, async () => { clock += STABLE_RUN_MS; return ++runs < 9 ? RESTART_EXIT_CODE : 0; }, () => clock)).toBe(0);
@@ -61,7 +53,6 @@ it("`serve` stops after five restarts in a row, and passes any other exit straig
   } finally { log.mockRestore(); }
 });
 
-/** A child process that exits when told to. */
 function fakeChild(pid: number) {
   const child = Object.assign(new EventEmitter(), { pid, killed: [] as string[], exitCode: null as number | null,
     kill(signal: string) { child.killed.push(signal); return true; } });
@@ -99,12 +90,10 @@ it("the container launcher stops on any other exit, and on a 75 that arrives whi
   child.emit("exit", RESTART_EXIT_CODE, null);
   expect(await stopping).toBe(RESTART_EXIT_CODE);
   expect(started).toBe(1);
-  // A server killed by a signal ends the launcher too.
   child = fakeChild(3);
   const killed = superviseServer(() => child as unknown as ChildProcess, { signals: signals as unknown as NodeJS.Process });
   child.emit("exit", null, "SIGKILL");
   expect(await killed).toBe(1);
-  // Five restarts in a row, then it gives up with the server's code.
   let runs = 0;
   const looping = superviseServer(() => { runs++; const next = fakeChild(runs); queueMicrotask(() => next.emit("exit", RESTART_EXIT_CODE, null)); return next as unknown as ChildProcess; },
     { signals: signals as unknown as NodeJS.Process, now: () => 0 });

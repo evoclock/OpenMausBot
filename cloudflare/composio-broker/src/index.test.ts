@@ -76,6 +76,7 @@ describe("connected-apps broker boundaries", () => {
       headers: { "x-session": "one" },
       userId: undefined,
       multiAccountConfigured: false,
+      authConfigs: {},
     });
     expect(() => parseSession({ session_id: "session-1", mcp: { url: "https://attacker.example/mcp" } })).toThrow(/untrusted/i);
     expect(() => parseSession({ session_id: "session-1", mcp: { url: "http://mcp.composio.dev/session" } })).toThrow(/untrusted/i);
@@ -280,47 +281,101 @@ describe("connected-apps broker boundaries", () => {
     expect(JSON.parse(String(linkCall?.init?.body))).toEqual({ toolkit: "gmail", alias: "second" });
   });
 
-  it("retries only unfinished or expired accounts without replacing grants", async () => {
+  function accountFixture(installationUser: string) {
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
     const { env, ctx } = testEnv(fetchCalls);
-    const installation = { id: "retry-install", composio_user_id: "retry-user", session_id: "trs_retry", disabled_at: null };
-    let accounts: Array<{ id: string; status?: string; alias?: string; toolkit: { slug: string } }> = [];
+    const installation = { id: "retry-install", composio_user_id: installationUser, session_id: "trs_retry", disabled_at: null };
+    const fixture = {
+      accounts: [] as Array<{ id: string; status?: string; alias?: string; toolkit: { slug: string } }>,
+      deleteStatus: 200,
+      authorize: (alias?: string) => authorize("gmail", alias, installation, env as never, ctx as never),
+      links: () => fetchCalls.filter((call) => call.url.endsWith("/link"))
+        .map((call) => JSON.parse(String(call.init?.body)) as { toolkit: string; alias?: string }),
+      deletes: () => fetchCalls.filter((call) => call.init?.method === "DELETE").map((call) => call.url),
+      fetchCalls,
+    };
     vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       fetchCalls.push({ url, init });
+      if (init?.method === "DELETE") return Response.json({ success: fixture.deleteStatus === 200 }, { status: fixture.deleteStatus });
       if (url.includes("/connected_accounts")) {
-        expect(new URL(url).searchParams.get("user_ids")).toBe("retry-user");
-        return Response.json({ items: accounts });
+        expect(new URL(url).searchParams.get("user_ids")).toBe(installationUser);
+        return Response.json({ items: fixture.accounts });
       }
       if (url.endsWith("/link")) return Response.json({ redirect_url: "https://connect.composio.dev/link/gmail" });
-      return Response.json(session("trs_retry", "retry-user"));
+      return Response.json(session("trs_retry", installationUser));
     });
-    const linkBodies = () => fetchCalls.filter((call) => call.url.endsWith("/link"))
-      .map((call) => JSON.parse(String(call.init?.body)) as { toolkit: string; alias?: string });
+    return fixture;
+  }
 
-    for (const status of ["INITIALIZING", "initiated", "EXPIRED"]) {
-      accounts = [{ id: "old", alias: "original", status, toolkit: { slug: "Gmail" } }];
+  it("retries without a label while no account works, and asks for one beside a working account", async () => {
+    const fixture = accountFixture("retry-user");
+    for (const status of ["INITIALIZING", "initiated", "EXPIRED", "FAILED", "INACTIVE", "PENDING", "unknown"]) {
+      fixture.accounts = [{ id: "old", alias: "original", status, toolkit: { slug: "Gmail" } }];
       for (let attempt = 0; attempt < 2; attempt++) {
-        const response = await authorize("gmail", undefined, installation, env as never, ctx as never);
-        expect(response.status).toBe(200);
+        const response = await fixture.authorize();
+        expect(response.status, status).toBe(200);
         await expect(response.json()).resolves.toEqual({ url: "https://connect.composio.dev/link/gmail" });
-        expect(linkBodies().at(-1)).toEqual({ toolkit: "gmail", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
+        expect(fixture.links().at(-1)).toEqual({ toolkit: "gmail", alias: expect.stringMatching(/^omb-retry-[0-9a-f-]{36}$/) });
       }
-      expect(accounts[0].alias).toBe("original");
     }
-    expect(new Set(linkBodies().map((body) => body.alias)).size).toBe(6);
-    const successfulLinks = linkBodies().length;
-    for (const status of ["ACTIVE", "PENDING", "FAILED", "INACTIVE", "REVOKED", "unknown", undefined]) {
-      accounts = [{ id: "protected", status, toolkit: { slug: "gmail" } }];
-      const response = await authorize("gmail", undefined, installation, env as never, ctx as never);
+    expect(new Set(fixture.links().map((body) => body.alias)).size).toBe(14);
+    expect(fixture.deletes()).toEqual([]);
+    const successfulLinks = fixture.links().length;
+    for (const status of ["ACTIVE", undefined]) {
+      fixture.accounts = [{ id: "expired", status: "EXPIRED", toolkit: { slug: "gmail" } }, { id: "protected", status, toolkit: { slug: "gmail" } }];
+      const response = await fixture.authorize();
       expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "Add an account alias so the existing connection is not replaced" });
     }
-    accounts = [{ id: "old", alias: "Original", status: "EXPIRED", toolkit: { slug: "gmail" } }];
-    expect((await authorize("gmail", "original", installation, env as never, ctx as never)).status).toBe(409);
-    accounts = Array.from({ length: 5 }, (_, id) => ({ id: String(id), status: "INITIALIZING", toolkit: { slug: "gmail" } }));
-    expect((await authorize("gmail", undefined, installation, env as never, ctx as never)).status).toBe(409);
-    expect(linkBodies()).toHaveLength(successfulLinks);
-    expect(fetchCalls.filter((call) => /^(DELETE|PATCH)$/.test(call.init?.method ?? ""))).toHaveLength(0);
+    fixture.accounts = Array.from({ length: 5 }, (_, id) => ({ id: String(id), status: "INITIALIZING", toolkit: { slug: "gmail" } }));
+    expect((await fixture.authorize()).status).toBe(409);
+    expect(fixture.links()).toHaveLength(successfulLinks);
+    expect(fixture.deletes()).toEqual([]);
+  });
+
+  it("links a toolkit whose only account failed to sign in", async () => {
+    const fixture = accountFixture("failed-user");
+    fixture.accounts = [{ id: "ca_failed", status: "FAILED", toolkit: { slug: "gmail" } }];
+    const response = await fixture.authorize();
+    expect(response.status).toBe(200);
+    expect(fixture.links()).toHaveLength(1);
+    expect(fixture.deletes()).toEqual([]);
+  });
+
+  it("frees a label held by an account that is not active, and keeps one a working account holds", async () => {
+    const fixture = accountFixture("label-user");
+    fixture.accounts = [
+      { id: "ca_old_work", alias: "work", status: "INITIATED", toolkit: { slug: "gmail" } },
+      { id: "ca_personal", alias: "personal", status: "ACTIVE", toolkit: { slug: "gmail" } },
+    ];
+    const replaced = await fixture.authorize("Work");
+    expect(replaced.status).toBe(200);
+    expect(fixture.deletes()).toEqual(["https://backend.composio.dev/api/v3.1/connected_accounts/ca_old_work?revoke_on_delete=true"]);
+    expect(fixture.links()).toEqual([{ toolkit: "gmail", alias: "Work" }]);
+    const order = fixture.fetchCalls.map((call) => call.init?.method === "DELETE" ? "delete" : call.url.endsWith("/link") ? "link" : "other");
+    expect(order.indexOf("delete")).toBeLessThan(order.indexOf("link"));
+
+    fixture.accounts = [{ id: "ca_work", alias: "work", status: "ACTIVE", toolkit: { slug: "gmail" } }];
+    const taken = await fixture.authorize("work");
+    expect(taken.status).toBe(409);
+    await expect(taken.json()).resolves.toEqual({ error: 'Account alias "work" is already in use for gmail' });
+    fixture.accounts = [{ id: "ca_unknown", alias: "work", toolkit: { slug: "gmail" } }];
+    expect((await fixture.authorize("work")).status).toBe(409);
+    expect(fixture.deletes()).toHaveLength(1);
+    expect(fixture.links()).toHaveLength(1);
+
+    const working = Array.from({ length: 4 }, (_, id) => ({ id: `ca_${id}`, alias: `other-${id}`, status: "ACTIVE", toolkit: { slug: "gmail" } }));
+    fixture.accounts = [{ id: "ca_old_work", alias: "work", status: "INITIATED", toolkit: { slug: "gmail" } }, ...working];
+    expect((await fixture.authorize("work")).status).toBe(200);
+    fixture.accounts.push({ id: "ca_4", alias: "other-4", status: "ACTIVE", toolkit: { slug: "gmail" } });
+    expect((await fixture.authorize("work")).status).toBe(409);
+    expect(fixture.links()).toHaveLength(2);
+
+    fixture.accounts = [{ id: "ca_old_work", alias: "work", status: "EXPIRED", toolkit: { slug: "gmail" } }];
+    fixture.deleteStatus = 500;
+    expect((await fixture.authorize("work")).status).toBe(502);
+    expect(fixture.links()).toHaveLength(2);
   });
 
   it("pages the catalog by forwarding a well-formed cursor only", async () => {
@@ -372,9 +427,6 @@ describe("connected-apps broker boundaries", () => {
     expect(() => normalizeAccountAlias("bad\nalias")).toThrow(/printable/i);
   });
 
-  // Composio prefixes slugs that would otherwise lead with a digit, so
-  // 1Password arrives as `_1password`. The catalog lists those toolkits, so
-  // routing them to the 404 branch stranded every one of them at Connect.
   it("routes underscore-prefixed toolkit slugs instead of 404ing them", async () => {
     const token = "a".repeat(64);
     const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
@@ -476,6 +528,8 @@ describe("MCP relay Session reuse", () => {
         return Response.json({ jsonrpc: "2.0", id: 1, result: {} }, { headers: { "mcp-session-id": "mcp-1" } });
       }
       const path = url.pathname.replace("/api/v3.1", "");
+      // Read once per isolate and cached, so it is not part of a request's call sequence.
+      if (path === "/auth_configs") return Response.json({ items: [] });
       calls.push(`${method} ${path}`);
       const lookup = path.match(/^\/tool_router\/session\/([^/]+)$/)?.[1];
       if (method === "GET" && lookup) {
@@ -556,10 +610,8 @@ describe("MCP relay Session reuse", () => {
     expect((await relay.mcp("mcp-1")).calls).toEqual(["MCP trs_dropped_new"]);
   });
 
-  // The desktop server drops mcp-session-id when it no longer knows which
-  // backend a transport session belongs to (after a restart, for example). An
-  // uncached request would look the Session up and deliver the message, so
-  // reuse must not turn that into a failure.
+  // The desktop server drops mcp-session-id when it no longer knows a transport
+  // session's backend (after a restart, say).
   it("still delivers a message without an mcp-session-id when Composio dropped the Session", async () => {
     const relay = relayHarness("trs_server_restart");
     await relay.mcp();
@@ -634,5 +686,157 @@ describe("MCP relay Session reuse", () => {
       expect(result.response.status, path).toBe(200);
       expect(result.calls[0], path).toBe(lookup);
     }
+  });
+});
+
+// The auth-config cache and upgrade sets are module state, so every test
+// here loads a fresh copy of the Worker.
+describe("project auth configs", () => {
+  afterEach(() => vi.useRealTimers());
+
+  const highlevel = { id: "ac_new", status: "ENABLED", is_composio_managed: false, last_updated_at: "2026-10-01T00:00:00Z", toolkit: { slug: "HighLevel_Location" } };
+
+  function projectHarness(authConfigs: () => Response | Promise<Response>) {
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const { env, ctx, dbRuns } = testEnv(fetchCalls);
+    const sessions = new Map<string, unknown>();
+    let created = 0;
+    const harness = {
+      env, ctx, dbRuns, fetchCalls, sessions,
+      echoAuthConfigs: true,
+      creations: () => fetchCalls.filter((call) => call.init?.method === "POST").map((call) => JSON.parse(String(call.init?.body)) as Record<string, unknown>),
+      authConfigReads: () => fetchCalls.filter((call) => call.url.includes("/auth_configs")),
+      install: (sessionId: string | null) => ({ id: "install-1", composio_user_id: "omb_stable", session_id: sessionId, disabled_at: null }),
+    };
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      fetchCalls.push({ url, init });
+      if (url.includes("/auth_configs")) return authConfigs();
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { user_id: string; auth_configs?: Record<string, string> };
+        const wire = session(`trs_new_${++created}`, body.user_id);
+        if (harness.echoAuthConfigs && body.auth_configs) Object.assign(wire.config, { auth_configs: body.auth_configs });
+        sessions.set(wire.session_id, wire);
+        return Response.json(wire, { status: 201 });
+      }
+      const id = url.match(/\/tool_router\/session\/([^/?]+)$/)?.[1];
+      const stored = id && sessions.get(id);
+      return stored ? Response.json(stored) : Response.json({ error: "not found" }, { status: 404 });
+    });
+    return harness;
+  }
+
+  async function freshBroker() {
+    vi.resetModules();
+    return import("./index");
+  }
+
+  it("creates Sessions with the project's own auth configs, newest enabled one per toolkit", async () => {
+    const { ensureSession, listCustomAuthConfigs } = await freshBroker();
+    const harness = projectHarness(() => {
+      const second = new URL(harness.fetchCalls.at(-1)?.url ?? "").searchParams.get("cursor") === "page-2";
+      return Response.json(second
+        ? { items: [{ id: "ac_x", is_composio_managed: false, toolkit: { slug: "X" } }] }
+        : {
+          items: [
+            { id: "ac_old", is_composio_managed: false, last_updated_at: "2026-09-01T00:00:00Z", toolkit: { slug: "highlevel_location" } },
+            highlevel,
+            { id: "ac_gmail", is_composio_managed: true, toolkit: { slug: "gmail" } },
+            { id: "ac_hubspot", status: "DISABLED", is_composio_managed: false, toolkit: { slug: "hubspot" } },
+            { id: "ac_slack", is_composio_managed: false, is_enabled_for_tool_router: false, toolkit: { slug: "slack" } },
+            { is_composio_managed: false, toolkit: { slug: "noid" } },
+          ],
+          next_cursor: "page-2",
+        });
+    });
+
+    await expect(ensureSession(harness.install(null), harness.env as never, harness.ctx as never)).resolves.toMatchObject({
+      sessionId: "trs_new_1",
+      authConfigs: { highlevel_location: "ac_new", twitter: "ac_x" },
+    });
+    expect(harness.authConfigReads().map((call) => new URL(call.url).searchParams.get("is_composio_managed"))).toEqual(["false", "false"]);
+    expect(harness.creations()).toEqual([expect.objectContaining({
+      user_id: "omb_stable",
+      multi_account: multiAccount,
+      auth_configs: { highlevel_location: "ac_new", twitter: "ac_x" },
+    })]);
+    expect(harness.dbRuns.some((run) => run.sql.includes("SET session_id") && run.values[0] === "trs_new_1")).toBe(true);
+    await expect(listCustomAuthConfigs(harness.env as never)).resolves.toEqual({ highlevel_location: "ac_new", twitter: "ac_x" });
+  });
+
+  it("recreates a Session that lacks the project's auth configs once, keeping the Composio user", async () => {
+    const { ensureSession } = await freshBroker();
+    const harness = projectHarness(() => Response.json({ items: [highlevel] }));
+    harness.sessions.set("trs_old", session("trs_old", "omb_stable"));
+    harness.echoAuthConfigs = false;
+
+    const upgraded = await ensureSession(harness.install("trs_old"), harness.env as never, harness.ctx as never);
+    expect(upgraded.sessionId).toBe("trs_new_1");
+    expect(harness.creations()).toEqual([expect.objectContaining({ user_id: "omb_stable", auth_configs: { highlevel_location: "ac_new" } })]);
+    expect(harness.dbRuns.filter((run) => run.sql.includes("SET session_id")).map((run) => [run.values[0], run.values[2]])).toEqual([["trs_new_1", "install-1"]]);
+
+    // Composio left auth_configs out of the echo: the upgrade is not retried.
+    await expect(ensureSession(harness.install("trs_new_1"), harness.env as never, harness.ctx as never)).resolves.toMatchObject({ sessionId: "trs_new_1" });
+    expect(harness.creations()).toHaveLength(1);
+
+    // A Session that echoes the config (in any slug case) is reused as is.
+    harness.sessions.set("trs_covered", { ...session("trs_covered", "omb_stable"), config: { user_id: "omb_stable", multi_account: multiAccount, auth_configs: { HighLevel_Location: "ac_new" } } });
+    await expect(ensureSession(harness.install("trs_covered"), harness.env as never, harness.ctx as never)).resolves.toMatchObject({ sessionId: "trs_covered" });
+    expect(harness.creations()).toHaveLength(1);
+    expect(harness.authConfigReads()).toHaveLength(1);
+  });
+
+  it("keeps Sessions working when the auth config read fails", async () => {
+    const { ensureSession } = await freshBroker();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = projectHarness(() => Response.json({ error: "auth configs unavailable" }, { status: 500 }));
+    harness.sessions.set("trs_ok", session("trs_ok", "omb_stable"));
+
+    await expect(ensureSession(harness.install("trs_ok"), harness.env as never, harness.ctx as never)).resolves.toMatchObject({ sessionId: "trs_ok" });
+    expect(harness.creations()).toEqual([]);
+    await expect(ensureSession(harness.install(null), harness.env as never, harness.ctx as never)).resolves.toMatchObject({ sessionId: "trs_new_1" });
+    expect(harness.creations()).toEqual([expect.not.objectContaining({ auth_configs: expect.anything() })]);
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)) as { message: string })).toEqual([
+      expect.objectContaining({ message: "auth config lookup failed", error: "auth configs unavailable" }),
+    ]);
+    errors.mockRestore();
+  });
+
+  it("reads auth configs once per ten minutes and keeps the last good map over a failed read", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-15T12:00:00Z"));
+    const { ensureSession } = await freshBroker();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    let items: unknown[] | "fail" = [highlevel];
+    const harness = projectHarness(() => items === "fail"
+      ? Response.json({ error: "down" }, { status: 503 })
+      : Response.json({ items }));
+    const verify = (sessionId: string) => ensureSession(harness.install(sessionId), harness.env as never, harness.ctx as never);
+
+    await verify("trs_missing");
+    await verify("trs_new_1");
+    vi.setSystemTime(new Date("2026-10-15T12:09:59Z"));
+    await verify("trs_new_1");
+    expect(harness.authConfigReads()).toHaveLength(1);
+    expect(harness.creations()).toHaveLength(1);
+
+    // A failed refresh keeps the known map, so the Session is still covered.
+    items = "fail";
+    vi.setSystemTime(new Date("2026-10-15T12:10:01Z"));
+    await verify("trs_new_1");
+    expect(harness.authConfigReads()).toHaveLength(2);
+    expect(harness.creations()).toHaveLength(1);
+    expect(errors).toHaveBeenCalledTimes(1);
+
+    // The failed read is retried after a minute; a new auth config upgrades the Session once more.
+    items = [highlevel, { id: "ac_x", is_composio_managed: false, toolkit: { slug: "x" } }];
+    vi.setSystemTime(new Date("2026-10-15T12:10:30Z"));
+    await verify("trs_new_1");
+    expect(harness.authConfigReads()).toHaveLength(2);
+    vi.setSystemTime(new Date("2026-10-15T12:11:02Z"));
+    await expect(verify("trs_new_1")).resolves.toMatchObject({ sessionId: "trs_new_2", authConfigs: { highlevel_location: "ac_new", twitter: "ac_x" } });
+    expect(harness.authConfigReads()).toHaveLength(3);
+    expect(harness.creations().at(-1)).toEqual(expect.objectContaining({ user_id: "omb_stable", auth_configs: { highlevel_location: "ac_new", twitter: "ac_x" } }));
+    errors.mockRestore();
   });
 });

@@ -12,7 +12,10 @@ import {
   messageFileRoots,
   messageImageTargetAt,
   messageReferencesFile,
+  listMessageFolder,
+  messageFolderEntryName,
   openMessageFile,
+  openMessageFolderEntry,
 } from "./message-file.ts";
 
 const referencesAttachment = (text: string, requested: string) => messageAttachmentName(text, requested) !== null;
@@ -95,8 +98,6 @@ describe("message-linked files", () => {
     expect(messageReferencesFile("<file:///Users/milind/report.md>", "/Users/milind/report.md"))
       .toBe(true);
 
-    // Equivalent separators and dot segments are normalised within a path
-    // flavour, but distinct path flavours and casing remain distinct.
     expect(messageReferencesFile(
       "[Open it](C:/Users/Maus/drafts/../report.md)",
       "C:\\Users\\Maus\\report.md",
@@ -121,8 +122,6 @@ describe("message-linked files", () => {
       "//server/share/team notes.md",
     )).toBe(true);
 
-    // Decoding is deliberately single-pass: a double-encoded space must not
-    // authorize the ordinary decoded path.
     expect(messageReferencesFile(
       "[Open it](C:/Users/Maus/release%2520notes.md?download=1)",
       "C:\\Users\\Maus\\release notes.md",
@@ -138,7 +137,6 @@ describe("message-linked files", () => {
     expect(messageReferencesFile(markdown, report)).toBe(true);
     expect(messageReferencesFile(markdown, notes)).toBe(true);
     expect(messageImageTargetAt(markdown, markdown.indexOf("![Chart]"))).toBe(chart);
-    // The folders a dropped backslash would have joined are not what was linked.
     expect(messageReferencesFile(markdown, "C:\\Users\\Maus.openmausbot\\workspaces\\bot_drafts\\report.md")).toBe(false);
   });
 
@@ -325,10 +323,10 @@ describe("message-linked files", () => {
     writeFileSync(secret, "not for this conversation");
     symlinkSync(secret, join(workspace, "escape.md"));
 
-    await expect(openMessageFile("../outside/secret.md", [workspace]))
-      .rejects.toMatchObject({ status: 403 });
-    await expect(openMessageFile("escape.md", [workspace]))
-      .rejects.toMatchObject({ status: 403 });
+    const refusal = { status: 403, code: "outside_workspace" };
+    await expect(openMessageFile("../outside/secret.md", [workspace])).rejects.toMatchObject(refusal);
+    await expect(openMessageFile(secret, [workspace])).rejects.toMatchObject(refusal);
+    await expect(openMessageFile("escape.md", [workspace])).rejects.toMatchObject(refusal);
   });
 
   it("accepts only regular files no larger than the phone download ceiling", async () => {
@@ -340,6 +338,79 @@ describe("message-linked files", () => {
     truncateSync(large, MESSAGE_FILE_MAX_BYTES + 1);
     await expect(openMessageFile("large.pdf", [workspace]))
       .rejects.toMatchObject({ status: 413 });
+  });
+
+  it("lists the regular files directly inside a linked folder", async () => {
+    const folder = join(workspace, "Posts", "2026-10-07_News");
+    mkdirSync(join(folder, "nested"), { recursive: true });
+    writeFileSync(join(folder, "b.png"), "png");
+    writeFileSync(join(folder, "a.md"), "# a");
+    writeFileSync(join(folder, "nested", "deep.txt"), "not listed");
+
+    await expect(openMessageFile("Posts/2026-10-07_News/", [workspace]))
+      .rejects.toMatchObject({ status: 400, code: "directory" });
+    await expect(listMessageFolder("Posts/2026-10-07_News/", [workspace])).resolves.toEqual({
+      name: "2026-10-07_News",
+      entries: [
+        { name: "a.md", bytes: 3, mime: "text/markdown; charset=utf-8" },
+        { name: "b.png", bytes: 3, mime: "image/png" },
+      ],
+      truncated: false,
+    });
+
+    const opened = await openMessageFolderEntry("Posts/2026-10-07_News/", "a.md", [workspace]);
+    try {
+      expect(opened).toMatchObject({ name: "a.md", bytes: 3 });
+    } finally {
+      await opened.handle.close();
+    }
+    await expect(openMessageFolderEntry("Posts/2026-10-07_News/", "nested", [workspace]))
+      .rejects.toMatchObject({ status: 404 });
+    expect(messageFolderEntryName("../secret.md")).toBeNull();
+    expect(messageFolderEntryName("nested/deep.txt")).toBeNull();
+    expect(messageFolderEntryName("..")).toBeNull();
+    expect(messageFolderEntryName("a.md")).toBe("a.md");
+  });
+
+  it("refuses a folder outside the root and leaves out symlinks that escape it", async () => {
+    writeFileSync(join(outside, "secret.md"), "not for this conversation");
+    const refusal = { status: 403, code: "outside_workspace" };
+    await expect(listMessageFolder(outside, [workspace])).rejects.toMatchObject(refusal);
+    await expect(listMessageFolder("../outside", [workspace])).rejects.toMatchObject(refusal);
+    symlinkSync(outside, join(workspace, "escape"));
+    await expect(listMessageFolder("escape", [workspace])).rejects.toMatchObject(refusal);
+
+    const folder = join(workspace, "posts");
+    mkdirSync(folder);
+    writeFileSync(join(folder, "kept.md"), "ok");
+    symlinkSync(join(outside, "secret.md"), join(folder, "leak.md"));
+    const listing = await listMessageFolder("posts", [workspace]);
+    expect(listing.entries.map((entry) => entry.name)).toEqual(["kept.md"]);
+    await expect(openMessageFolderEntry("posts", "leak.md", [workspace]))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it("matches a raw file URL with non-ASCII names, then refuses it only for its folder", async () => {
+    // Bots on macOS write the URL unencoded; Windows needs a real file URL.
+    const url = (path: string) => process.platform === "win32" ? pathToFileURL(path).href : `file://${path}`;
+    const folder = join(outside, "Posts", "2026-10-08_News");
+    mkdirSync(join(folder, "00_غلاف"), { recursive: true });
+    writeFileSync(join(outside, "PREVIEW.jpg"), "jpg");
+    const file = url(join(outside, "PREVIEW.jpg"));
+    const linkedFolder = url(folder);
+    const nested = url(join(folder, "00_غلاف"));
+    const text = `- [PREVIEW.jpg](${file})\n- [2026-10-08_News](${linkedFolder})\n- [00_غلاف](${nested})`;
+    for (const href of [file, linkedFolder, nested]) expect(messageReferencesFile(text, href)).toBe(true);
+
+    const roots = [workspace];
+    const refusal = { status: 403, code: "outside_workspace" };
+    await expect(openMessageFile(file, roots)).rejects.toMatchObject(refusal);
+    await expect(openMessageFile(linkedFolder, roots)).rejects.toMatchObject(refusal);
+    await expect(listMessageFolder(nested, roots)).rejects.toMatchObject(refusal);
+
+    const opened = await openMessageFile(file, [workspace, outside]);
+    await opened.handle.close();
+    await expect(listMessageFolder(linkedFolder, [workspace, outside])).resolves.toMatchObject({ name: "2026-10-08_News" });
   });
 
   it("emits a safe UTF-8 attachment filename", () => {

@@ -79,11 +79,9 @@ describe("modal dialog keyboard handling", () => {
     expect(document.activeElement).toBe(first);
     expect(key(dialog, "Tab", { shiftKey: true }).defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(last);
-    // focus on the dialog itself: Shift-Tab goes to the last control
     dialog.focus();
     key(dialog, "Tab", { shiftKey: true });
     expect(document.activeElement).toBe(last);
-    // a Tab between two controls is the browser's own
     first.focus();
     expect(key(dialog, "Tab").defaultPrevented).toBe(false);
   });

@@ -5,7 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { applyStartupPreferences, formatSessions, pairingBlock, parseArgs, qrToString, runAccess, runLogin, runOnboardingCommand, serverEntry, type CliOptions, verifyPhoneEndpoint } from "./cli.ts";
+import { applyStartupPreferences, formatSessions, parseArgs, runAccess, runLogin, runOnboardingCommand, serverEntry, type CliOptions, verifyPhoneEndpoint } from "./cli.ts";
+import { browserSignInLines, pairingBlock, qrToString } from "./cli-pairing.ts";
 import { readAdminActivityRange } from "./admin-activity.ts";
 import { SetupCancelled } from "./cli-prompts.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
@@ -59,6 +60,8 @@ describe("openmausbot command line", () => {
     expect(parseArgs(["access", "add"], {})).toEqual({ error: "add needs a value" });
     expect(parseArgs(["service", "install", "--domain", "maus.example.com", "--port", "8799"], {})).toMatchObject({ command: "service", serviceAction: "install", domain: "maus.example.com", port: 8799 });
     expect(parseArgs(["service", "uninstall"], {})).toMatchObject({ command: "service", serviceAction: "uninstall" });
+    expect(parseArgs(["service", "install", "--sentinel"], {})).toMatchObject({ command: "service", serviceAction: "install", sentinel: true });
+    expect(parseArgs(["serve", "--sentinel"], {})).toEqual({ error: expect.stringContaining("--sentinel") });
     expect(parseArgs(["service"], {})).toEqual({ error: expect.stringContaining("service needs one of") });
     expect(parseArgs(["serve", "--domain", "Maus.Example.com"], {})).toMatchObject({ command: "serve", domain: "maus.example.com" });
     expect(parseArgs(["serve", "--domain", "localhost"], {})).toEqual({ error: expect.stringContaining("bare hostname") });
@@ -66,8 +69,6 @@ describe("openmausbot command line", () => {
   });
 
   it("takes the phone kind non-interactively, because a scripted pair never sees the chooser", () => {
-    // `docker compose exec … pair` and any piped run skip the interactive
-    // chooser, and an Android phone is the one that needs a different QR.
     expect(parseArgs(["pair", "--phone", "android"], {})).toMatchObject({ command: "pair", phone: "android" });
     expect(parseArgs(["pair", "--phone", "iOS"], {})).toMatchObject({ phone: "ios" });
     expect(parseArgs(["pair", "--phone", "blackberry"], {})).toEqual({ error: expect.stringContaining("ios or android") });
@@ -84,6 +85,18 @@ describe("openmausbot command line", () => {
     expect(qrToString("https://example.com").length).toBeGreaterThan(200);
   });
 
+  it("adds a link that signs in a browser on this computer, which is no longer the owner by being here", () => {
+    const local = "http://127.0.0.1:8799/pair#code=ABCD-EFGH-JKLM";
+    const block = pairingBlock({ code: "ABCD-EFGH-JKLM", url: null, localUrl: local, expiresAt: Date.now() + 60_000, hint: "set OMB_PUBLIC_URL" });
+    expect(block).toContain(`this computer: ${local}`);
+    expect(block).toContain("/pair on the address you use");
+    expect(block).not.toContain(qrToString(local));
+    const guided = browserSignInLines(local, "ABCD-EFGH-JKLM", Date.now() + 60_000);
+    expect(guided).toContain(local);
+    expect(guided).toContain("ABCD-EFGH-JKLM");
+    expect(guided).toContain("openmausbot pair");
+  });
+
   describe("the two links one pairing window has", () => {
     const url = "https://mini.example/pair#code=ABCD-EFGH-JKLM";
     const invite = `openmausbot://pair?address=https%3A%2F%2Fmini.example&token=omb_pair_${"a".repeat(43)}&name=mini`;
@@ -95,7 +108,6 @@ describe("openmausbot command line", () => {
       expect(out).toContain(qrToString(invite));
       expect(out).not.toContain(qrToString(url));
       expect(out).toContain("Scan that in the OpenMausBot app");
-      // The web link is still offered, but not as the thing to scan.
       expect(out).toContain(`web browser:   ${url}`);
       expect(out).not.toContain("open or scan:");
     });
@@ -104,8 +116,6 @@ describe("openmausbot command line", () => {
       const out = block({ phone: "ios" });
       expect(out).toContain(qrToString(url));
       expect(out).not.toContain(qrToString(invite));
-      // Naming a link the block never prints leaves the iOS app, which takes a
-      // pasted invite, with nothing to paste.
       expect(out).toContain(`phone app:     ${invite}`);
       expect(out).toContain(`open or scan:  ${url}`);
     });
@@ -115,7 +125,6 @@ describe("openmausbot command line", () => {
       expect(out).toContain(qrToString(url));
       expect(out).toContain("The Android app needs the phone-app link");
       expect(out).toContain("OMB_PUBLIC_URL");
-      // It must not claim the QR is scannable in the app when it is not.
       expect(out).not.toContain("Scan that in the OpenMausBot app");
     });
   });
@@ -430,7 +439,6 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
       OMB_CLOUDFLARED_PATH: fake,
       OMB_TUNNEL_ORIGIN_PORT: String(originPort),
     };
-    // a credential the control plane does not know stops the start; nothing serves
     const rejected = cli(["serve", "--tunnel", "--no-pair", "--port", String(port), "--data-dir", dataDir], {
       ...fleetEnv,
       OMB_INSTALLATION_CREDENTIAL: `omb_install_${"x".repeat(22)}.${"y".repeat(43)}`,
@@ -505,10 +513,8 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
       while (!out.includes("open or scan:") && Date.now() < deadline && child.exitCode === null) await new Promise((r) => setTimeout(r, 200));
       expect(out).toContain(`OpenMausBot is running on http://127.0.0.1:${port}, reachable at ${stub.endpointUrl}`);
       expect(out).toContain(`open or scan:  ${stub.endpointUrl}/pair#code=`);
-      // a fresh connector token was fetched for this run
       expect(stub.calls).toContain("POST /v1/installations/self/endpoint");
 
-      // the gateway comes up with the guardian; through it the harness is reachable...
       let descriptor: Response | null = null;
       const gatewayDeadline = Date.now() + 20_000;
       while (Date.now() < gatewayDeadline) {
@@ -521,13 +527,12 @@ describe.skipIf(process.platform === "win32")("serve --tunnel", () => {
         await new Promise((r) => setTimeout(r, 250));
       }
       expect(descriptor?.status, out.match(/^tunnel:.*$/gm)?.join("\n")).toBe(200);
-      // ...but a request with no headers at all, which the loopback listener would take as the owner, is a stranger here
+      // A request with no headers, which the loopback listener would take as the owner, is a stranger through the gateway.
       const stranger = await fetch(`${gateway}/api/bots`);
       expect(stranger.status).toBe(403);
       expect(((await stranger.json()) as { error: string }).error).toMatch(/through a proxy/);
       expect(await (await fetch(`${gateway}/api/health`)).json()).toEqual({ app: "openmausbot" });
       expect(typeof ((await (await fetch(`http://127.0.0.1:${port}/api/health`)).json()) as { pid: unknown }).pid).toBe("number");
-      // the printed code pairs a device through the gateway, and its session is honoured there
       const match = /pairing code:  ([A-Z2-9-]+)/.exec(out);
       expect(match).toBeTruthy();
       const paired = await fetch(`${gateway}/api/auth/pair`, {
@@ -573,7 +578,6 @@ describe("openmausbot access", () => {
       expect(await runAccess({ ...base, accessAction: "add", email: "not-an-email" }, io)).toBe(2);
       const saved = JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8"));
       expect(saved.signIn).toEqual({ admins: ["her@example.test"], members: ["@agentada.test"] });
-      // moving an entry between lists replaces it rather than duplicating it
       expect(await runAccess({ ...base, accessAction: "add", email: "her@example.test", chatOnly: true }, io)).toBe(0);
       expect(JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8")).signIn).toEqual({ admins: [], members: ["@agentada.test", "her@example.test"] });
       out.length = 0;
@@ -582,8 +586,6 @@ describe("openmausbot access", () => {
       expect(await runAccess({ ...base, accessAction: "remove", email: "her@example.test" }, io)).toBe(0);
       expect(await runAccess({ ...base, accessAction: "remove", email: "her@example.test" }, io)).toBe(1);
       expect(JSON.parse(readFileSync(join(dataDir, "config.json"), "utf8")).signIn).toEqual({ admins: [], members: ["@agentada.test"] });
-      // Each change once more than one person signs in is in the admin
-      // activity log, named for the command line; the first, a lone admin, is not.
       const rows = readAdminActivityRange(dataDir, { from: new Date(Date.now() - 600_000), to: new Date(Date.now() + 600_000) });
       expect(rows.map((row) => [row.action, row.actor.kind, row.changed])).toEqual([
         ["people.update", "cli", ["signIn.members"]],

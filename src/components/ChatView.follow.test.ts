@@ -1,6 +1,3 @@
-// The desktop keeps no in-flight reply text: a reply appears once it is
-// finished. So the finished message is what has to move a following
-// transcript to its bottom.
 import { createElement, type DependencyList, type EffectCallback } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, expect, it, vi } from "vitest";
@@ -11,8 +8,7 @@ const fixture = vi.hoisted(() => {
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return { refs: [] as { current: unknown }[], ref: 0, effects: [] as { effect: EffectCallback; deps?: DependencyList }[] };
 });
-// Server rendering runs no effects: record them, and keep refs across renders
-// the way a mounted component would.
+// Server rendering runs no effects: record them, and keep refs across renders as a mounted component would.
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useEffect: (effect: EffectCallback, deps?: DependencyList) => { fixture.effects.push({ effect, deps }); },
@@ -47,7 +43,6 @@ const render = (props: Bot) => {
   fixture.ref = 0;
   fixture.effects = [];
   renderToStaticMarkup(createElement(ChatView, { bot: props }));
-  // the effect that pins a following transcript to its end
   return fixture.effects.find(({ effect }) => /scrollTo\(\{\s*top:\s*el\.scrollHeight\s*\}\)/.test(String(effect)))!;
 };
 const changed = (before?: DependencyList, after?: DependencyList) =>
@@ -59,7 +54,6 @@ it("scrolls a following transcript to the bottom when the finished reply arrives
   expect(working).toBeDefined();
   expect(changed(working.deps, settled.deps)).toBe(true);
 
-  // Mount: the element refs now hold the scroller; following is on.
   const calls: ScrollToOptions[] = [];
   const scroller = { scrollHeight: 2_400, scrollTop: 0, clientHeight: 600,
     scrollTo(options: ScrollToOptions) { calls.push(options); this.scrollTop = options.top ?? 0; } };

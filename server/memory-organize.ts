@@ -1,29 +1,16 @@
-// Organizing MEMORY.md into topic files, for a bot with Memory upkeep on.
-// MEMORY.md loads into every turn, so it should hold only the core — who the
-// person is, their standing preferences and decisions. The bot writes there
-// with memory_update, the person by hand and capture for what it notices, so
-// detail piles up whoever wrote it. One strict-JSON call names the entries
-// that belong to a subject; each moves, line unchanged (date, source, until
-// kept), to that subject's topic file, which is created with a header whose
-// aliases recall matches. An entry judged core is remembered and not asked
-// about again. Pure here: the caller reads, calls the model, writes and
-// journals.
 import { alwaysCore, factIdentity, isExpired, parseMemoryEntries, type MemoryEntryLine } from "./memory-entries.ts";
 import { topicFileName } from "./memory-capture.ts";
 
 export const ORGANIZE_MARKER = "You are the ORGANIZE step of a memory system";
-/** One pass moves at most this many entries. */
 export const MAX_MOVES = 20;
 const PROMPT_ENTRIES = 60;
 
 export interface TopicMove {
   entry: MemoryEntryLine;
-  /** `food.md` */
   topic: string;
   aliases: string[];
 }
 
-/** Live, unexpired entries not already judged core: what the call is asked about. */
 export function organizeCandidates(text: string, today: string, core: ReadonlySet<string>): MemoryEntryLine[] {
   return parseMemoryEntries(text)
     .filter((e) => !e.struck && !isExpired(e, today) && !core.has(factIdentity(e.body)) && !alwaysCore(e.body))
@@ -84,7 +71,6 @@ export function parseMoves(text: string, candidates: readonly MemoryEntryLine[])
   return out;
 }
 
-/** MEMORY.md without the moved lines, and each topic's lines (unchanged). */
 export function applyMoves(text: string, moves: readonly TopicMove[]): { text: string; byTopic: Map<string, { lines: string[]; aliases: string[] }> } {
   const drop = new Set(moves.map((move) => move.entry.line));
   const byTopic = new Map<string, { lines: string[]; aliases: string[] }>();

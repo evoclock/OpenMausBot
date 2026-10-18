@@ -1,19 +1,5 @@
-// The work digest — one bounded record per settled turn of what the turn
-// DID (docs/plans/2026-09-14-phase-0-foundation.md, item 0.1).
-//
-// The transcript stores talk: the user's line, the bot's reply, and a chip
-// per tool call. Nothing aggregates those into "this turn ran 30 commands,
-// changed retry.ts, and added a memory note", which is exactly what a
-// context rebuild (engine switch, rewind, room turn) needs and what a
-// teammate will need in Phase 6. This module builds that record from rows
-// the harness already has for EVERY engine — activity rows, the memory
-// journal, the checkpoint diff — so it is engine-agnostic by construction.
-// `hookCoverage` says how good the tool evidence is: "full" when a hook or
-// protocol delivered untruncated results, "preview" when the driver's
-// bounded preview was all we had, "none" for engines that show no tool
-// activity at all in that turn.
-//
-// Pure functions only: no store, no bus, no I/O. The fold wires them.
+// `hookCoverage`: "full" when a hook or protocol delivered untruncated results, "preview" when only the driver's bounded
+// preview, "none" when the turn showed no tool activity.
 import type { MemoryJournalEntry } from "./memory-journal.ts";
 import type { Message } from "./store.ts";
 
@@ -21,15 +7,11 @@ import type { DigestFiles, DigestTool, HookCoverage, TurnDigest } from "../share
 import { toolIdentity } from "../shared/tool-name.ts";
 export type { DigestFiles, DigestTool, HookCoverage, TurnDigest } from "../shared/digest.ts";
 
-/** Evidence is observed, not inferred from a provider's brand. In particular,
- * OpenAI-compatible and Grok turns now expose structured tool activity too. */
+/** Evidence is observed, never inferred from a provider's brand. */
 export function coverageForDriver(_driverKind: string | undefined, fullResults = false, observedTools = false): HookCoverage {
   return fullResults ? "full" : observedTools ? "preview" : "none";
 }
 
-/** True when every tool row of the turn carries a delivered (untruncated)
- * result — what a PostToolUse hook gives us — so the digest may claim
- * "full" evidence. One preview-only row means the turn is "preview". */
 export function toolEvidence(activities: readonly Message[], turnId: string): boolean {
   const rows = activities.filter((m) => m.kind === "activity" && m.tool?.itemId && m.turnId === turnId);
   return rows.length > 0 && rows.every((m) => m.tool?.fullResult === true);
@@ -47,7 +29,6 @@ export interface DigestInput {
   threadId: string;
   at: number;
   durationMs: number;
-  /** Every message of the thread is fine; only this turn's activity rows are read. */
   activities: readonly Message[];
   memory: readonly MemoryJournalEntry[];
   files?: DigestFiles;
@@ -60,19 +41,15 @@ export function buildTurnDigest(input: DigestInput): TurnDigest {
   const byName = new Map<string, DigestTool>();
   for (const m of input.activities) {
     if (m.kind !== "activity" || !m.tool?.itemId || m.turnId !== input.turnId) continue;
-    // by identity, not by the chip's title: a command-titled chip would
-    // otherwise be its own bucket and carry the unredacted command line into
-    // a row that is FTS-indexed and replayed into rebuilt context
+    // By identity, not the chip's title, which would carry the unredacted command into an FTS-indexed, replayed row.
     const identity = toolIdentity(m.tool.name);
     const entry = byName.get(identity) ?? { name: fitBytes(identity, 160), count: 0, failed: 0 };
     entry.count += 1;
     if (m.tool.ok === false) entry.failed += 1;
-    // the driver's summary is the bounded, redacted one-line command; the
-    // title is neither, so a shell bucket says what it ran only through this
+    // The driver's summary is the bounded, redacted command; the title is neither.
     if (entry.sample === undefined && m.tool.summary) entry.sample = fitBytes(m.tool.summary.replace(/\s+/g, " "), 300);
     byName.set(identity, entry);
   }
-  // busiest first; ties keep first-seen order (Map preserves insertion)
   const ranked = [...byName.values()].sort((a, b) => b.count - a.count);
   const tools = ranked.slice(0, MAX_TOOLS);
   const toolsDropped = ranked.length - tools.length;
@@ -123,15 +100,11 @@ function firstSentence(reply: string): string {
   return sentence.slice(0, REPLY_CHARS);
 }
 
-/** The transcript row's text: one paragraph, FTS-indexed, ≤ RENDER_BYTES. */
 export function renderDigest(d: TurnDigest): string {
   const parts: string[] = ["[digest]"];
   if (d.tools.length) {
-    // every entry ends at "×N" or "(N failed)": the phones split the tools
-    // part on exactly that (ios DigestSummary, android TurnDigest), so a
-    // shell bucket's sample stays in the stored digest, not in this line
-    const tools = d.tools.map((t) => `${t.name} ×${t.count}${t.failed ? ` (${t.failed} failed)` : ""}`).join(", ");
-    parts.push(`tools: ${tools}${d.toolsDropped ? ` +${d.toolsDropped} more` : ""}${d.hookCoverage === "preview" ? " (from tool previews)" : ""}`);
+    // Every entry ends at "×N" or "(N failed)": the phones split the tools part on exactly that.
+    parts.push(`tools: ${digestTools(d)}${d.hookCoverage === "preview" ? " (from tool previews)" : ""}`);
   } else if (d.hookCoverage === "none") {
     parts.push("no tool activity observed in this turn");
   } else {
@@ -151,14 +124,17 @@ export function renderDigest(d: TurnDigest): string {
   return fitBytes(parts.join(" · "), RENDER_BYTES);
 }
 
-/** One bracketed line for a context rebuild — never multi-line, so it sits
- * in a transcript replay or a room window like any other speaker line. */
+export function digestTools(d: Pick<TurnDigest, "tools" | "toolsDropped">): string {
+  const tools = d.tools.map((t) => `${t.name} ×${t.count}${t.failed ? ` (${t.failed} failed)` : ""}`).join(", ");
+  return `${tools}${d.toolsDropped ? ` +${d.toolsDropped} more` : ""}`;
+}
+
+/** Never multi-line, so it sits in a transcript replay or a room window like any speaker line. */
 export function digestPromptLine(d: TurnDigest, botName: string): string {
   const body = renderDigest(d).replace(/^\[digest\]\s*/, "").replace(/\s+/g, " ").trim();
   return `[What ${botName} did in an earlier turn: ${body}]`;
 }
 
-/** Trim to a byte budget on a character boundary, marking the cut. */
 function fitBytes(text: string, max: number): string {
   if (Buffer.byteLength(text, "utf8") <= max) return text;
   const marker = " […]";

@@ -55,6 +55,11 @@ Verify these transitions with computer use:
     **Panel → Remote desktop**. The viewer is simulated, never a native window.
 12. Select **unconfigured** while **Busy** is on. Its permanent HTTP409 must
     show **VPS is not configured** with Retry, not an endless connecting state.
+13. Focus the tab row with **Tab**: **Left**/**Right** and **Home**/**End**
+    move between tabs, the vertical arrows must leave the page's scrolling
+    alone, and the focused tab's ring must not be clipped by the row. Press
+    **Tab** again: focus lands on the selected panel itself before its first
+    control.
 
 The automated browser regression runs these contention, cancellation, decoded
 frame retention, and join-pause checks against the same fixture:

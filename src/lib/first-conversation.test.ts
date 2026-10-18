@@ -10,7 +10,6 @@ describe("first conversation spotlights", () => {
 
   it("opens on the composer when the reply starts, then the model chip when it ends", () => {
     expect(nextSpotlight({ ...quiet, replyStarted: true }, [], null)).toBe("spot.composer");
-    // the model chip waits for the composer to be dismissed
     expect(nextSpotlight({ ...quiet, replyStarted: true, replyFinished: true }, [], null)).toBe("spot.composer");
     expect(nextSpotlight({ ...quiet, replyFinished: true }, ["spot.composer"], null)).toBe("spot.model");
   });
@@ -24,7 +23,6 @@ describe("first conversation spotlights", () => {
     expect(cardAnswered("spot.approval", { ...quiet, replyStarted: true })).toBe(true);
     expect(cardAnswered("spot.connector", { ...quiet, connectorVisible: true })).toBe(false);
     expect(cardAnswered("spot.connector", quiet)).toBe(true);
-    // the chrome spotlights have no card to answer
     expect(cardAnswered("spot.composer", quiet)).toBe(false);
     expect(cardAnswered("spot.model", quiet)).toBe(false);
   });

@@ -4,8 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { StoreProvider, type Group, type Message } from "@/state/store";
 
-// Replaced whole: its context default reads window.ogb at import time. An
-// empty caption chrome is the non-Windows layout.
+// Replaced whole: its context default reads window.ogb at import time.
 vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false } } }),
   useCaptionChrome: () => ({}),
@@ -72,12 +71,6 @@ describe("room header", () => {
   };
 
   it("wraps into a name line and a control line when the column is narrow", () => {
-    // On a phone, or with a panel beside the room, the control row cannot
-    // shrink: the room name truncated to nothing. Narrow, the header wraps
-    // instead, as the 1:1 chat header does; the room's controls never fold
-    // to icons, so it wraps below 48rem. The query lives on the
-    // container's child row: a container query never matches the container
-    // element itself.
     vi.stubGlobal("window", { ogb: undefined });
     let markup: string;
     try {

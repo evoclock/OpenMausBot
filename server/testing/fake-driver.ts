@@ -1,6 +1,4 @@
-// In-memory ProviderDriver for registry/bus tests. Queue-free and
-// deliberately tiny: tests reach into the returned handle to emit
-// canonical events as if the provider produced them.
+// In-memory ProviderDriver for registry/bus tests: tests emit canonical events through the returned handle.
 import type {
   DriverCreateInput,
   EffortLevel,
@@ -17,6 +15,10 @@ export interface FakeDriverOptions {
   failCreate?: string;
   /** snapshot() rejects with this message (describe-downgrade path). */
   failSnapshot?: string;
+  /** snapshot() never settles, like a status probe stuck on its CLI. */
+  hangSnapshot?: boolean;
+  /** snapshot() answers only once this settles, so a test can hold a probe in flight. */
+  holdSnapshot?: Promise<unknown>;
   /** effort levels this fake driver declares, forwarded onto capabilities. */
   effortLevels?: readonly EffortLevel[];
 }
@@ -27,6 +29,8 @@ export interface FakeDriverHandle {
   created: Map<string, { instance: ProviderInstance; emit: (e: RuntimeEvent) => void }>;
   decodedConfigs: unknown[];
   disposed: string[];
+  /** One instance id per status probe the driver ran: a real driver spawns its CLI for each. */
+  probes: string[];
 }
 
 export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
@@ -35,6 +39,7 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
     created: new Map(),
     decodedConfigs: [],
     disposed: [],
+    probes: [],
     driver: {
       driverKind: kind,
       metadata: { displayName: `Fake ${kind}` },
@@ -60,7 +65,10 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
           enabled: input.enabled,
           models: handle.driver.models,
           snapshot: async (): Promise<ProviderSnapshot> => {
+            handle.probes.push(input.instanceId);
             if (opts.failSnapshot) throw new Error(opts.failSnapshot);
+            if (opts.hangSnapshot) await new Promise<never>(() => {});
+            if (opts.holdSnapshot) await opts.holdSnapshot;
             return { state: "available", version: "0.0.0-fake" };
           },
           adapter: {

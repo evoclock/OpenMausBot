@@ -14,11 +14,21 @@ Run receipts distinguish queued, active, waiting, completed, missed, failed, and
 
 ### Keep reports in one thread
 
-In a routine's editor, use **Post results to** to choose an existing thread or **Create a dedicated results thread**. You can move that results thread into a folder, such as **OMB management**, just like any other thread.
+In a routine's editor, use **Post results to** to choose an existing thread, or leave it on **The bot's main thread**: the conversation you last wrote in, which is also the one conversation you see with threads hidden. You can move a results thread into a folder, such as **OMB management**, just like any other thread.
 
 Each run gets its own execution context, while dated reports collect in the chosen thread. Background execution threads stay out of the normal sidebar and mobile thread pickers. Use **Open run** on a report for its conversation and any approvals, then **Back to results** to return. **Run logs** keeps the execution history, including failures and waiting runs.
 
-Routines created in chat keep reporting to that conversation unless you choose a different destination. Changing the destination affects future runs, not the report links for older runs. If you delete a results thread, its hidden execution threads become visible so you can still inspect their work and respond to approvals.
+A bot schedules, changes, pauses, resumes, and deletes its own routines from chat without asking, and each change shows as one line with **Undo** (see [Changes a bot makes](/docs/features/approvals-and-inspector#changes-a-bot-makes)). A routine for another bot asks first unless the conversation has Full access.
+
+Without a chosen thread, each run reports into the bot's main thread as it is when the run starts, wherever the routine was made, so results follow you to the conversation you are in. Changing the destination affects future runs, not the report links for older runs. If you delete a results thread, its hidden execution threads become visible so you can still inspect their work and respond to approvals.
+
+### Remember the last run
+
+Each run starts fresh by default. For work that builds on last time, such as a QA pass, monitoring or follow-ups, turn on **Remember the last run** under the routine's instructions. Each run then starts with the previous run's report (up to 2,000 characters), so the bot knows what it found before. It is available for repeating routines that one bot runs; team goals don't carry it yet. You can also ask the bot in chat to turn it on.
+
+### Run when the app starts
+
+If your computer is often off when a routine is due, open the routine's **Advanced** options and turn on **Also run when OpenMausBot starts**. The routine then runs once each time OpenMausBot opens, as well as on its schedule. Its run logs show these runs as **On startup**. A routine that OpenMausBot is already catching up on at startup runs once, not twice, and an occurrence missed by more than 12 hours is covered by the startup run instead of being reported as missed. Switching to another workspace and back, or OpenMausBot recovering from a crash, doesn't count as opening the app again. Pausing a routine stops its startup runs too. It's available for repeating routines, and you can also ask the bot in chat to turn it on.
 
 ### Clear a folder's unread dots
 
@@ -34,8 +44,10 @@ Bearer authentication is preferred because it keeps the secret out of URLs and m
 
 ## Reaching a local webhook
 
-To accept events from the public internet, proxy only the webhook receiver through a narrowly configured relay or tunnel. Do not expose the main harness port.
+On My Cloud there is nothing to set up: webhooks use the workspace's own address. The Webhooks panel shows `https://` plus the workspace's hostname followed by `/hooks/` and the endpoint, and only those hook paths are passed to the receiver. The same is true of a hosted workspace.
+
+On the desktop app the receiver listens only on this computer. To accept events from the public internet, proxy only the webhook receiver through a narrowly configured relay or tunnel. Do not expose the main harness port.
 
 <Callout type="warn" title="OpenMausBot must remain running">
-  Local routines and webhook deliveries are not hosted jobs. Closing the desktop app stops the local executor and receiver.
+  Local routines and webhook deliveries are not hosted jobs. Closing the desktop app stops the local executor and receiver. My Cloud keeps running them while your computer is off.
 </Callout>

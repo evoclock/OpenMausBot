@@ -1,6 +1,5 @@
-// Explicit --import in the isolated peer-approval fixture only. The production
-// fifteen-minute deadline is tested with fake timers in peer-approval.test.ts.
-// Here the test releases that same callback after observing the real HTTP card.
+// Loaded with --import in the isolated peer-approval fixture only: the test releases the fifteen-minute
+// deadline callback after observing the real HTTP card.
 import { registerHooks } from 'node:module';
 import { join } from 'node:path';
 const dataDir = process.env.OMB_DATA_DIR;

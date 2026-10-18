@@ -11,9 +11,7 @@ const uuid = value => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-
 const DATA_VOLUME = "/System/Volumes/Data";
 const identify = async candidate => { const info = await fsp.stat(candidate, { bigint: true }); return `${info.dev}:${info.ino}`; };
 
-/** Every path that names the home directory itself. macOS reaches one home
- * through a firmlink and again under the data volume, and those two paths have
- * different ancestors, so both chains have to be walked. */
+/** macOS reaches one home through a firmlink and again under the data volume, with different ancestors: walk both. */
 function homeCandidates() {
   const home = path.resolve(os.homedir());
   const seeds = [home];
@@ -21,9 +19,7 @@ function homeCandidates() {
   return seeds;
 }
 
-/** The home directory and everything above it, as filesystem identities. Text
- * comparison misses a firmlink, a bind mount, a case-insensitive spelling, a
- * Unicode normalization and a Windows 8.3 or UNC name; {dev, ino} does not. */
+/** {dev, ino}, not text: text misses firmlinks, bind mounts, case-insensitive spellings, Unicode normalization and 8.3/UNC names. */
 async function enclosingHomeIdentities() {
   const identities = new Set();
   const [home, ...aliases] = homeCandidates();
@@ -35,8 +31,7 @@ async function enclosingHomeIdentities() {
       const canonical = await fsp.realpath(alias);
       if ((await identify(canonical)) === homeIdentity) roots.push(canonical);
     } catch (error) {
-      // The optional macOS data-volume spelling need not exist. Any other
-      // failure must not silently remove part of the home boundary.
+      // Only the optional macOS data-volume spelling may be absent; any other failure must not shrink the home boundary.
       if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
     }
   }
@@ -51,8 +46,7 @@ async function enclosingHomeIdentities() {
   return identities;
 }
 
-/** A drive letter, a filesystem root, or any mount point: sharing one of those
- * shares a whole volume. Unreadable parents fail closed. */
+/** Sharing a drive letter, root or mount point shares a whole volume; unreadable parents fail closed. */
 async function volumeRoot(canonical) {
   const parent = path.dirname(canonical);
   if (parent === canonical) return true;
@@ -77,9 +71,7 @@ export async function validateSharedFolders(folders) {
 const JOB_KEYS = new Set(["computer_id", "action", "folder_id", "path", "content", "encoding", "expected_sha256", "command", "tool_name", "arguments"]);
 const JOB_ACTIONS = new Set(["list_files", "read_file", "write_file", "run_command", "computer_tools", "computer_call"]);
 const optionalText = (value, max) => value === undefined || (typeof value === "string" && value.length <= max);
-/** The server's job, checked against the same shape the server accepts
- * before anything on this computer looks at it. The grant still decides
- * whether the operation is allowed; this only refuses malformed input. */
+/** Refuses malformed input only; the grant still decides whether the operation is allowed. */
 export function validSharedOperation(operation, computerId) {
   return Boolean(operation) && typeof operation === "object" && !Array.isArray(operation) &&
     Object.keys(operation).every(key => JOB_KEYS.has(key)) &&
@@ -92,14 +84,6 @@ export function validSharedOperation(operation, computerId) {
     (operation.arguments === undefined || (Boolean(operation.arguments) && typeof operation.arguments === "object" && !Array.isArray(operation.arguments)));
 }
 
-/** Whether a Cloud grant may run right now. Lending to the person's Cloud is
- * bound to the Cloud account that turned it on and to that account's machine:
- * signing out, another account, or a different machine ends it (the grant is
- * switched off, so resuming is the person's choice). A Cloud sign-in that
- * needs renewing, or one that cannot be read right now, pauses it; a brief
- * re-verification or an unreachable Admin (still this account) does not.
- * `current` is the native Cloud snapshot: { status, accountId, origin }
- * (origin only while the machine is verified). */
 export function cloudLendingVerdict(binding, current, env) {
   if (!binding || current?.status === "signed-out") return { stop: "signed-out" };
   if (current?.accountId && current.accountId !== binding.accountId) return { stop: "account-changed" };
@@ -111,39 +95,26 @@ export function cloudLendingVerdict(binding, current, env) {
 
 class Paused extends Error {}
 
-/** Outbound HTTPS only; no local listening port and no host credentials in
- * the renderer. Pairing cookies and a connector secret remain in Electron.
- *
- * Two kinds of grant share this connector. A maintainer grant (any server,
- * behind the local `features.sharedComputers` flag, exactly as before). A
- * Cloud grant (`cloud: { accountId, origin }`): the person's own Mac lent to
- * their own OMB Cloud home, gated by their Cloud sign-in (`cloud()`), never
- * by the maintainer flag. */
+/** Outbound HTTPS only: no local listening port, and pairing cookies and the connector secret stay in Electron. */
 export function createComputerSharing({ file, fetch: fetchImpl, environments, cuaConnection, hostControl, protectedPaths = [], enabled = async () => false, home = os.homedir(), activityFile, cloud = () => null, onChange = () => {} }) {
-  // The grant store's own directory plus whatever the desktop shell names —
-  // the server data directory holds provider API keys and sessions.json —
-  // plus the person's own credential and autostart locations. This module
-  // never imports electron, so those roots arrive from the caller.
   const protectedRoots = [path.dirname(file), ...protectedPaths.filter(entry => typeof entry === "string" && entry), ...personalSecretPaths(home)];
   const activity = createLendingActivity(activityFile ?? path.join(path.dirname(file), "lending-activity.jsonl"));
   let records = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     if (parsed?.version === 1 && parsed.records && typeof parsed.records === "object") records = parsed.records;
-  } catch { /* missing/corrupt grants never create authority */ }
+  } catch {}
   const running = new Map();
   const status = new Map();
   let closed = false;
   let maintainerOff = false;
   let executing = null;
-  const changed = () => { if (!closed) try { onChange(summary()); } catch { /* an indicator never stops lending */ } };
+  const changed = () => { if (!closed) try { onChange(summary()); } catch {} };
   const summary = () => ({
     lending: environments().filter(env => records[env.id]?.cloud && records[env.id]?.enabled === true).map(env => env.id),
     busy: executing,
   });
-  // The remote workspace's capability is not authority over this desktop.
-  // Recheck the local feature gate even for persisted grants and live jobs.
-  // A maintainer grant only: Cloud grants never read the maintainer flag.
+  // A remote workspace's capability is not authority here: recheck the local gate (maintainer grants only).
   const requireEnabled = async () => {
     const allowed = !closed && !maintainerOff && await enabled().catch(() => false);
     if (allowed && !closed && !maintainerOff) return;
@@ -154,8 +125,6 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
     }
     throw new Error("Computer sharing is turned off on this computer. Restart the desktop after enabling it.");
   };
-  /** Ends a Cloud grant for good: disconnect, cancel in-flight work, and
-   * switch it off so only the person can turn it back on. */
   const endCloud = (env, reason) => {
     disconnect(env, records[env.id]);
     if (records[env.id]?.enabled) store({ ...records, [env.id]: { ...records[env.id], enabled: false } });
@@ -164,13 +133,12 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
   };
   const requireGrant = async (env, grant) => {
     if (!grant.cloud) return requireEnabled();
-    // Quitting the app only pauses: a check still in flight when it closes
-    // must never switch the person's lending off for the next launch.
+    // Quitting only pauses: a check in flight at close must never switch lending off for the next launch.
     if (closed) throw new Paused("This app is closing.");
     const verdict = cloudLendingVerdict(grant.cloud, cloud(), env);
     if (verdict.allow) return;
     if (verdict.stop) { endCloud(env, verdict.stop); throw new Error("Lending to My Cloud stopped."); }
-    throw new Paused("Waiting for your OpenMausBot Cloud sign-in.");
+    throw new Paused("Waiting for your MausBot Cloud sign-in.");
   };
   const store = next => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -210,7 +178,6 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
     await requireEnabled();
     return info;
   };
-  /** The person's Cloud home, signed in as one of their own admin devices. */
   const cloudIdentity = async env => {
     const { auth, info } = await describe(env);
     if (auth.cloudHome !== true || !Array.isArray(auth.scopes) || !auth.scopes.includes("admin")) throw Object.assign(new Error("This server is not My Cloud"), { problem: "not-cloud" });
@@ -235,9 +202,7 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
         try {
           await gate();
           if (grant.cloud) {
-            // Bound to the account and machine above. A new pairing of this
-            // same desktop (a new session) keeps lending; another server
-            // behind that address (a new environment) does not.
+            // A new pairing of this desktop keeps lending; another server behind that address does not.
             const info = await cloudIdentity(env);
             if (grant.environmentId && grant.environmentId !== info.environmentId) { endCloud(env, "machine-changed"); break; }
             if (grant.environmentId !== info.environmentId || grant.sessionId !== info.sessionId) {
@@ -312,15 +277,11 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
           }
         } catch (error) {
           if (error instanceof Paused) {
-            // Nothing is served while the Cloud sign-in cannot be verified;
-            // cloudChanged() starts this grant again once it can.
             if (running.get(env.id) === live) disconnect(env, grant);
             status.set(env.id, { connected: false, problem: "paused" });
             changed();
             break;
           }
-          // A Cloud home this desktop is not (or no longer) signed in to
-          // needs Connect to my Cloud; anything else is waiting for it.
           if (!signal.aborted) status.set(env.id, { connected: false, error: error.message, ...(grant.cloud ? { problem: error.problem ?? (error.status === 401 || error.status === 403 ? "connect-first" : "waiting") } : {}) });
           changed();
         }
@@ -353,7 +314,6 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
       : uuid(grant.sessionId) && uuid(grant.environmentId));
   return {
     state, identity,
-    /** What servers' bots did here, newest first (optionally one server's). */
     activity(id, limit) {
       const env = id === undefined ? null : environments().find(entry => entry.id === id);
       const entries = activity.list(env ? 500 : limit);
@@ -376,13 +336,8 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
       disconnect(env, records[env.id]);
       store({ ...records, [env.id]: grant }); run(env, grant); changed(); return state(env.id);
     },
-    /** What this Mac lends to the person's Cloud, for Settings → OMB Cloud. */
     cloudState,
-    /** Lend this Mac to the person's own Cloud: chosen folders (read-only or
-     * editable) and optionally apps and screen. Never a terminal. The Cloud
-     * account and its machine must be verified right now; the Cloud home's
-     * identity is bound on first contact if this desktop is not signed in
-     * there yet (Open My Cloud does that). */
+    /** Folders, apps and screen only, never a terminal; the Cloud account and its machine must be verified now. */
     async saveCloud(env, input) {
       if (closed) throw new Error("Lending is unavailable while the app is closing.");
       const current = cloud();
@@ -404,8 +359,6 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
       return state(env.id);
     },
     forget(env) { disconnect(env, records[env.id]); const next = { ...records }; delete next[env.id]; store(next); changed(); },
-    /** Resume saved grants. Maintainer grants only when the local flag is on
-     * (the caller checked it); Cloud grants whenever the Cloud sign-in allows. */
     start({ maintainer = true } = {}) {
       for (const env of environments()) {
         const grant = records[env.id];
@@ -415,8 +368,6 @@ export function createComputerSharing({ file, fetch: fetchImpl, environments, cu
       }
       changed();
     },
-    /** The Cloud sign-in changed (or was re-verified): end, pause or resume
-     * each Cloud grant at once. Ending cancels in-flight work. */
     cloudChanged() {
       if (closed) return;
       for (const env of environments()) {

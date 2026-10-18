@@ -1,9 +1,3 @@
-// Which bot and room frames carry a transcript, through the real server.
-// A frame carries the newest page only when the bot's or room's open thread
-// changes from the one last sent: other windows must swap transcripts then
-// (a window whose open thread was deleted keeps its composer locked until a
-// page arrives), and at no other time. A rename, pin or background delete
-// used to send the whole open transcript next to its slim frame.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,9 +31,7 @@ describe("transcript pages on bot and room frames", () => {
     return { status: response.status, body: await response.json().catch(() => ({})) };
   };
 
-  /** The frames one request sent for one bot or room. Frames arrive in
-   * order, so once a later frame for another bot shows up, everything the
-   * request sent has arrived too. */
+  /** Frames arrive in order, so once a later frame for another bot shows up, everything this request sent has arrived. */
   async function framesFor(kind: "bot" | "group", id: string, act: () => Promise<unknown>): Promise<any[]> {
     return (await framesDuring(act)).filter((frame) => frame.kind === kind && frame[kind]?.id === id).map((frame) => frame[kind]);
   }
@@ -52,7 +44,6 @@ describe("transcript pages on bot and room frames", () => {
     return stream.frames.slice(start);
   }
 
-  /** A bot whose open thread holds LONG messages, restored from a backup. */
   async function longBot(): Promise<{ id: string; threadId: string }> {
     const source = (await api("POST", "/api/bots", { name: "Long Source" })).body.bot;
     const backup = (await api("POST", "/api/teams/export", { format: "backup", name: "Fixture" })).body;
@@ -96,7 +87,7 @@ describe("transcript pages on bot and room frames", () => {
     proc.stderr!.on("data", (chunk) => { output += chunk; });
     for (let deadline = Date.now() + 20_000; ;) {
       if (proc.exitCode !== null) throw new Error(`server exited during boot:\n${output}`);
-      try { if ((await fetch(base + "/api/health")).ok) break; } catch { /* not up yet */ }
+      try { if ((await fetch(base + "/api/health")).ok) break; } catch {}
       if (Date.now() > deadline) throw new Error(`server never came up:\n${output}`);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -126,7 +117,6 @@ describe("transcript pages on bot and room frames", () => {
     expect(opened).toHaveLength(1);
     expect(opened[0]).toMatchObject({ threadId: created!.threadId, messages: [], hasMore: false });
 
-    // The switch route no longer sends a page of its own on top of this one.
     const back = await framesFor("bot", bot.id, () => api("POST", `/api/bots/${bot.id}/tasks/${bot.threadId}?messages=5`));
     expect(back).toHaveLength(1);
     expect(back[0]).toMatchObject({ threadId: bot.threadId, hasMore: true });
@@ -139,8 +129,7 @@ describe("transcript pages on bot and room frames", () => {
   });
 
   it("unlocks another window whose open thread is deleted, with the newest page", async () => {
-    // The server suite cannot type-import the desktop app (separate
-    // tsconfig), so window B's reducer is loaded at run time.
+    // The server suite cannot type-import the desktop app (separate tsconfig), so window B's reducer loads at run time.
     const desktop = await import(pathToFileURL(join(ROOT, "src", "state", "store.tsx")).href);
     const bot = await longBot();
     const open = (await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Open in window B" })).body.task;
@@ -148,12 +137,10 @@ describe("transcript pages on bot and room frames", () => {
     let windowB = { ...desktop.initialState, bots: [hydrated], selectedId: bot.id };
     expect(windowB.bots[0].threadId).toBe(open.threadId);
 
-    // Window A deletes the thread window B is showing.
     const frames = await framesFor("bot", bot.id, () => api("DELETE", `/api/bots/${bot.id}/tasks/${open.threadId}`));
     for (const frame of frames) windowB = desktop.reducer(windowB, { type: "botPatched", bot: frame });
     expect(frames).toHaveLength(1);
     expect(windowB.bots[0].threadId).toBe(bot.threadId);
-    // The composer is locked while this is set (Composer.tsx).
     expect(windowB.bots[0].awaitingThreadSnapshot).toBeFalsy();
     expect(texts(windowB.bots[0].messages)).toEqual(newestPage);
     expect(windowB.bots[0].hasMore).toBe(true);
@@ -166,12 +153,10 @@ describe("transcript pages on bot and room frames", () => {
     let windowB = { ...desktop.initialState, bots: [hydrated], selectedId: bot.id };
     expect(windowB.bots[0].hasMore).toBe(true);
 
-    // A phone opens a new thread; its frame carries that thread's empty page.
     const frames = await framesFor("bot", bot.id, () => api("POST", `/api/bots/${bot.id}/tasks`, { title: "From the phone" }));
     expect(frames).toHaveLength(1);
     expect(frames[0]).toMatchObject({ messages: [], hasMore: false });
     for (const frame of frames) windowB = desktop.reducer(windowB, { type: "botPatched", bot: frame });
-    // Window B stays on its thread, and "Load earlier" still reaches the rest.
     expect(windowB.bots[0].threadId).toBe(bot.threadId);
     expect(texts(windowB.bots[0].messages)).toEqual(newestPage);
     expect(windowB.bots[0].hasMore).toBe(true);
@@ -237,8 +222,7 @@ describe("transcript pages on bot and room frames", () => {
     expect(folder.status).toBe(201);
     expect(texts(folder.body.bot.messages)).toEqual(newestPage);
 
-    // Search results land through this switch (src/lib/focus-message.ts) and
-    // need the hit's row, which can be older than one page.
+    // Search results land through this switch and need the hit's row, which can be older than one page.
     expect((await api("POST", `/api/bots/${bot.id}/tasks`, {})).status).toBe(201);
     const whole = await api("POST", `/api/bots/${bot.id}/tasks/${bot.threadId}`);
     expect(whole.body.bot.messages).toHaveLength(LONG);

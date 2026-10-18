@@ -54,10 +54,8 @@ async function run() {
     writeFileSync(preload, `require("electron").contextBridge.exposeInMainWorld("smoke", { pageMic: () => require("electron").ipcRenderer.invoke("smoke:page-mic") });`);
     const pageMic = () => win.webContents.executeJavaScript("window.smoke.pageMic()", true);
     win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload } });
-    // The app's own handlers (electron/main.mjs installs the same ones).
-    // `restoring`: while set, the saved sign-in is restoring; the request
-    // handler asking for it starts the restore's end, so a request that never
-    // reaches it never gets the microphone.
+    // A copy of the app's own permission handlers. `restoring`: while set, the
+    // saved sign-in is restoring, and a request waits for its end.
     let home = cloudOrigin, restoring = null;
     const waited = [];
     const permissions = appPermissionHandlers({ rendererOrigin: () => origin, mainContents: () => win?.webContents ?? null,

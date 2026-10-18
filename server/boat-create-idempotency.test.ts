@@ -75,10 +75,10 @@ describe("Boat create idempotency", () => {
       req.on("data", (chunk) => (raw += chunk));
       req.on("end", () => {
         res.setHeader("content-type", "application/json");
-        if (url.pathname === "/api/box/v1/boxes" && req.method === "GET") {
-          return res.end(JSON.stringify({ ok: true, boxes: [] }));
+        if (url.pathname === "/api/v1/sandboxes" && req.method === "GET") {
+          return res.end(JSON.stringify({ ok: true, type: "sandbox.list", sandboxes: [], pageInfo: { nextCursor: null } }));
         }
-        if (url.pathname === "/api/box/v1/boxes" && req.method === "POST") {
+        if (url.pathname === "/api/v1/sandboxes" && req.method === "POST") {
           createCount += 1;
           const key = String(req.headers["idempotency-key"] ?? "");
           createKeys.push(key);
@@ -102,15 +102,15 @@ describe("Boat create idempotency", () => {
             res.writeHead(409);
             return res.end(JSON.stringify({ ok: false, code: "idempotency_in_progress" }));
           }
-          res.writeHead(201);
-          return res.end(JSON.stringify({ ok: true, box: { id: boxId(), state: "ready" } }));
+          res.writeHead(202);
+          return res.end(JSON.stringify({ ok: true, type: "sandbox.created", sandbox: { id: boxId(), state: "ready" } }));
         }
-        if (url.pathname === `/api/box/v1/boxes/${boxId()}` && req.method === "PATCH") {
+        if (url.pathname === `/api/v1/sandboxes/${boxId()}` && req.method === "PATCH") {
           renameBodies.push(JSON.parse(raw));
-          return res.end(JSON.stringify({ ok: true, box: { id: boxId(), state: "ready" } }));
+          return res.end(JSON.stringify({ ok: true, sandbox: { id: boxId(), state: "ready" } }));
         }
-        if (url.pathname === `/api/box/v1/boxes/${boxId()}` && req.method === "GET") {
-          return res.end(JSON.stringify({ ok: true, box: { id: boxId(), state: "ready" } }));
+        if (url.pathname === `/api/v1/sandboxes/${boxId()}` && req.method === "GET") {
+          return res.end(JSON.stringify({ ok: true, sandbox: { id: boxId(), state: "ready" } }));
         }
         if (url.pathname.endsWith("/commands") && req.method === "POST") {
           return res.end(JSON.stringify({ ok: true, exitCode: 0, stdout: "ready", stderr: "" }));
@@ -122,7 +122,7 @@ describe("Boat create idempotency", () => {
           }
           return res.end(JSON.stringify({ ok: true, desktopUrl: "https://desktop.example/session" }));
         }
-        if (url.pathname === `/api/box/v1/boxes/${boxId()}` && req.method === "DELETE") {
+        if (url.pathname === `/api/v1/sandboxes/${boxId()}` && req.method === "DELETE") {
           deletedBoats.push(boxId());
           res.writeHead(202);
           return res.end(JSON.stringify({ ok: true }));
@@ -132,7 +132,7 @@ describe("Boat create idempotency", () => {
     });
     await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
     const port = (api.address() as AddressInfo).port;
-    vi.stubEnv("OMB_BOX_API", `http://127.0.0.1:${port}/api/box/v1`);
+    vi.stubEnv("OMB_BOAT_API", `http://127.0.0.1:${port}/api/v1`);
   });
 
   beforeEach(() => {
@@ -152,8 +152,6 @@ describe("Boat create idempotency", () => {
   });
 
   afterEach(() => {
-    // Every create asks for an empty guest: the bot's own engine drives the
-    // desktop from here, so no AI sign-in or key is ever sent to the Boat.
     for (const body of createBodies) expect(body).toEqual({ ttlSeconds: 8 * 60 * 60, noEnv: true });
   });
 
@@ -361,8 +359,7 @@ describe("Boat create idempotency", () => {
       expect(await workerLine(first, "first journal worker")).toBe("ready");
       expect(await workerLine(second, "second journal worker")).toBe("ready");
 
-      // Both long-lived processes loaded the empty journal before either
-      // mutation. The old in-memory cache deterministically minted two keys.
+      // Both long-lived processes loaded the empty journal before either mutation.
       first.child.stdin.end("begin\n");
       second.child.stdin.end("begin\n");
       const [firstResult, secondResult] = await Promise.all([

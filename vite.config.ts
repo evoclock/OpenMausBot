@@ -4,10 +4,10 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { DurationSequencer } from "./scripts/testing/duration-sequencer.ts";
+import { hostTimeout } from "./server/testing/host-timeout.ts";
 
-// The About dialog shows the shipped version; package.json is the one place
-// it is already maintained, so it is inlined at build time rather than
-// round-tripped through the preload bridge (which is absent in dev).
+// The About dialog's version, inlined at build time: the preload bridge is
+// absent in dev.
 const { version } = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"),
 ) as { version: string };
@@ -34,10 +34,14 @@ export default defineConfig({
     // the suite spawns fake provider CLIs and a real harness server;
     // parallel files introduce load-sensitive flakes for no win
     fileParallelism: false,
-    // --shard splits the files by recorded CI seconds, not count (docs/ci.md)
+    // --shard splits the files by recorded CI seconds, not count
     sequence: { sequencer: DurationSequencer },
-    testTimeout: 20_000,
-    hookTimeout: 30_000,
+    // Known flakes in scripts/testing/ci-retry-list.json get two retries in
+    // CI only, each reported.
+    runner: "./scripts/testing/ci-retry-runner.ts",
+    // Doubled on Windows, whose runners are about 1.45x slower.
+    testTimeout: hostTimeout(20_000),
+    hookTimeout: hostTimeout(30_000),
   },
   resolve: {
     alias: {

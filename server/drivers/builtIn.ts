@@ -1,5 +1,3 @@
-// Built-in driver registration — upstream builtInDrivers.ts: a static
-// array, nothing more. Adding a driver = write drivers/<x>.ts, append.
 import type { AnyProviderDriver } from "../contracts.ts";
 import { AntigravityDriver } from "./antigravity.ts";
 import { ClaudeDriver } from "./claude.ts";
@@ -14,10 +12,14 @@ import { OpenCodeDriver } from "./acp/opencode-go.ts";
 import { QwenAgentDriver } from "./acp/qwen.ts";
 import { CustomAcpDriver } from "./acp/custom.ts";
 import { HermesAgentDriver } from "./acp/hermes.ts";
+import { ClineAgentDriver } from "./acp/cline.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
 import { PiDriver } from "./pi.ts";
 import { MistralDriver } from "./mistral.ts";
 import { CerebrasDriver } from "./cerebras.ts";
+import { GroqDriver } from "./groq.ts";
+import { MetaDriver } from "./meta.ts";
+import { MuseCodeDriver } from "./muse-code.ts";
 import { MinimaxDriver } from "./minimax.ts";
 
 export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
@@ -30,6 +32,7 @@ export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   OpenCodeDriver,
   QwenAgentDriver,
   HermesAgentDriver,
+  ClineAgentDriver,
   CustomAcpDriver,
   PiDriver,
   OpenAICompatDriver,
@@ -39,4 +42,7 @@ export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   MinimaxDriver,
   MistralDriver,
   CerebrasDriver,
+  GroqDriver,
+  MetaDriver,
+  MuseCodeDriver,
 ];

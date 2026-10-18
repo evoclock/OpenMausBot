@@ -34,9 +34,7 @@ vi.mock("@/state/store", async (original) => {
   const actual = await original<typeof import("@/state/store")>();
   return { ...actual, useStore: () => ({ state: { ...actual.initialState, bots: avatarBots, groups: [avatarGroup] }, dispatch: vi.fn() }) };
 });
-// This file renders to a string with no DOM, so the module is replaced
-// whole rather than spread over: its context default reads window.ogb at
-// import time. An empty caption chrome is the non-Windows layout.
+// Replaced whole rather than spread over: its context default reads window.ogb at import time, and there is no DOM.
 vi.mock("./DesktopCapabilities", () => ({
   useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false } } }),
   useCaptionChrome: () => ({}),

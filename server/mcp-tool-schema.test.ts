@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createToolListNormalizer, providerSafeInputSchema } from "./mcp-tool-schema.ts";
 
-// Verbatim from `cua-driver describe browser_prepare`, cua-driver 0.22.1 —
-// the driver OpenMausBot bundles. Strict providers (OpenAI, xAI, Bedrock,
-// Kimi) reject the root anyOf whose branches carry no `type: "object"`.
+// Verbatim from `cua-driver describe browser_prepare`, cua-driver 0.22.1: strict providers reject its root anyOf.
 const BROWSER_PREPARE_0_22_1 = {
   additionalProperties: true,
   anyOf: [
@@ -50,9 +48,7 @@ describe("providerSafeInputSchema", () => {
 
     expect(safe.type).toBe("object");
     for (const keyword of ROOT_COMBINATORS) expect(safe).not.toHaveProperty(keyword);
-    // The root declarations are authoritative, not the narrower branch copies.
     expect(safe.properties).toEqual(BROWSER_PREPARE_0_22_1.properties);
-    // pid OR (allow_launch AND profile): nothing is required by every choice.
     expect(safe.required).toBeUndefined();
     expect(safe.additionalProperties).toBe(true);
   });

@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createCloudAccountClient } from "./cloud-account.mjs";
-import { CLOUD_HOME_NAME, cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, parseCloudPurchase, parseCloudSummary, parsePairingGrant, rememberedCloudHome, withCloudHome } from "./cloud-home.mjs";
+import { CLOUD_HOME_NAME, cloudHomeConnectUrl, cloudPlanDisk, cloudUnreachableText, isCloudHomeEntry, parseCloudCredit, parseCloudOffer, parseCloudPurchase, parseCloudSummary, parseCloudTrial, parsePairingGrant, parsePublicOffer, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome, withoutTrial } from "./cloud-home.mjs";
 import environments from "./environments.cjs";
 
 const NOW = 1_800_000_000_000;
@@ -18,7 +18,6 @@ test("the Admin's cloud summary becomes one plain machine state", () => {
   assert.deepEqual(parseCloudSummary({ state: "payment_problem", origin, pairingAvailable: false }), { status: "payment-problem", origin });
   assert.deepEqual(parseCloudSummary({ state: "stopped", origin: null, pairingAvailable: false }), { status: "stopped" });
   assert.deepEqual(parseCloudSummary({ state: "failed", origin, pairingAvailable: false }), { status: "failed", origin });
-  // Cloud Pro includes no AI: an allowance an older Admin still sends changes nothing.
   assert.deepEqual(parseCloudSummary({ state: "ready", origin, pairingAvailable: true, allowance: { includedUsd: 25, usedUsd: 25.4, resetsAt: NOW + 86_400_000 } }),
     { status: "ready", origin });
 });
@@ -28,7 +27,6 @@ test("a malformed summary is no machine at all", () => {
     { state: "ready", origin: "http://omb-u-1a2b3c4d5e6f.fly.dev" }, { state: "ready", origin: `${origin}/pair` },
     { state: "ready", origin: "https://user:pw@omb-u-1a2b3c4d5e6f.fly.dev" }, { state: "ready", origin: "https://localhost" },
     { state: "stopped", origin: "javascript:alert(1)" }, { state: "toString", origin }, { state: "__proto__", origin },
-    // an included-AI state from before Cloud Pro dropped included AI
     { state: "allowance_used", origin }]) {
     assert.equal(parseCloudSummary(input), null, JSON.stringify(input));
   }
@@ -48,9 +46,27 @@ test("the machine is listed under Servers once, never renamed and never made act
   assert.equal(withCloudHome(local, null, () => "x"), local);
   assert.equal(withCloudHome(local, { status: "provisioning", origin }, () => "x"), local);
   const listed = withCloudHome(local, { status: "ready", origin }, () => "cloud-1");
-  assert.deepEqual(listed, { environments: [{ id: "cloud-1", name: CLOUD_HOME_NAME, origin }], activeId: environments.LOCAL_ID });
+  assert.deepEqual(listed, { environments: [{ id: "cloud-1", kind: "remote", name: CLOUD_HOME_NAME, origin, home: true }], activeId: environments.LOCAL_ID });
   const renamed = { ...listed, environments: [{ ...listed.environments[0], name: "Work cloud" }] };
   assert.equal(withCloudHome(renamed, { status: "stopped", origin }, () => "cloud-2"), renamed);
+  assert.equal(savedCloudHomeOrigin(renamed), origin, "the hint follows the entry this app listed, whatever it is called");
+});
+
+test("the name and colour chosen while it was set up are what it is listed under; anything else is My Cloud in no colour", () => {
+  const local = { environments: [], activeId: environments.LOCAL_ID };
+  assert.deepEqual(withCloudHome(local, { status: "ready", origin }, () => "cloud-1", { name: "Studio", color: "teal" }).environments,
+    [{ id: "cloud-1", kind: "remote", name: "Studio", origin, color: "teal", home: true }]);
+  assert.deepEqual(withCloudHome(local, { status: "ready", origin }, () => "cloud-1", { name: "", color: "#ff0000" }).environments,
+    [{ id: "cloud-1", kind: "remote", name: CLOUD_HOME_NAME, origin, home: true }]);
+  const saved = environments.parseEnvironments(environments.serializeEnvironments(withCloudHome(local, { status: "ready", origin }, () => "cloud-1", { name: "Studio", color: "teal" })));
+  assert.deepEqual(saved.environments, [{ id: "cloud-1", kind: "remote", name: "Studio", origin, color: "teal", home: true }]);
+  assert.deepEqual(environments.parseEnvironments({ environments: [{ id: "c", origin, color: "url(javascript:x)", home: "yes" }] }).environments,
+    [{ id: "c", kind: "remote", name: new URL(origin).host, origin }], "a colour is one of six names; anything else is dropped");
+  const recolored = environments.withEnvironmentLook(saved, origin, { name: "Studio two", color: "red" });
+  assert.deepEqual(recolored.environments[0], { id: "cloud-1", kind: "remote", name: "Studio two", origin, color: "red", home: true });
+  assert.equal(environments.withEnvironmentLook(recolored, origin, { name: "Studio two", color: "red" }), recolored, "nothing to change: the same state");
+  assert.equal(environments.withEnvironmentLook(recolored, "https://elsewhere.example", { name: "X", color: "red" }), recolored);
+  assert.deepEqual(environments.workspaceSummary({ ...recolored, activeId: "cloud-1" }), { local: false, name: "Studio two", origin, color: "red" });
 });
 
 test("connecting uses the pairing page with the code in the hash, or the machine itself", () => {
@@ -58,11 +74,9 @@ test("connecting uses the pairing page with the code in the hash, or the machine
   assert.equal(cloudHomeConnectUrl({ origin, grant: { origin, code, expiresAt: NOW } }, NOW), origin);
   assert.equal(cloudHomeConnectUrl({ origin, grant: { origin: "https://other.fly.dev", code, expiresAt: NOW + 1 } }, NOW), origin);
   assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW), origin);
-  // Use your Cloud on your phone: the one fixed request, before the hash, which keeps the code.
   assert.equal(cloudHomeConnectUrl({ origin, grant: { origin, code, expiresAt: NOW + 1 } }, NOW, "phone"), `${origin}/pair?desktop-settings=phone#code=${code}`);
   assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW, "phone"), `${origin}/?desktop-settings=phone`);
   assert.equal(cloudHomeConnectUrl({ origin, grant: null }, NOW, "evil"), origin);
-  // The link the existing Connect-to-a-server flow accepts.
   assert.deepEqual(environments.parseHostedWorkspaceLink(`${origin}/pair#code=${code}`), { origin, code, url: `${origin}/pair#code=${code}` });
 });
 
@@ -72,7 +86,7 @@ async function admin(t) {
     entitlement: { plan: "pro", status: "active", expiresAt: NOW + 30 * 86_400_000, version: 3 } };
   const identity = () => ({ cloudContractVersion: 1, expiresAt: f.now + 86_400_000, device: { id: "fixture-device" }, account: { id: "fixture-account", email: "person@example.test" } });
   const server = createServer(async (req, res) => {
-    for await (const _chunk of req) { /* drain */ }
+    for await (const _chunk of req) {}
     f.requests.push(`${req.method} ${req.url} ${req.headers.authorization === `Bearer ${accessToken}` ? "token" : "anonymous"}`);
     const send = (status, data) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); };
     if (req.url === "/api/cloud/desktop/authorize") return send(201, { cloudContractVersion: 1, deviceCode: "A".repeat(43), userCode: "ABCDE-FGHJK",
@@ -166,11 +180,11 @@ test("main lists the machine from verified states only, and connects without a d
   const start = source.indexOf("function rememberCloudHome("), end = source.indexOf("async function forgetEnvironment(", start);
   assert.ok(start > 0 && end > start);
   const persisted = [], navigated = [], dialogs = [], probes = [];
-  let client, signedIn = false;
+  let client, signedIn = false, look = null;
   const context = vm.createContext({
     environmentsState: { environments: [], activeId: environments.LOCAL_ID },
     persistEnvironments: next => { persisted.push(next); context.environmentsState = next; },
-    navigateMainWindow: url => navigated.push(url), withCloudHome, cloudHomeConnectUrl, withActive: environments.withActive,
+    navigateMainWindow: url => navigated.push(url), withCloudHome, cloudHomeConnectUrl, withActive: environments.withActive, cloudLook: { pending: () => look },
     randomUUID: () => "cloud-home-id", slog: () => {}, Date: { now: () => NOW }, AbortSignal,
     session: { defaultSession: { fetch: async (url, init) => { probes.push([url, init.credentials]); return { ok: signedIn, json: async () => ({ kind: signedIn ? "session" : undefined }) }; } } },
     dialog: { showMessageBox: async () => { dialogs.push(1); return { response: 1 }; } },
@@ -180,24 +194,26 @@ test("main lists the machine from verified states only, and connects without a d
   context.rememberCloudHome({ status: "unavailable", machine: { status: "ready", origin } });
   context.rememberCloudHome({ status: "signed-out" });
   assert.deepEqual(persisted, []);
+  look = { name: "Studio", color: "purple" };
   context.rememberCloudHome({ status: "connected", machine: { status: "ready", origin } });
   context.rememberCloudHome({ status: "connected", machine: { status: "ready", origin } });
   assert.equal(persisted.length, 1);
   assert.equal(context.environmentsState.activeId, environments.LOCAL_ID);
+  assert.deepEqual([context.environmentsState.environments[0].name, context.environmentsState.environments[0].color], ["Studio", "purple"], "listed as named while it was set up");
+  context.environmentsState = { environments: [], activeId: environments.LOCAL_ID }; look = null;
 
-  let minted = 0;
-  client = { homeTarget: () => ({ origin }), pairHome: async () => { minted++; return { origin, code, expiresAt: NOW + 1 }; }, state: () => ({ status: "connected" }) };
+  let minted = 0, done = 0;
+  client = { homeTarget: () => ({ origin }), pairHome: async () => { minted++; return { origin, code, expiresAt: NOW + 1 }; }, state: () => ({ status: "connected" }), checkoutDone: () => done++ };
   await context.connectCloudHome();
+  assert.equal(done, 1, "opened: the purchase is over");
   assert.deepEqual(probes, [[`${origin}/api/auth/session`, "include"]]);
   assert.deepEqual(navigated, [`${origin}/pair#code=${code}`]);
   assert.equal(context.environmentsState.activeId, "cloud-home-id");
   assert.equal(minted, 1);
-  // Already signed in there: switch without minting another code.
   signedIn = true;
   await context.connectCloudHome();
   assert.deepEqual(navigated.at(-1), origin);
   assert.equal(minted, 1);
-  // Use your Cloud on your phone lands on its phone pairing, signed in or not.
   await context.connectCloudHome("phone");
   assert.deepEqual(navigated.at(-1), `${origin}/?desktop-settings=phone`);
   signedIn = false;
@@ -211,11 +227,28 @@ test("main lists the machine from verified states only, and connects without a d
   assert.equal(minted, 2);
 });
 
+test("why a ready Cloud can't be reached is read when the Admin sends it, and says so plainly; a malformed reason is dropped, never the machine", () => {
+  const host = { cause: "host", since: NOW - 6 * 60_000 }, quiet = { cause: "no_answer", since: NOW - 16 * 60_000 };
+  assert.deepEqual(parseCloudSummary({ state: "ready", origin, pairingAvailable: true, unreachable: host }), { status: "ready", origin, unreachable: host });
+  assert.deepEqual(parseCloudSummary({ state: "ready", origin, unreachable: quiet }), { status: "ready", origin, unreachable: quiet });
+  for (const unreachable of [{ cause: "reboot", since: NOW }, { cause: "host" }, { cause: "host", since: "now" }, { cause: "toString", since: NOW }, "host", null, []])
+    assert.deepEqual(parseCloudSummary({ state: "ready", origin, unreachable }), { status: "ready", origin }, JSON.stringify(unreachable));
+  assert.deepEqual(parseCloudSummary({ state: "stopped", unreachable: host }), { status: "stopped" });
+  const connected = machine => ({ status: "connected", machine });
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host })),
+    "The server My Cloud runs on is being restarted by our hosting provider. My Cloud and its files are safe, and it comes back on its own, usually within about 20 minutes.");
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: quiet }), origin), "My Cloud hasn't answered for a few minutes. Nothing was lost, and we've been told.");
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host }), "https://elsewhere.example.test"), null);
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin })), null);
+  assert.equal(cloudUnreachableText({ status: "unavailable", machine: { status: "ready", origin, unreachable: host } }), null);
+  assert.equal(cloudUnreachableText(null), null);
+  assert.ok(!/Fly/.test(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host }))));
+});
+
 test("setup progress, a failed setup's next try and the disk are read when the Admin sends them, and never cost the machine", () => {
   assert.deepEqual(parseCloudSummary({ state: "setting_up", setup: { step: "starting", slow: true } }), { status: "provisioning", setup: { step: "starting", slow: true } });
   assert.deepEqual(parseCloudSummary({ state: "setting_up", setup: { step: "checking", slow: "yes" } }), { status: "provisioning", setup: { step: "checking" } });
   for (const setup of [{ step: "booting" }, { step: "constructor" }, "storage", null, []]) assert.deepEqual(parseCloudSummary({ state: "setting_up", setup }), { status: "provisioning" });
-  // Steps only while setting up; a retry time only when failed.
   assert.deepEqual(parseCloudSummary({ state: "ready", origin, setup: { step: "storage" }, retryAt: NOW }), { status: "ready", origin });
   assert.deepEqual(parseCloudSummary({ state: "failed", retryAt: NOW + 60_000 }), { status: "failed", retryAt: NOW + 60_000 });
   assert.deepEqual(parseCloudSummary({ state: "failed", retryAt: "soon" }), { status: "failed" });
@@ -229,12 +262,98 @@ test("a payment being linked is read on its own, and only in its two known state
   for (const input of [null, undefined, "held", { state: "claimed" }, { state: "active", plan: "pro" }, []]) assert.equal(parseCloudPurchase(input), null);
 });
 
+test("a free trial is read in the Admin's five states, with only what is well formed; anything else is no trial", () => {
+  const DAY = 86_400_000, endsAt = NOW + 2 * DAY;
+  const active = { state: "active", tier: "pro", endsAt, amount: 4900, chargeAt: endsAt, holdUntil: null, deleteAt: null, keep: "none" };
+  assert.deepEqual(parseCloudTrial(active), active);
+  const ending = { state: "ending", tier: "max", endsAt, amount: 9900, chargeAt: null, holdUntil: null, deleteAt: endsAt + 3 * DAY, keep: "portal" };
+  assert.deepEqual(parseCloudTrial(ending), ending);
+  for (const state of ["processing", "late", "ended"]) assert.equal(parseCloudTrial({ ...active, state })?.state, state);
+  assert.equal(parseCloudTrial({ ...active, tier: "team-2027" }).tier, "team-2027");
+  assert.deepEqual(parseCloudTrial({ ...active, tier: "Pro <b>", amount: 49.5, chargeAt: "soon", holdUntil: -1, deleteAt: {} }),
+    { state: "active", endsAt, amount: null, chargeAt: null, holdUntil: null, deleteAt: null, keep: "none" });
+  assert.deepEqual(parseCloudTrial({ state: "late", endsAt, keep: "portal" }),
+    { state: "late", endsAt, amount: null, chargeAt: null, holdUntil: null, deleteAt: null, keep: "portal" });
+  assert.deepEqual(parseCloudTrial({ ...active, personalAmount: 2900 }), { ...active, personalAmount: 2900 });
+  for (const personalAmount of [29.5, -1, "2900", 0, 20_000_000]) assert.equal("personalAmount" in parseCloudTrial({ ...active, personalAmount }), false, String(personalAmount));
+  for (const input of [null, undefined, "active", [], { ...active, state: "paused" }, { ...active, state: "toString" }, { ...active, state: ["active"] },
+    { ...active, endsAt: 0 }, { ...active, endsAt: "2026-10-15" }, { ...active, endsAt: 1.5 }, { ...active, keep: "refund" }, { ...active, keep: undefined }]) {
+    assert.equal(parseCloudTrial(input), null, JSON.stringify(input));
+  }
+});
+
+test("the trial's AI credit is read only when it adds up, and only while it lasts", () => {
+  assert.deepEqual(parseCloudCredit({ grantedUsd: 5, remainingUsd: 3.2, state: "active" }), { grantedUsd: 5, remainingUsd: 3.2, state: "active" });
+  assert.deepEqual(parseCloudCredit({ grantedUsd: 5, remainingUsd: 0, state: "used_up", spentUsd: 5 }), { grantedUsd: 5, remainingUsd: 0, state: "used_up" });
+  for (const input of [null, "5", [], { grantedUsd: 5, remainingUsd: 3, state: "ended" }, { grantedUsd: 0, remainingUsd: 0, state: "active" },
+    { grantedUsd: 5, remainingUsd: 6, state: "active" }, { grantedUsd: 5, remainingUsd: -1, state: "active" }, { grantedUsd: "5", remainingUsd: 3, state: "active" },
+    { grantedUsd: Infinity, remainingUsd: 3, state: "active" }, { grantedUsd: 5, remainingUsd: Number.NaN, state: "active" }, { grantedUsd: 5, state: "active" }]) {
+    assert.equal(parseCloudCredit(input), null, JSON.stringify(input));
+  }
+});
+
+const allowances = (computers, diskGb, maxDiskGb = diskGb) => ({ cpus: computers, cpuKind: "shared", memoryMb: computers * 1024, diskGb, maxDiskGb, computers, computerHours: computers * 50, voiceCharacters: 100_000 });
+const catalog = () => [
+  { tier: "personal", label: "Personal", price: { currency: "USD", amount: 2900, interval: "month", regularAmount: null, note: null }, allowances: allowances(1, 10) },
+  { tier: "pro", label: "Pro", price: { currency: "USD", amount: 4900, interval: "month", regularAmount: 8900, note: "Launch price, then $89/month." }, allowances: allowances(4, 40, 50) },
+  { tier: "max", label: "Max", price: { currency: "USD", amount: 9900, interval: "month", regularAmount: null, note: null }, allowances: allowances(8, 80, 100) },
+];
+
+test("the session's offer is this account's: its plans, the preselected one, and the trial's extras only with a trial", () => {
+  const offer = parseCloudOffer({ plans: catalog(), recommended: "pro", trialDays: 7, creditUsd: 5, refundDays: 14, reminderDays: 2, checkout: { plan: "pro", openUntil: NOW + 3600_000 } });
+  assert.deepEqual(offer.plans.map(plan => [plan.tier, plan.label, plan.amount, plan.trialDays]), [["personal", "Personal", 2900, 7], ["pro", "Pro", 4900, 7], ["max", "Max", 9900, 7]]);
+  assert.deepEqual(offer.plans[1].allowances, { cpus: 4, memoryMb: 4096, diskGb: 40, maxDiskGb: 50, computers: 4, computerHours: 200, voiceCharacters: 100_000 });
+  assert.equal(offer.recommended, "pro");
+  assert.deepEqual([offer.creditUsd, offer.refundDays, offer.reminderDays], [5, 14, 2]);
+  assert.deepEqual(offer.checkout, { plan: "pro", openUntil: NOW + 3600_000 });
+  assert.ok(!JSON.stringify(offer).includes("8900") && !JSON.stringify(offer).includes("Launch"));
+  const perPlan = parseCloudOffer({ plans: catalog().map(plan => plan.tier === "max" ? plan : { ...plan, trialDays: 7 }), trialDays: 7, creditUsd: 5 });
+  assert.deepEqual(perPlan.plans.map(plan => plan.trialDays ?? null), [7, 7, null]);
+  const paid = parseCloudOffer({ plans: catalog(), creditUsd: 5, reminderDays: 2, refundDays: 14 });
+  assert.deepEqual(paid.plans.map(plan => plan.trialDays ?? null), [null, null, null]);
+  assert.deepEqual([paid.creditUsd, paid.reminderDays, paid.refundDays], [undefined, undefined, 14]);
+  assert.equal(parseCloudOffer({ plans: catalog(), recommended: "team" }).recommended, "pro");
+  assert.equal(parseCloudOffer({ plans: catalog().filter(plan => plan.tier !== "pro") }).recommended, "personal");
+});
+
+test("a malformed offer is no offer, and a malformed plan or extra is left out, never trusted in part", () => {
+  for (const input of [null, undefined, "offer", [], {}, { plans: [] }, { plans: "pro" }, { plans: [{ tier: "pro" }] },
+    { plans: [{ tier: "pro", price: { currency: "EUR", amount: 4900, interval: "month" } }] },
+    { plans: [{ tier: "pro", price: { currency: "USD", amount: 4900, interval: "year" } }] },
+    { plans: [{ tier: "Pro <b>", price: { currency: "USD", amount: 4900, interval: "month" } }] },
+    { plans: [{ tier: "pro", price: { currency: "USD", amount: 49.5, interval: "month" } }] },
+    { plans: [{ tier: "pro", price: { currency: "USD", amount: 0, interval: "month" } }] }]) {
+    assert.equal(parseCloudOffer(input), null, JSON.stringify(input));
+  }
+  const [personal, pro] = catalog();
+  const offer = parseCloudOffer({ plans: [personal, { ...pro, label: "Pro <script>", allowances: { cpus: "4" }, trialDays: 99 }, { ...pro }, { tier: "team", price: null }],
+    trialDays: 0, creditUsd: 500, refundDays: 400, reminderDays: 2, checkout: { plan: "max", openUntil: NOW } });
+  assert.deepEqual(offer.plans, [{ tier: "personal", label: "Personal", amount: 2900, allowances: { cpus: 1, memoryMb: 1024, diskGb: 10, maxDiskGb: 10, computers: 1, computerHours: 50, voiceCharacters: 100_000 } },
+    { tier: "pro", amount: 4900 }]);
+  assert.equal(offer.checkout, undefined); assert.equal(offer.refundDays, undefined); assert.equal(offer.creditUsd, undefined);
+});
+
+test("the public offer is the catalog, with the free trial for new customers when the Admin says so", () => {
+  const offer = parsePublicOffer({ name: "OpenMausBot", surface: "cloud", plans: catalog(), trial: { days: 7, holdDays: 3, creditUsd: 5, reminderDays: 2 }, refundDays: 14 });
+  assert.deepEqual(offer.plans.map(plan => plan.trialDays), [7, 7, 7]);
+  assert.deepEqual([offer.recommended, offer.creditUsd, offer.reminderDays, offer.refundDays, offer.checkout], ["pro", 5, 2, 14, undefined]);
+  const today = parsePublicOffer({ plans: catalog() });
+  assert.deepEqual(today.plans.map(plan => plan.trialDays ?? null), [null, null, null]);
+  assert.equal(today.creditUsd, undefined); assert.equal(today.refundDays, undefined);
+  for (const config of [null, "config", { trial: { days: 7 } }, { plans: [], trial: { days: 7 } }]) assert.equal(parsePublicOffer(config), null);
+  for (const trial of [{ days: 0 }, { days: 31 }, { days: "7" }, { days: 7.5 }]) {
+    assert.deepEqual(parsePublicOffer({ plans: catalog(), trial }).plans.map(plan => plan.trialDays ?? null), [null, null, null], JSON.stringify(trial));
+  }
+  const plain = withoutTrial(offer);
+  assert.deepEqual(plain.plans.map(plan => plan.trialDays ?? null), [null, null, null]);
+  assert.deepEqual([plain.creditUsd, plain.reminderDays, plain.refundDays], [undefined, undefined, 14]);
+  assert.equal(withoutTrial(null), null);
+});
+
 test("a plan's disk is only what the Admin says; without its word a move is measured against today's free space", () => {
   const GB = 1024 ** 3, paid = tier => ({ status: "connected", entitlement: { plan: "pro", ...(tier ? { tier } : {}), status: "active", expiresAt: NOW + 1, version: 1 } });
-  // Today's Admin sends no disk: no plan is assumed to grow (Pro's disk is fixed unless the Admin is set to let it grow).
   for (const tier of ["personal", "pro", undefined, "max", "team"]) assert.equal(cloudPlanDisk({ ...paid(tier), machine: { status: "ready", origin } }), null);
   assert.deepEqual(cloudPlanDisk({ ...paid("pro"), machine: { status: "ready", origin, disk: { gb: 10, maxGb: 50 } } }), { volumeBytes: 10 * GB, maxBytes: 50 * GB });
-  // The top plan is marked, so nobody on it is pointed at a larger one.
   assert.deepEqual(cloudPlanDisk({ ...paid("max"), machine: { status: "ready", origin, disk: { gb: 30, maxGb: 80 } } }), { volumeBytes: 30 * GB, maxBytes: 80 * GB, largest: true });
   for (const state of [null, { status: "signed-out" }, { status: "unavailable", lastPlan: { tier: "max", active: true } },
     { status: "connected", entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 0 }, machine: { status: "ready", origin, disk: { gb: 10, maxGb: 10 } } }]) assert.equal(cloudPlanDisk(state), null);
@@ -249,8 +368,6 @@ test("the Cloud's address is remembered through a failed check for the same acco
   known = rememberedCloudHome(known, { status: "reauth-required", account });
   assert.deepEqual(known, { accountId: "a1", origin });
   assert.equal(rememberedCloudHome(known, { status: "connected", account: { id: "a2", email: "other@example.test" } }), null);
-  // A check that names the machine without its address (stopped) keeps it;
-  // one that names no machine for this account forgets it.
   assert.deepEqual(rememberedCloudHome(known, { status: "connected", account, machine: { status: "stopped" } }), { accountId: "a1", origin });
   assert.equal(rememberedCloudHome(known, { status: "connected", account }), null);
   assert.equal(rememberedCloudHome(known, { status: "signed-out" }), null);
@@ -278,10 +395,8 @@ test("the Server menu opens My Cloud through the Cloud's own connection, never a
   vm.runInContext(`${source.slice(start, end)}; this.switchEnvironment = switchEnvironment; this.remember = value => { rememberedHome = value; };`, context);
   await context.switchEnvironment("cloud");
   assert.deepEqual(calls, ["connect"]);
-  // Another server opens as before.
   calls.length = 0; await context.switchEnvironment("vps");
   assert.deepEqual(calls, ["active:vps", `navigate:${other.origin}`]);
-  // OMB Cloud cannot be asked (a check failed, the sign-in ended): known by its remembered address.
   context.environmentsState = { environments: [entry, other], activeId: environments.LOCAL_ID };
   context.cloudAccount = { homeTarget: () => null }; context.remember({ accountId: "a1", origin });
   connect = async () => { calls.push("connect"); throw new Error("Your Cloud is not ready to connect yet."); };
@@ -289,7 +404,6 @@ test("the Server menu opens My Cloud through the Cloud's own connection, never a
   assert.deepEqual(calls, ["connect", "settings"], "not signed in there: Settings → OMB Cloud says what to do next");
   signedIn = true; calls.length = 0; await context.switchEnvironment("cloud");
   assert.deepEqual(calls, ["connect", "active:cloud", `navigate:${origin}`], "signed in there already: it opens as any server does");
-  // Without a Cloud sign-in on this computer, a saved entry is just a server.
   context.cloudAccount = null; context.environmentsState = { environments: [entry, other], activeId: environments.LOCAL_ID };
   calls.length = 0; await context.switchEnvironment("cloud");
   assert.deepEqual(calls, ["active:cloud", `navigate:${origin}`]);

@@ -1,6 +1,3 @@
-// Contract tests for the bring-your-own ACP driver. The scripted fake ACP
-// CLI stands in for "any agent that speaks ACP over stdio" — exactly the
-// promise the driver makes to users.
 import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,8 +16,6 @@ describe("CustomAcpDriver config", () => {
   it("teaches instead of ENOENT when the command is missing or blank", async () => {
     expect(() => CustomAcpDriver.decodeConfig({})).toThrow(/Set CLI|config\.json/);
     expect(() => CustomAcpDriver.decodeConfig({ cli: "   " })).toThrow(/<your-agent> acp/);
-    // registry uses defaultConfig() verbatim when the entry has no config —
-    // create() must reject with the same teaching message, never spawn ""
     await expect(
       CustomAcpDriver.create({
         instanceId: "custom-blank",
@@ -48,7 +43,6 @@ describe("CustomAcpDriver config", () => {
       default: "agent-default",
       options: [{ id: "agent-default", label: "Agent default" }],
     });
-    // no install descriptor: there is nothing generic to install
     expect(CustomAcpDriver.install).toBeUndefined();
   });
 });
@@ -94,9 +88,9 @@ describe("CustomAcpDriver turns (fake CLI)", () => {
       "turn.started",
       "session.started",
       "content.delta",
-      "item.completed", // assistant text
-      "item.started", // tool tc-1
-      "item.completed", // tool tc-1 done
+      "item.completed",
+      "item.started",
+      "item.completed",
       "thread.token-usage.updated",
       "turn.completed",
     ]);
@@ -116,8 +110,6 @@ describe("CustomAcpDriver turns (fake CLI)", () => {
 
     const seen = JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string | undefined> };
     expect(seen.env.MY_AGENT_TOKEN).toBe("tok-123");
-    // deny-by-default credential hygiene: a custom CLI never inherits
-    // another provider's billing key
     expect(seen.env.XAI_API_KEY).toBeUndefined();
   });
 

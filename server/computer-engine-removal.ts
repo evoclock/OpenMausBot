@@ -1,19 +1,9 @@
-// The Computer engine is gone. It ran a whole turn on Boat's own agent, which
-// has no AI sign-in on a Cloud, so a bot set to it failed there. Every bot now
-// keeps its own engine and uses a cloud computer as a tool. This file is the
-// one place that still knows the removed engine's names, so settings saved
-// before the removal can be moved off it, once, on every kind of server
-// (moveOffComputerEngine in index.ts, Store.retireInstances).
 import type { InstanceConfigMap } from "./contracts.ts";
 
-/** The removed engine's driver kind ("boxAgent" was Boat's historical name). */
 export const REMOVED_COMPUTER_DRIVER = "boxAgent";
-/** The instance id every default fleet gave it. */
 const REMOVED_COMPUTER_INSTANCE = "computer";
 
-/** Instance ids that named the Computer engine. A saved fleet may hold the
- * default id or one of its own; an id the person reused for another engine
- * is theirs and stays. */
+/** An id the person reused for another engine is theirs and stays. */
 export function removedComputerInstanceIds(saved: InstanceConfigMap | undefined): Set<string> {
   const ids = new Set<string>();
   const reused = saved && Object.hasOwn(saved, REMOVED_COMPUTER_INSTANCE) &&
@@ -25,8 +15,6 @@ export function removedComputerInstanceIds(saved: InstanceConfigMap | undefined)
   return ids;
 }
 
-/** A fleet without the removed engine: a saved entry for it is dropped, so
- * it is never offered and the next save leaves it off disk. */
 export function withoutComputerEngine(map: InstanceConfigMap): InstanceConfigMap {
   for (const [id, entry] of Object.entries(map)) {
     if (entry.driver === REMOVED_COMPUTER_DRIVER) delete map[id];
@@ -34,33 +22,18 @@ export function withoutComputerEngine(map: InstanceConfigMap): InstanceConfigMap
   return map;
 }
 
-/** One conversation told about the move (Store.retireInstances): its engine, or its bot's, was the removed one. */
 export interface ComputerEngineMove {
   botId: string;
   threadId: string;
-  /** "bot": the bot's own engine moved, told in its open conversation;
-   * "conversation": only this conversation's engine did; "bot-only": the
-   * bot's own engine moved, told in its open conversation, which has an
-   * engine of its own and keeps it. */
+  /** "bot": the bot's engine moved; "conversation": only this conversation's did; "bot-only": the bot's did, but this conversation keeps its own. */
   scope: "bot" | "conversation" | "bot-only";
-  /** It works on the bot's cloud computer after the move, as it did before. */
   cloud: boolean;
-  /** It worked on the bot's cloud computer, and the new engine can't use a
-   * computer (canWorkOnCloud). "auto": on Auto, it now works without one.
-   * "works-on": the bot's Works on still says Cloud, and "pin": the person's
-   * place for this conversation still does, so each turn there is refused
-   * until that or the model changes. false: neither. */
+  /** It worked on the cloud computer and the new engine can't: "auto" now works without one; "works-on" or "pin" still say Cloud, so turns are refused. */
   noComputer: false | "auto" | "works-on" | "pin";
-  /** Its permissions went back to Ask, as on any switch to another engine
-   * ("bot-only": the bot's own did; the conversation keeps its level). */
+  /** Permissions went back to Ask, as on any engine switch. */
   askNow: boolean;
 }
 
-/** The line a moved conversation shows, in plain words. It names the removed
- * choice as people saw it in the model list ("Computer", not the panel's
- * Computer tab), claims a cloud computer only where one is still used, says
- * so when the new engine can't use the one it had, and names the one setting
- * to change when a turn there would be refused. */
 export function computerEngineMoveText(
   move: Pick<ComputerEngineMove, "scope" | "cloud" | "askNow"> & Partial<Pick<ComputerEngineMove, "noComputer">>,
   botName: string,
@@ -90,9 +63,7 @@ export function computerEngineMoveText(
   return `${head} ${removed}${place}${ask}`;
 }
 
-/** Writes each moved conversation's line. The move is saved by then, so a
- * later try never finds these conversations again: a line that fails is
- * logged, and every other line is still written. */
+/** The move is saved already, so a failing line is logged and every other line is still written. */
 export function writeComputerEngineMoveLines(moves: readonly ComputerEngineMove[], write: (move: ComputerEngineMove) => void): void {
   for (const move of moves) {
     try {

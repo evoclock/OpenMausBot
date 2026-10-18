@@ -1,6 +1,4 @@
-// Stream-termination contract of the shared chat-completions runtime, driven
-// through the openai-compat driver. MiniMax's api.minimax.io/v1 closes the
-// connection after the finish_reason chunk without ever sending `data: [DONE]`,
+// MiniMax's api.minimax.io/v1 closes the connection after the finish_reason chunk without `data: [DONE]`,
 // and reports account failures as HTTP 200 with a JSON `base_resp` body.
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ensureDirs, NATIVE_DIR } from "../config.ts";
-import type { RuntimeEvent } from "../contracts.ts";
+import type { RuntimeEvent, SendTurnInput } from "../contracts.ts";
 import { GrokDriver } from "./grok.ts";
 import { MinimaxDriver } from "./minimax.ts";
 import { OpenAICompatDriver } from "./openai-compat.ts";
@@ -18,8 +16,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 const sse = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 
-/** `body` is the stream every request gets, or a factory for each chat
- * completion request (the model catalog fetch then gets a 404). */
+/** `body` is every request's stream, or a factory per chat completion (the catalog fetch then gets a 404). */
 async function runTurn(body: string | (() => Response), driver: "openai-compat" | "minimax" = "openai-compat") {
   vi.stubGlobal("fetch", vi.fn(async (url: string | URL) => typeof body === "string" ? sse(body)
     : String(url).endsWith("/chat/completions") ? body() : new Response("", { status: 404 })));
@@ -95,6 +92,14 @@ describe("createOpenAIChatRuntime one-shot usage", () => {
     await instance.dispose();
   });
 
+  it("writes with the model a caller names, and with its own quick model otherwise", async () => {
+    const instance = await fixture({ choices });
+    await expect(instance.generateText!("summarize", { model: "grok-4.7" })).resolves.toBe("helper result");
+    await instance.generateText!("summarize");
+    expect(vi.mocked(fetch).mock.calls.map((call) => JSON.parse(call[1]!.body as string).model)).toEqual(["grok-4.7", "grok-3-mini"]);
+    await instance.dispose();
+  });
+
   it("does not invent usage for malformed JSON or an aborted request", async () => {
     const instance = await fixture("not JSON");
     const onUsage = vi.fn();
@@ -106,12 +111,6 @@ describe("createOpenAIChatRuntime one-shot usage", () => {
 });
 
 describe("createOpenAIChatRuntime tool approvals", () => {
-  // A bot on an OpenAI-compatible engine used to stop for a card on EVERY
-  // tool call, with no way out: this family has no provider reviewer, so
-  // Auto behaves like Ask; the card offers no session-wide allow; and the
-  // "Always allowed" list only ever fills from peer-comms grants. Full
-  // access is the person's explicit grant to answer every prompt, and with
-  // no provider to hand it to, the runtime has to honour it itself.
   const mcpDir: string[] = [];
   afterEach(() => { for (const d of mcpDir.splice(0)) rmSync(d, { recursive: true, force: true }); });
 
@@ -176,10 +175,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       const withheld = bodies[1].messages.find((message: any) => message.role === "tool" && message.tool_call_id === "withheld");
       expect(JSON.parse(withheld.content)).toMatchObject({ ok: false });
       expect(withheld.content).toMatch(/tool selection excludes/i);
-      // A withheld (failed) tool result must not end the turn: the runtime
-      // feeds it back and accepts the model's final answer.
-      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(false);
-      expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+      expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
     } finally { await instance.dispose(); }
   }, 20_000);
 
@@ -257,8 +253,6 @@ describe("createOpenAIChatRuntime tool approvals", () => {
       if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
     }, { timeout: 10_000 });
     await instance.dispose();
-    // Full access answered every permission on this turn; it must not have
-    // touched the question, and no permission card may stand in for it.
     expect(events.filter((event) => event.type === "request.opened")).toHaveLength(1);
     expect(events.filter((event) => event.type === "request.resolved")).toEqual([
       expect.objectContaining({ behavior: "answer", source: "user" }),
@@ -269,10 +263,7 @@ describe("createOpenAIChatRuntime tool approvals", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
   }, 20_000);
 
-  it("does not end the turn on a failed tool call — it feeds the failure back and accepts the final answer", async () => {
-    // A failed tool op used to terminate the whole turn with tool_error even
-    // when the model then produced a final answer. It must instead get one
-    // corrective round and complete ok.
+  it("ends the turn on a failed tool call, never asks the model to run it again, and does not continue it by itself", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omb-chat-toolerr-")); mcpDir.push(dir);
     const script = join(dir, "fake-fail-mcp.mjs");
     writeFileSync(script, `#!/usr/bin/env node
@@ -314,14 +305,122 @@ describe("createOpenAIChatRuntime tool approvals", () => {
         threadId: "toolerr", text: "Use the tool, then answer.", approvalMode: "full",
         integrations: { custom: { fx: { command: script, args: [], env: {} } } },
       });
-      await vi.waitFor(() => expect(bodies.length).toBeGreaterThanOrEqual(3), { timeout: 10_000 });
-      const corrective = bodies[2]!.messages.findLast((message: any) => message.role === "user");
-      expect(String(corrective?.content)).toMatch(/tool operations .*failed|ok:false/i);
       await vi.waitFor(() => expect(events.some((event) => event.type === "turn.completed")).toBe(true), { timeout: 10_000 });
+      expect(bodies).toHaveLength(2);
+      expect(bodies.flatMap((body) => body.messages).some((message: any) => message.role === "user" && /re-run the failed/i.test(String(message.content)))).toBe(false);
+      const completed = events.find((event) => event.type === "turn.completed") as any;
+      expect(completed.ok).toBe(false);
+      expect(completed.stopReason).toBe("tool_error");
+      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(true);
+      expect(events.some((event) => event.type === "cap.exhausted")).toBe(false);
+    } finally {
+      await instance.dispose();
+    }
+  }, 20_000);
+
+  describe("corrective rounds", () => {
+    const toolCall = (id: string, name: string, args: unknown = {}) =>
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] } }] })}\n\n`
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n';
+    const answer = 'data: {"choices":[{"index":0,"delta":{"content":"Done."}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+    const run = async (replies: string[], rounds?: number, integrations?: SendTurnInput["integrations"]) => {
+      const bodies: any[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: unknown, init?: RequestInit) => {
+        if (!String(input).endsWith("/chat/completions")) return new Response(JSON.stringify({ data: [] }));
+        bodies.push(JSON.parse(String(init?.body)));
+        return new Response(replies[bodies.length - 1] ?? answer, { headers: { "content-type": "text/event-stream" } });
+      }));
+      const instance = await OpenAICompatDriver.create({
+        instanceId: "corrective", displayName: "Synthetic", enabled: true,
+        config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.test/v1", apiKeyEnv: "K", model: "fixture" }),
+        environment: { K: "synthetic" },
+      });
+      const events: RuntimeEvent[] = [];
+      instance.adapter.onEvent((event) => events.push(event));
+      try {
+        await instance.adapter.sendTurn({
+          threadId: "corrective", text: "Use the tool, then answer.", approvalMode: "full",
+          ...(rounds === undefined ? {} : { toolErrorCorrectiveRounds: rounds }), ...(integrations ? { integrations } : {}),
+        });
+        await vi.waitFor(() => expect(events.some((event) => event.type === "turn.completed")).toBe(true), { timeout: 10_000 });
+      } finally { await instance.dispose(); }
+      const corrective = bodies.at(-1)!.messages.filter((message: any) => message.role === "user" && /Re-run the failed/.test(String(message.content)));
+      const completed = events.find((event) => event.type === "turn.completed") as any;
+      return { requests: bodies.length, corrective: corrective.length, ok: completed.ok, stopReason: completed.stopReason };
+    };
+
+    it("sends a failed call back once per round, then ends the turn as failed", async () => {
+      expect(await run([toolCall("c1", "nope"), answer, toolCall("c2", "nope"), answer], 1))
+        .toEqual({ requests: 4, corrective: 1, ok: false, stopReason: "tool_error" });
+    }, 20_000);
+
+    it("keeps the failure when the bot answers the round without running a tool", async () => {
+      expect(await run([toolCall("c1", "nope"), answer, answer], 1))
+        .toEqual({ requests: 3, corrective: 1, ok: false, stopReason: "tool_error" });
+    }, 20_000);
+
+    it("ends the turn ok when the bot runs tools again after the round and they succeed", async () => {
+      expect(await run([toolCall("c1", "nope"), answer, toolCall("c2", "fx_write"), answer], 1, { custom: { fx: toolServer() } }))
+        .toMatchObject({ requests: 4, corrective: 1, ok: true });
+    }, 20_000);
+
+    it("never sends a denial back, and a denial during a round keeps the turn failed", async () => {
+      expect(await run([toolCall("a1", "ask_user"), answer], 5))
+        .toEqual({ requests: 2, corrective: 0, ok: false, stopReason: "tool_error" });
+      expect(await run([toolCall("c1", "nope"), answer, toolCall("a2", "ask_user"), toolCall("c2", "fx_write"), answer], 5, { custom: { fx: toolServer() } }))
+        .toEqual({ requests: 5, corrective: 1, ok: false, stopReason: "tool_error" });
+    }, 20_000);
+
+    it("without rounds, a later call that succeeds does not clear the failure", async () => {
+      expect(await run([toolCall("c1", "nope"), toolCall("c2", "fx_write"), answer], undefined, { custom: { fx: toolServer() } }))
+        .toEqual({ requests: 3, corrective: 0, ok: false, stopReason: "tool_error" });
+    }, 20_000);
+  });
+
+  it("completes the turn when a question goes unanswered, without tainting the final answer", async () => {
+    const askBody = 'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"ask1","type":"function","function":{"name":"ask_user","arguments":'
+      + JSON.stringify(JSON.stringify({ questions: [{ question: "Ship the fixture?", options: [{ label: "Yes" }, { label: "No" }] }] }))
+      + '}}]}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n';
+    const finalBody = 'data: {"choices":[{"index":0,"delta":{"content":"Proceeded without the answer."}}]}\n\n'
+      + 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(bodies.length === 1 ? askBody : finalBody, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }));
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "compat-noreply", displayName: "Compat NoReply", enabled: true,
+      config: OpenAICompatDriver.decodeConfig({ url: "https://api.example.com/v1", apiKeyEnv: "K", model: "m" }),
+      environment: { K: "secret" },
+    });
+    const events: RuntimeEvent[] = [];
+    instance.adapter.onEvent((event) => events.push(event));
+    try {
+      await instance.adapter.sendTurn({ threadId: "noreply", text: "hi", approvalMode: "full" });
+      const opened = await vi.waitFor(() => {
+        const found = events.find((event) => event.type === "request.opened");
+        if (!found) throw new Error("waiting for the question card");
+        return found;
+      }, { timeout: 10_000 });
+      expect(opened).toMatchObject({ requestType: "question", tool: "ask_user" });
+      // Close the card unanswered: the same null the 15-minute timeout produces.
+      expect(await instance.adapter.respondToRequest("noreply", opened.requestId!, { behavior: "deny" })).toBe("rejected");
+      await vi.waitFor(() => {
+        if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
+      }, { timeout: 10_000 });
       const completed = events.find((event) => event.type === "turn.completed") as any;
       expect(completed.ok).toBe(true);
       expect(completed.stopReason).not.toBe("tool_error");
-      expect(events.some((event) => event.type === "runtime.error" && /One or more tool operations failed/.test((event as any).message ?? ""))).toBe(false);
+      expect(completed.denials).toBeUndefined();
+      expect(events.some((event) => event.type === "runtime.error")).toBe(false);
+      const toolMessage = (bodies[1].messages as any[]).at(-1);
+      expect(JSON.parse(toolMessage.content)).toEqual({
+        ok: true,
+        result: "The person did not answer this question. Do not guess an answer; ask again later or proceed without it.",
+      });
     } finally {
       await instance.dispose();
     }
@@ -394,9 +493,7 @@ describe("createOpenAIChatRuntime mid-turn steer", () => {
       threadId: "t", text: "hi", approvalMode: "full",
       integrations: { custom: { fx: toolServer() } },
     });
-    // Wait until request 1 is genuinely in flight (the gated fetch was
-    // called), then park two asides mid-turn: they must stay out of the
-    // active request — they belong to the next round.
+    // Request 1 must be in flight before the asides are parked: they belong to the next round.
     await vi.waitFor(() => {
       if (bodies.length < 1) throw new Error("first request not sent yet");
     }, { timeout: 10_000 });
@@ -412,8 +509,6 @@ describe("createOpenAIChatRuntime mid-turn steer", () => {
     const first = JSON.parse(bodies[0]!).messages as ChatMessage[];
     const second = JSON.parse(bodies[1]!).messages as ChatMessage[];
     expect(first.some((message) => typeof message.content === "string" && message.content.includes("aside from @Peer"))).toBe(false);
-    // The aside rides after the tool result as the newest input for round 2,
-    // and both parked asides batch into that one user message.
     const toolIndex = second.map((message) => message.role).lastIndexOf("tool");
     const asideIndex = second.findIndex((message) => message.role === "user" && typeof message.content === "string" && message.content.includes("aside from @Peer"));
     expect(toolIndex).toBeGreaterThan(-1);
@@ -421,7 +516,6 @@ describe("createOpenAIChatRuntime mid-turn steer", () => {
     expect(asideIndex).toBeGreaterThan(toolIndex);
     expect(second[asideIndex]!.content).toContain("[end aside]\n\nsecond aside");
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
-    // Once the turn settled the seam refuses: late words go back to the queue.
     await expect(instance.adapter.steer!("t", "late")).resolves.toBe("refused");
   }, 20_000);
 });
@@ -440,8 +534,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
   });
 
   it("parses a final finish_reason+usage frame with no trailing newline before the socket closes", async () => {
-    // No trailing \n\n after the last frame -- the connection just closes,
-    // the way it does against several real OpenAI-compatible local servers.
+    // No trailing \n\n after the last frame: several real local servers just close the connection.
     const events = await runTurn(
       'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n' +
         'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":9}}',
@@ -474,11 +567,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
     const events: RuntimeEvent[] = [];
     instance.adapter.onEvent((event) => events.push(event));
     await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
-    // The final frame's closing brace and its usage object arrive in a
-    // second chunk, after the first chunk already delivered a complete
-    // earlier frame -- proves the leftover-buffer flush on EOF works
-    // whether the split content arrived in one decoder.decode() call or
-    // accumulated across several.
+    // The final frame's tail arrives in a second chunk, after a complete earlier frame.
     controller!.enqueue(
       encoder.encode(
         'data: {"choices":[{"index":0,"delta":{"content":"Hello"}}]}\n\n' +
@@ -507,10 +596,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
   });
 
   it("settles a turn whose stream was cut mid-frame instead of failing it", async () => {
-    // A person stopping a turn (or a dropped connection) leaves a partial
-    // frame in the buffer. Before the EOF flush was guarded this was parsed,
-    // failed JSON.parse, set malformedFrame, and turned a clean stop into a
-    // hard non-retryable failure -- caught by delta-context.e2e on Windows.
+    // A stop or a dropped connection leaves a partial frame in the buffer.
     const events = await runTurn(
       'data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n\n'
         + 'data: {"choices":[{"index":0,"delta":{"content":" wor',
@@ -564,7 +650,7 @@ describe("createOpenAIChatRuntime stream termination", () => {
 });
 
 describe("createOpenAIChatRuntime refused tool calls", () => {
-  // Groq's reply when gpt-oss calls a tool it was never offered (#2166).
+  // Groq's reply when gpt-oss calls a tool it was never offered.
   const refusal = {
     message: "Tool call validation failed: tool call validation failed: attempted to call tool 'JSON' which was not in request",
     type: "invalid_request_error",
@@ -632,5 +718,105 @@ describe("createOpenAIChatRuntime refused tool calls", () => {
     expect(requests).toBe(1);
     expect(events.some((event) => event.type === "turn.retrying")).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+  });
+});
+
+describe("createOpenAIChatRuntime HTTP error text", () => {
+  const XAI_NO_CREDITS = "Your team 0000-fixture has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
+  const failure = async (status: number, body: string) => {
+    const fetchMock = vi.fn(async (url: string | URL) =>
+      String(url).endsWith("/chat/completions") ? new Response(body, { status }) : new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await GrokDriver.create({
+      instanceId: "xaiApi", displayName: "xAI", enabled: true,
+      config: GrokDriver.decodeConfig({ url: "https://xai.invalid/v1" }),
+      environment: { XAI_API_KEY: "fixture-key" },
+    });
+    const events: RuntimeEvent[] = [];
+    const stop = instance.adapter.onEvent((event) => events.push(event));
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    await vi.waitFor(() => {
+      if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
+    });
+    stop();
+    const error = events.find((event) => event.type === "runtime.error") as { message: string } | undefined;
+    const calls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/chat/completions")).length;
+    return { message: error?.message, calls };
+  };
+
+  it("names an out-of-credits account in plain words with the provider's own reason, and does not retry it", async () => {
+    const { message, calls } = await failure(402, JSON.stringify({
+      code: "The caller does not have permission to execute the specified operation",
+      error: XAI_NO_CREDITS,
+    }));
+    expect(message).toBe("Your xAI account is out of credits (xAI says: \"Your team 0000-fixture has either used all available credits or reached its monthly spending limit\"). Add credits with xAI, then run it again.");
+    expect(calls).toBe(1);
+  });
+
+  it("keeps an OpenAI-compatible endpoint's 402 line raw: it names no provider, and the Cloud trial credit reads it", async () => {
+    const events = await runTurn(() => new Response(JSON.stringify({ error: { message: "Insufficient credits", code: "trial_credit_used_up" } }), { status: 402 }));
+    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({ message: "upstream HTTP 402: Insufficient credits (trial_credit_used_up)" });
+  });
+
+  it("reads an OpenAI-style error envelope's message", async () => {
+    const { message } = await failure(401, JSON.stringify({ error: { message: "Incorrect API key provided", code: "invalid_api_key" } }));
+    expect(message).toBe("xAI HTTP 401: Incorrect API key provided (invalid_api_key)");
+  });
+
+  it("keeps a body that is not a JSON error envelope as it was sent", async () => {
+    expect((await failure(400, "upstream rejected the request")).message).toBe("xAI HTTP 400: upstream rejected the request");
+    expect((await failure(400, JSON.stringify({ status: "rejected" }))).message).toBe('xAI HTTP 400: {"status":"rejected"}');
+  });
+});
+
+describe("createOpenAIChatRuntime rejected keys", () => {
+  const create = (key: string) => OpenAICompatDriver.create({
+    instanceId: "openaiCompat", displayName: "Other", enabled: true,
+    config: OpenAICompatDriver.decodeConfig({ url: "https://rejected-key.invalid/v1" }),
+    environment: { OPENAI_COMPAT_API_KEY: key },
+  });
+  const turn = async (instance: Awaited<ReturnType<typeof create>>) => {
+    const events: RuntimeEvent[] = [];
+    const stop = instance.adapter.onEvent((event) => events.push(event));
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    await vi.waitFor(() => {
+      if (!events.some((event) => event.type === "turn.completed")) throw new Error("turn still running");
+    });
+    stop();
+    return events;
+  };
+  const answer = (respond: () => Response) =>
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL) =>
+      String(url).endsWith("/chat/completions") ? respond() : new Response("", { status: 404 })));
+
+  it("a 401 marks the key until a later request with it succeeds; a new key is never marked", async () => {
+    const instance = await create("fixture-revoked-key");
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+    answer(() => new Response(JSON.stringify({ error: { message: "Incorrect API key provided", code: "invalid_api_key" } }), { status: 401 }));
+    const failed = await turn(instance);
+    expect(failed.find((event) => event.type === "runtime.error")).toMatchObject({ message: expect.stringContaining("HTTP 401") });
+    const snapshot = await instance.snapshot();
+    expect(snapshot).toEqual({ state: "available", authenticated: false, reason: expect.stringContaining("rejected this key"), version: null });
+    expect(JSON.stringify(snapshot)).not.toContain("fixture-revoked-key");
+
+    const replacement = await create("fixture-replacement-key");
+    expect(await replacement.snapshot()).toMatchObject({ authenticated: true });
+
+    answer(() => sse(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`));
+    await turn(instance);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+    await Promise.all([instance.dispose(), replacement.dispose()]);
+  });
+
+  it.each([
+    [429, { error: { message: "Rate limit reached", code: "rate_limit_exceeded" } }],
+    [429, { error: { message: "You exceeded your current quota", code: "insufficient_quota" } }],
+    [403, { error: { message: "You do not have access to this model" } }],
+  ])("HTTP %i %j leaves the key Ready", async (status, body) => {
+    const instance = await create(`fixture-limited-key-${status}-${JSON.stringify(body).length}`);
+    answer(() => new Response(JSON.stringify(body), { status }));
+    await turn(instance);
+    expect(await instance.snapshot()).toMatchObject({ state: "available", authenticated: true });
+    await instance.dispose();
   });
 });

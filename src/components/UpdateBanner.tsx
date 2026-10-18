@@ -1,24 +1,12 @@
-// Auto-update popup — a small card floating bottom-left, driven by the
-// preload's updater bridge (this computer's page and the person's own Cloud
-// page). Renders nothing in the browser/dev (no bridge). Updates download by
-// themselves, so it stays away while one checks, downloads or prepares, and
-// appears only when there is something to do: a restart to apply (always the
-// person's click), a hand-off to finish, or a failure.
 import { useEffect, useState } from "react";
 import { Loader2, PackageOpen, RefreshCw, Sparkles, X } from "lucide-react";
 import { useUpdaterState } from "@/lib/updater";
 import { brand } from "../lib/brand";
 
-// The one action button in the card. Disabled drops the accent fill for the
-// flat raised grey — the "I heard you" the click needs while the main process
-// gets going.
 const primaryAction =
   "flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-[13px] font-medium text-white transition-colors disabled:cursor-default disabled:bg-control disabled:text-ink-secondary";
 
-// electron-updater surfaces failures as a whole HTTP dump — status line,
-// every response header, stack trace. That is unreadable in a 300px popup,
-// so name the two cases that actually happen and clip anything else to its
-// first line.
+// electron-updater surfaces failures as a whole HTTP dump (status line, every header, stack trace).
 function friendlyError(message?: string): string {
   if (!message) return "Something went wrong.";
   if (/cannot find .*\.yml|404/i.test(message))
@@ -28,33 +16,30 @@ function friendlyError(message?: string): string {
   return message.split("\n")[0].slice(0, 140);
 }
 
-export function UpdateBanner() {
+type UpdateBannerProps = {
+  sidebarIndicator?: boolean;
+};
+
+export function UpdateBanner({ sidebarIndicator = false }: UpdateBannerProps) {
   const s = useUpdaterState();
-  // dismissal is per status+version, so the popup returns for the next update
   const [dismissed, setDismissed] = useState<string | null>(null);
-  // A click has to go renderer → main → broadcast before the real status
-  // arrives. Latch the pressed button as busy on the same frame so it greys
-  // out immediately; the incoming status clears the latch.
   const [pending, setPending] = useState<"install" | "check" | null>(null);
   const status = s?.status;
   useEffect(() => setPending(null), [status]);
 
   if (!s || s.status === "idle" || s.status === "checking" || s.status === "downloading" || s.status === "preparing") return null;
+  if (sidebarIndicator && (s.status === "downloaded" || s.status === "installing")) return null;
   const key = `${s.status}:${s.version ?? ""}`;
   if (dismissed === key) return null;
   const updater = window.ogb!.updater!;
 
-  // while it restarts the card owns the moment: no dismissing, no second click
   const installing = s.status === "installing";
-  // Ubuntu system packages can't be swapped under a running app, so the
-  // command is copied and a terminal opens; the user finishes there.
-  // Nothing restarts, and the card has to stop promising that it will.
+  // Ubuntu system packages can't be swapped under a running app: the command is copied and a terminal opens.
   const handoff = s.installMode === "handoff";
 
   const title =
     s.status === "downloaded"
-      ? // named: on My Cloud's page it is this app that restarts, not the Cloud
-        `${brand().name} ${s.version} is ready`
+      ? `${brand().name} ${s.version} is ready`
       : installing
         ? handoff
           ? "Opening a terminal…"
@@ -168,7 +153,6 @@ export function UpdateBanner() {
             disabled={pending !== null}
             className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50 disabled:hover:bg-transparent"
           >
-            {/* after a hand-off there is nothing left to postpone */}
             {s.status === "handed-off" || s.retryable === false ? "Dismiss" : "Later"}
           </button>
         </div>

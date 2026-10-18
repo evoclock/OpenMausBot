@@ -82,7 +82,8 @@ Import is additive: everything becomes new records in a new team (numbered if
 the name is taken). Nothing in the file can change a bot, group chat or team
 you already have.
 
-- Bots start on **Ask**, with no connected-app access and the installation's
+- Bots start at the default approval level, **Full access** (Ask on a hosted
+  company workspace), with no connected-app access and the installation's
   default model. A suggested approval level in the file is recorded, never
   applied.
 - Skills arrive **switched off**; routines arrive **paused**.

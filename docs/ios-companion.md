@@ -8,14 +8,14 @@ an OpenMausBot account of its own.
 
 ## Use My Cloud on your phone
 
-With OMB Cloud, pair the phone with your Cloud instead of your computer, and
+With MausBot Cloud, pair the phone with your Cloud instead of your computer, and
 it keeps working while the computer is off.
 
 1. In the desktop app, open the menu under your name and choose **Get the
    phone app**: the App Store for iPhone, or the APK for Android. Scan its code
    with the phone's camera.
 2. In the same menu, choose **Connect your phone · to your Cloud (always on)**.
-   (**Settings → OpenMausBot Cloud → Use My Cloud on your phone** does the same.) The
+   (**Settings → MausBot Cloud → Use My Cloud on your phone** does the same.) The
    app opens your Cloud in its window, at the Cloud's phone pairing.
 3. Choose **Create pairing code** and scan the QR code with the phone app.
 
@@ -123,7 +123,11 @@ There are three deliberately separate trust surfaces:
 
 The desktop app owns the sidecar lifecycle through
 `electron/companion.mjs`. The renderer only receives narrow IPC operations; it
-does not fetch the control port directly.
+does not fetch the control port directly. Every control route needs a token
+the app makes for each sidecar launch and hands over Electron's private port,
+so a page served from `127.0.0.1:8811` itself, as a bot's browser could open
+it, cannot start pairing or change a device's access. A standalone sidecar
+prints its pairing page link with that token.
 
 ## SQLite compatibility
 
@@ -196,6 +200,14 @@ included in a pairing invitation only after it is ready. The default setup
 waits for that HTTPS address instead of silently substituting Tailscale;
 Tailscale pairing remains an explicit choice in its own optional card.
 
+The address is held only while something needs it. The desktop creates it
+when you sign in, choose Retry, or start pairing (a few seconds under the
+"Creating secure remote access" spinner), keeps it while any phone or desktop
+is paired, and gives it back one to four hours after Remote access shows
+nothing paired and no pairing open. The next pairing gets the same address
+back. If no HTTPS address is free, the panel says when to try again, and
+Wi-Fi or Tailscale pairing still works.
+
 Cloudflare terminates and proxies the encrypted connection to the connector.
 The OpenMausBot control plane stores account and installation metadata plus
 opaque tunnel/DNS identifiers in D1, but not bots, transcripts, approvals,
@@ -208,6 +220,11 @@ fixed loopback gateway and `cloudflared`. If Electron or that sidecar exits,
 the guardian first makes forwarding unavailable, confirms the connector is
 dead, and only then releases the gateway. Another process that later binds a
 local port cannot inherit the public route.
+
+The hop from this computer to Cloudflare runs on the home upload,
+uncompressed, so the sidecar gzips JSON replies of 1 KB or more on that
+private socket when the phone accepts gzip. The event stream, file downloads
+and the LAN port are sent as they always were.
 
 ## Pairing and device security
 
@@ -390,12 +407,6 @@ companion/
   src/origin.ts       private per-launch hosted origin listener
   src/control.ts      loopback-only control plane
   src/mdns.ts         Bonjour advertisement
-
-ios/
-  Sources/CompanionCore/   models, HTTP, SSE, state fold
-  Tests/CompanionCoreTests/ captured-contract and core tests
-  App/                     SwiftUI, lifecycle, discovery, Keychain
-  project.yml              generated Xcode project specification
 ```
 
 ## Verification contract
@@ -407,15 +418,6 @@ pnpm typecheck
 pnpm test
 pnpm build:companion
 pnpm check:electron
-
-cd ios
-swift test
-xcodegen generate
-xcodebuild -project OpenMausCompanion.xcodeproj \
-  -scheme OpenMausCompanion \
-  -sdk iphonesimulator \
-  -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO build
 ```
 
 The simulator validates compilation, launch, layout, manual address parsing,
