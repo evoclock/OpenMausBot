@@ -42,7 +42,7 @@ test("GitHub event needs authentic bytes, exact repository, action and delivery 
   assert.equal((await startGithubCodingRun(runner, input, template)).status, "accepted");
   assert.equal((await startGithubCodingRun(runner, input, template)).status, "existing");
   assert.equal((await startGithubCodingRun(runner, { ...input, event: "issues" }, template)).status, "ignored");
-  assert.throws(() => startGithubCodingRun(runner, { ...input, raw: Buffer.from("changed") }, template), /authentication/);
+  await assert.rejects(startGithubCodingRun(runner, { ...input, raw: Buffer.from("changed") }, template), /authentication/);
   const other = github(Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: "other/agents" } })));
   assert.equal((await startGithubCodingRun(runner, other, template)).status, "ignored");
   assert.equal(runner.started.length, 1);

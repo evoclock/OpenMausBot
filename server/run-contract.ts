@@ -69,8 +69,12 @@ export class RunContractStore {
   create(contract: RunContract, at: number): RunSnapshot {
     const checked = runContractSchema.parse(contract);
     const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0, updatedAt: at, evidence: [] });
-    this.db.prepare("INSERT INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)").run(checked.id, checked.botId, JSON.stringify(snapshot));
-    return snapshot;
+    const inserted = this.db.prepare("INSERT OR IGNORE INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)")
+      .run(checked.id, checked.botId, JSON.stringify(snapshot));
+    if (inserted.changes) return snapshot;
+    const existing = this.get(checked.id);
+    if (existing?.state === "queued" && JSON.stringify(existing.contract) === JSON.stringify(checked)) return existing;
+    throw new Error("run id already exists with a different contract or state");
   }
   transition(id: string, next: RunState, at: number, evidence: string[] = []): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
