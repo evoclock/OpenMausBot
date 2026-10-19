@@ -62,6 +62,6 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal((await runtime.github("registration", input)).status, "existing");
     assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
       "development-role", "review-role", "pstack-check"]);
-    assert.throws(() => runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
+    await assert.rejects(runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
   } finally { await runtime.close(); }
 });
