@@ -28,7 +28,7 @@ export interface ReviewReport {
 
 export interface WorkerHost {
   roles(repository: string): Promise<WorkerRoles | null>;
-  /** Acquiring the same requestId must return the same workspace and lease. */
+  /** acquire must be idempotent per requestId: outer-loop replay must return the same workspace and lease. */
   acquire(contract: RunContract, requestId: string): Promise<IsolatedWorkspace>;
   release(leaseId: string, reason: string): Promise<void>;
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
