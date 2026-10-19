@@ -25,7 +25,7 @@ export const runContractSchema = z.object({
   }
 });
 export type RunContract = z.infer<typeof runContractSchema>;
-export const runStateSchema = z.enum(["queued", "running", "blocked", "unverified", "done", "failed", "cancelled"]);
+export const runStateSchema = z.enum(["queued", "running", "waiting", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
 export const runSnapshotSchema = z.object({
   contract: runContractSchema,
@@ -38,7 +38,8 @@ export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 
 const edges: Record<RunState, readonly RunState[]> = {
   queued: ["running", "blocked", "cancelled"],
-  running: ["blocked", "unverified", "done", "failed", "cancelled"],
+  running: ["waiting", "blocked", "unverified", "done", "failed", "cancelled"],
+  waiting: ["running", "blocked", "cancelled"],
   blocked: ["running", "failed", "cancelled"],
   unverified: ["running", "failed", "cancelled"],
   done: [], failed: [], cancelled: [],
@@ -68,8 +69,12 @@ export class RunContractStore {
   create(contract: RunContract, at: number): RunSnapshot {
     const checked = runContractSchema.parse(contract);
     const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0, updatedAt: at, evidence: [] });
-    this.db.prepare("INSERT INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)").run(checked.id, checked.botId, JSON.stringify(snapshot));
-    return snapshot;
+    const inserted = this.db.prepare("INSERT OR IGNORE INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)")
+      .run(checked.id, checked.botId, JSON.stringify(snapshot));
+    if (inserted.changes) return snapshot;
+    const existing = this.get(checked.id);
+    if (existing?.state === "queued" && JSON.stringify(existing.contract) === JSON.stringify(checked)) return existing;
+    throw new Error("run id already exists with a different contract or state");
   }
   transition(id: string, next: RunState, at: number, evidence: string[] = []): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
