@@ -37,6 +37,40 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   } finally { await runner.close(); }
 });
 
+test("a queued contract survives a crash before the task commit and starts on retry", async () => {
+  const dir = fixtureDir();
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const original = RunContractStore.prototype.create;
+    RunContractStore.prototype.create = function(contract, at) {
+      original.call(this, contract, at);
+      process.stdout.write('contract stored\\n');
+      process.exit(0);
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { throw new Error('unexpected invocation'); }
+    });
+    await runner.start(${JSON.stringify(contract)});`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /contract stored/);
+  const calls: string[] = [];
+  const reopened = await openOuterRunner(dir, {
+    async invoke(_contract, _iteration, requestId) {
+      calls.push(requestId);
+      return { kind: "verified", evidence: ["verified after retry"] };
+    },
+  });
+  try {
+    assert.equal(reopened.get(contract.id)?.state, "queued");
+    const taskId = await reopened.start(contract);
+    await reopened.wait(taskId);
+    assert.equal(reopened.get(contract.id)?.state, "done");
+    assert.deepEqual(calls, [`${contract.id}:1`]);
+  } finally { await reopened.close(); }
+});
+
 test("a persisted result without its task checkpoint parks instead of replaying", async () => {
   const dir = fixtureDir();
   const source = `import { openOuterRunner } from './server/outer-runner.ts';

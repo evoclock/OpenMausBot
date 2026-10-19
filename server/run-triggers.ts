@@ -48,7 +48,7 @@ export function startScheduledCodingRun(port: RunStartPort, routine: {
   return startOnce(port, `routine:${routine.routineId}:${routine.id}:${routine.scheduledFor}`, template);
 }
 
-export function startGithubCodingRun(port: RunStartPort, input: {
+export async function startGithubCodingRun(port: RunStartPort, input: {
   raw: Buffer;
   signature: string;
   secret: string;
@@ -69,7 +69,7 @@ export function startGithubCodingRun(port: RunStartPort, input: {
   };
   if (payload.repository.full_name !== template.repository ||
     !Object.hasOwn(actions, input.event) || !actions[input.event]!.includes(payload.action ?? "")) {
-    return Promise.resolve({ status: "ignored" as const });
+    return { status: "ignored" as const };
   }
   return startOnce(port, `github:${input.deliveryId}`, template);
 }

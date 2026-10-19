@@ -30,7 +30,8 @@ test("run contract survives reopening and terminal states cannot restart", () =>
 test("run contract does not impose a time or iteration budget", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);
-  assert.throws(() => store.create(contract, 2));
+  assert.deepEqual(store.create(contract, 2), queued);
+  assert.throws(() => store.create({ ...contract, ref: "other" }, 2), /different contract/);
   assert.throws(() => advanceRun(queued, "running", 1), /time/);
   for (let iteration = 0; iteration < 10; iteration += 1) {
     store.transition(contract.id, "running", iteration * 2 + 2);

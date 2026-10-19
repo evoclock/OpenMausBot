@@ -63,6 +63,44 @@ test.each(["runPlaybook", "review"] as const)("%s failure releases the lease", a
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
   assert.equal(result.kind, "blocked");
   assert.equal(route.calls.at(-1), "release:lease:worker route failed; reconcile outward effects");
+  assert.deepEqual(result.evidence, ["worker route failed; reconcile outward effects", "host failure"]);
+});
+
+test("a rejecting release preserves the blocked cause", async () => {
+  const route = host();
+  route.runPlaybook = async () => { throw new Error("worker failed"); };
+  route.release = async () => { throw new Error("release failed"); };
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
+  assert.deepEqual(result, { kind: "blocked", evidence: [
+    "worker route failed; reconcile outward effects", "worker failed", "lease release failed: release failed",
+  ] });
+});
+
+test.each([
+  ["worker", "worker interrupted; reconcile outward effects"],
+  ["reviewer", "review interrupted; reconcile outward effects"],
+  ["pstack", "verification interrupted; reconcile outward effects"],
+] as const)("abort after %s releases the lease", async (step, reason) => {
+  const route = host();
+  const controller = new AbortController();
+  if (step === "worker") route.runPlaybook = async () => {
+    controller.abort(); return { revision: "revision", evidence: [], progress: true };
+  };
+  if (step === "reviewer") route.review = async (_workspace, _role, revision) => {
+    controller.abort(); return { revision, accepted: true, evidence: ["review"] };
+  };
+  if (step === "pstack") route.verifyWithPstack = async () => { controller.abort(); return ["verified"]; };
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", controller.signal);
+  assert.deepEqual(result, { kind: "blocked", evidence: [reason] });
+  assert.equal(route.calls.at(-1), `release:lease:${reason}`);
+});
+
+test("verification failure blocks and releases after review", async () => {
+  const route = host();
+  route.verifyWithPstack = async () => { throw new Error("verification failed"); };
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
+  assert.deepEqual(result.evidence, ["worker route failed; reconcile outward effects", "verification failed"]);
+  assert.equal(route.calls.at(-1), "release:lease:worker route failed; reconcile outward effects");
 });
 
 test("a worker without progress blocks and releases the lease", async () => {

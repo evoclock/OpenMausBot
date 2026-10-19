@@ -48,9 +48,11 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
       const workspace = await host.acquire(contract, requestId);
       let releaseReason = "worker route failed; reconcile outward effects";
       let retainLease = false;
-      const blocked = (reason: string): InnerLoopResult => {
+      let blockedEvidence: string[] = [];
+      const blocked = (reason: string, detail?: string): InnerLoopResult => {
         releaseReason = reason;
-        return { kind: "blocked", evidence: [reason] };
+        blockedEvidence = detail ? [reason, detail] : [reason];
+        return { kind: "blocked", evidence: blockedEvidence };
       };
       try {
         if (workspace.repository !== contract.repository || workspace.branch !== contract.ref ||
@@ -72,10 +74,17 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         retainLease = true;
         if (!verified?.some((item) => item.trim())) return { kind: "progress", evidence: [...report.evidence, ...review.evidence] };
         return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified] };
-      } catch {
-        return blocked("worker route failed; reconcile outward effects");
+      } catch (error) {
+        return blocked("worker route failed; reconcile outward effects",
+          error instanceof Error ? error.message : String(error));
       } finally {
-        if (!retainLease && workspace.leaseId) await host.release(workspace.leaseId, releaseReason);
+        if (!retainLease && workspace.leaseId) {
+          try {
+            await host.release(workspace.leaseId, releaseReason);
+          } catch (error) {
+            blockedEvidence.push(`lease release failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
       }
     },
   };
