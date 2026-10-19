@@ -1,0 +1,67 @@
+import { strict as assert } from "node:assert";
+import { createHmac } from "node:crypto";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "vitest";
+import { openCodingRunRuntime } from "./coding-run-runtime.ts";
+import type { WorkerHost } from "./inner-worker-route.ts";
+import type { TriggerTemplate } from "./run-triggers.ts";
+
+const template: TriggerTemplate = {
+  botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
+  successCriteria: ["pstack verifies the goal"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+};
+
+function fixtureDir() {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  return mkdtempSync(join(scratch, "coding-runtime-"));
+}
+
+function host(calls: string[]): WorkerHost {
+  return {
+    async roles() { return { development: "development-role", independentReview: "review-role" }; },
+    async acquire(contract) { return { repository: contract.repository, directory: "isolated",
+      branch: "review", base: "base", leaseId: "lease" }; },
+    async release() { calls.push("release"); },
+    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true }; },
+    async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"] }; },
+    async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
+  };
+}
+
+async function settled(runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>, id: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const state = runtime.get(id)?.state;
+    if (state === "done" || state === "blocked") return state;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("fixture run did not settle");
+}
+
+test("a scheduled occurrence and signed event drive the same outer/inner route", async () => {
+  const calls: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map([["routine", template]]), github: new Map([["registration", { secret: "fixture-secret", template }]]) });
+  try {
+    const run = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
+      triggerSource: "schedule", status: "running" };
+    const scheduled = await runtime.scheduled(run);
+    assert.equal(scheduled.status, "accepted");
+    if (!("id" in scheduled)) throw new Error("missing scheduled id");
+    assert.equal(await settled(runtime, scheduled.id), "done");
+    assert.equal((await runtime.scheduled(run)).status, "existing");
+
+    const raw = Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: template.repository } }));
+    const input = { raw, event: "workflow_run", deliveryId: "11111111-1111-4111-8111-111111111111",
+      signature: `sha256=${createHmac("sha256", "fixture-secret").update(raw).digest("hex")}` };
+    const received = await runtime.github("registration", input);
+    assert.equal(received.status, "accepted");
+    if (!("id" in received)) throw new Error("missing webhook id");
+    assert.equal(await settled(runtime, received.id), "done");
+    assert.equal((await runtime.github("registration", input)).status, "existing");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
+      "development-role", "review-role", "pstack-check"]);
+    await assert.rejects(runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
+  } finally { await runtime.close(); }
+});
