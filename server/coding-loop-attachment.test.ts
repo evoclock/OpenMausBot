@@ -2,10 +2,10 @@ import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { attachCodingLoop, type CodingRunPort, type CodingRunStart } from "./coding-loop-attachment.ts";
+import { attachCodingLoop, attachCodingLoopClaim, type CodingRunPort, type CodingRunStart } from "./coding-loop-attachment.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import type { WorkerHost } from "./inner-worker-route.ts";
-import type { RunSnapshot } from "./run-contract.ts";
+import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import type { TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
@@ -60,6 +60,78 @@ async function settled(runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>
   }
   throw new Error("fixture run did not settle");
 }
+
+test("durable claim survives reopen and never replays an uncertain handler effect", () => {
+  const path = join(fixtureDir(), "claims.sqlite");
+  let store = new RunContractStore(path);
+  store.linkRoutine("occurrence", "00000000-0000-5000-8000-000000000001");
+  assert.equal(store.claimRoutineTerminal("00000000-0000-5000-8000-000000000001", snapshot("00000000-0000-5000-8000-000000000001", "done"))?.status, "claimed");
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.linkRoutine("occurrence", "00000000-0000-5000-8000-000000000001").status, "claimed");
+    assert.equal(store.claimRoutineTerminal("00000000-0000-5000-8000-000000000001", snapshot("00000000-0000-5000-8000-000000000001", "done"))?.status, "claimed");
+    assert.throws(() => store.linkRoutine("occurrence", "other-id"), /different coding run/);
+    assert.throws(() => store.linkRoutine("other-occurrence", "00000000-0000-5000-8000-000000000001"), /different routine/);
+  } finally { store.close(); }
+});
+
+test("durable link and terminal evidence survive restart before claim", () => {
+  const path = join(fixtureDir(), "claims.sqlite");
+  let store = new RunContractStore(path);
+  store.linkRoutine("occurrence", "00000000-0000-5000-8000-000000000001");
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.claimRoutineTerminal("00000000-0000-5000-8000-000000000001", snapshot("00000000-0000-5000-8000-000000000001", "blocked"))?.status, "claimed");
+    assert.equal(store.routineLink("00000000-0000-5000-8000-000000000001")?.terminal?.state, "blocked");
+  } finally { store.close(); }
+});
+
+test("terminal before start resolution is claimed on lookup, duplicates cannot dispatch handlers", async () => {
+  const store = new RunContractStore(join(fixtureDir(), "claims.sqlite"));
+  let resolve!: (value: { status: "accepted"; id: string }) => void;
+  const waiting = new Promise<{ status: "accepted"; id: string }>((done) => { resolve = done; });
+  const terminal = snapshot("00000000-0000-5000-8000-000000000001", "done");
+  const live = attachCodingLoopClaim({ scheduled: () => waiting, get: () => terminal }, store);
+  try {
+    const started = live.runStarted(occurrence);
+    assert.equal(live.onTerminal(terminal), undefined);
+    resolve({ status: "accepted", id: "00000000-0000-5000-8000-000000000001" });
+    await started;
+    assert.equal(store.routineLink("00000000-0000-5000-8000-000000000001")?.status, "claimed");
+    await live.runStarted(occurrence);
+    assert.equal(live.onTerminal(snapshot("00000000-0000-5000-8000-000000000001", "failed"))?.terminal?.state, "done");
+  } finally { store.close(); }
+});
+
+test("failed association write leaves no claim; replay recovers terminal without effects", async () => {
+  const store = new RunContractStore(join(fixtureDir(), "claims.sqlite"));
+  const terminal = snapshot("00000000-0000-5000-8000-000000000001", "done");
+  const live = attachCodingLoopClaim({ scheduled: async () => ({ status: "accepted", id: "00000000-0000-5000-8000-000000000001" }), get: () => terminal }, store);
+  try {
+    await assert.rejects(live.runStarted({ ...occurrence, id: "" }), /empty routine/);
+    assert.equal(store.routineLink("00000000-0000-5000-8000-000000000001"), undefined);
+    await live.runStarted(occurrence);
+    assert.equal(store.routineLink("00000000-0000-5000-8000-000000000001")?.status, "claimed");
+  } finally { store.close(); }
+});
+
+test("refusal and mismatched terminal cannot create an applied effect", async () => {
+  const store = new RunContractStore(join(fixtureDir(), "claims.sqlite"));
+  const codingId = "00000000-0000-5000-8000-000000000001";
+  const live = attachCodingLoopClaim({
+    scheduled: async () => { throw new Error("refused"); }, get: () => undefined,
+  }, store);
+  try {
+    await assert.rejects(live.runStarted(occurrence), /refused/);
+    assert.equal(store.routineLink(codingId), undefined);
+    store.linkRoutine(occurrence.id, codingId);
+    assert.throws(() => store.claimRoutineTerminal(codingId, snapshot("00000000-0000-5000-8000-000000000002", "done")),
+      /terminal report does not match/);
+    assert.equal(store.routineLink(codingId)?.status, "pending");
+  } finally { store.close(); }
+});
 
 test("duplicate events start one run and one correlated terminal report settles it", async () => {
   const calls: string[] = [];

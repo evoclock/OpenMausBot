@@ -1,4 +1,4 @@
-import type { RunSnapshot } from "./run-contract.ts";
+import type { RunSnapshot, RunContractStore } from "./run-contract.ts";
 
 /**
  * Event-driven seam between the live routine scheduler and the coding run runtime.
@@ -37,6 +37,26 @@ export interface CodingLoopHandlers {
   hold(routineRunId: string, evidence: string[]): void;
   /** The correlated run failed or was cancelled, or the start itself was refused. */
   fail(routineRunId: string, message: string): void;
+}
+
+// Durable, deliberately non-dispatching boundary. The scheduler has no idempotent
+// settlement receipt; invoking its handlers here would turn a crash into a duplicate.
+export function attachCodingLoopClaim(port: CodingRunPort & { get(id: string): RunSnapshot | undefined },
+  store: RunContractStore) {
+  function onTerminal(snapshot: RunSnapshot) {
+    return store.claimRoutineTerminal(snapshot.contract.id, snapshot);
+  }
+  async function runStarted(run: CodingRunStart) {
+    const result = await port.scheduled(run);
+    if (result.status === "ignored" || !result.id) return result;
+    store.linkRoutine(run.id, result.id);
+    // Covers a terminal report before the start promise returned, and restart after
+    // a coding run became terminal but before its association was recorded.
+    const current = port.get(result.id);
+    if (current && ["done", "blocked", "failed", "cancelled"].includes(current.state)) onTerminal(current);
+    return result;
+  }
+  return { runStarted, onTerminal };
 }
 
 export function attachCodingLoop(port: CodingRunPort, handlers: CodingLoopHandlers) {
