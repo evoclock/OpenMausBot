@@ -500,6 +500,8 @@ export function piEnvironment(source: Record<string, string | undefined>): Recor
   // credentials are the harness's secrets.
   stripWorkspaceCredentialEnv(env);
   for (const key of PROVIDER_CREDENTIAL_ENV) delete env[key];
+  // Prevent the host's harness configuration from overriding per-turn MCP config.
+  delete env.OMB_MCP_CONFIG;
   return env;
 }
 
@@ -580,7 +582,6 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
-      const fullAuto = turn.approvalMode === undefined ? config.fullAuto : false;
       const turnId = newId();
       const pending = new Map<string, (decision: { behavior: "allow" | "deny" | "answer"; message?: string }) => void>();
       const askTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -608,7 +609,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           toolScope,
           scopeReadyPath,
           approvalMode: turn.approvalMode,
-          automatedLocalComputer: fullAuto || turn.approvalMode === "full",
+          automatedLocalComputer: turn.approvalMode === "full",
           askUser,
         }), { mode: 0o600 });
       } catch (err) {
@@ -626,11 +627,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           return spawnCli(config.cli, childArgs, {
             stdio: ["pipe", "pipe", "pipe"],
             cwd: turn.cwd,
-            env: piEnvironment({
-              ...process.env,
-              ...catalogEnv,
+            env: {
+              ...piEnvironment({ ...process.env, ...catalogEnv }),
               OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json"),
-            }),
+            },
           }, "bot");
         } catch (err) {
           try {
