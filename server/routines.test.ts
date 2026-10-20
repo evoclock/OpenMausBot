@@ -11,6 +11,7 @@ import {
   nextOccurrence,
   RoutineManager,
   RoutineScheduleError,
+  writeRoutineFile,
   type RoutineManagerOptions,
   type RoutineRun,
   type RoutineSchedule,
@@ -118,6 +119,50 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("routine store durability boundary", () => {
+  it("does not acknowledge a pre-rename failure", () => {
+    const file = tempFile();
+    writeFileSync(file, "old");
+    const syncDirectory = vi.fn();
+    expect(() => writeRoutineFile(file, "new", {
+      write: () => { throw new Error("temp sync failed"); }, syncDirectory,
+    })).toThrow("temp sync failed");
+    expect(readFileSync(file, "utf8")).toBe("old");
+    expect(syncDirectory).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a post-rename error and syncs the directory before acknowledging", () => {
+    const file = tempFile();
+    const syncDirectory = vi.fn();
+    writeRoutineFile(file, "new", {
+      write: () => { writeFileSync(file, "new"); throw new Error("after rename"); }, syncDirectory,
+    });
+    expect(syncDirectory).toHaveBeenCalledOnce();
+    expect(readFileSync(file, "utf8")).toBe("new");
+  });
+
+  it("refuses acknowledgment when the directory sync fails", () => {
+    const file = tempFile();
+    expect(() => writeRoutineFile(file, "new", {
+      write: () => writeFileSync(file, "new"),
+      syncDirectory: () => { throw new Error("directory sync failed"); },
+    })).toThrow("durability is uncertain");
+  });
+
+  it("preserves an earlier store image across a later ordinary save and restart", () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "First", prompt: "Check", botId: "maus-1",
+      schedule: { type: "interval", everyMinutes: 5, anchorAt: Date.now() },
+    });
+    h.manager.create({
+      name: "Second", prompt: "Check", botId: "maus-1",
+      schedule: { type: "interval", everyMinutes: 5, anchorAt: Date.now() },
+    });
+    expect(new RoutineManager(h.options).listRoutines().some((item) => item.id === routine.id)).toBe(true);
+  });
 });
 
 describe("routines startup state", () => {
