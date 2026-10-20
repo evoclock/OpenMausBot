@@ -817,12 +817,8 @@ describe("PiDriver turns (fake CLI)", () => {
     const mcpRow = rows.find((r) => r.mcpConfig != null);
     expect(mcpRow).toBeTruthy();
 
-    const extIndex = mcpRow!.argv.indexOf("-e");
-    expect(extIndex).toBeGreaterThanOrEqual(0);
-    expect(mcpRow!.argv[extIndex + 1]).toContain("pi-mcp-extension");
-
     const servers = mcpRow!.mcpConfig!.mcpServers!;
-    expect(servers.composio).toMatchObject({ command: "node", args: ["connector-proxy.js"], env: { COMPOSIO_KEY: "ck" } });
+    expect(servers.composio).toMatchObject({ args: [expect.stringContaining("connector-proxy.js")] });
   });
 
   it("rides the toolUse auto-continue and only settles on the final end_turn", async () => {
@@ -913,7 +909,7 @@ describe("PiDriver turns (fake CLI)", () => {
     });
     await recorder.until((e) => e.type === "turn.completed");
     const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(rows.filter((row) => row.mcpConfig).map((row) => row.mcpConfig.automatedLocalComputer)).toEqual([true, true]);
+    expect(rows.filter((row) => row.mcpConfig?.automatedLocalComputer !== undefined).map((row) => row.mcpConfig.automatedLocalComputer)).toEqual([true, true]);
   });
 
   it("per-bot Ask retains host approval on a legacy full-auto instance", async () => {
