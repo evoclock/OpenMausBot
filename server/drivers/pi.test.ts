@@ -886,23 +886,45 @@ describe("PiDriver turns (fake CLI)", () => {
     expect(recorder.events.some((e) => e.type === "request.resolved")).toBe(true);
   });
 
-  it("per-bot Ask restores host approval on a legacy full-auto instance", async () => {
-    await create("permission", {}, true);
+  it("allows the explicitly authorized Full local-computer lane without a pre-turn rejection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-pi-full-computer-"));
+    const dump = join(dir, "rpc.jsonl");
+    await create(undefined, { FAKE_PI_DUMP: dump }, true);
     expect(instance.adapter.capabilities.localComputerMcp).toBe(true);
     const localComputer = {
-      command: "/cua-driver",
+      command: "/fixture/cua-driver",
       args: ["mcp"],
       env: {},
       platform: "linux" as const,
       scope: "local-computer" as const,
     };
 
-    await expect(instance.adapter.sendTurn({
-      threadId: "t-pi-legacy-full-auto",
+    await instance.adapter.sendTurn({
+      threadId: "t-pi-legacy-full-auto-computer",
       text: "go",
       integrations: { localComputer },
-    })).rejects.toThrow(/interactive approval broker/);
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+    await instance.adapter.sendTurn({
+      threadId: "t-pi-full-computer",
+      text: "go",
+      approvalMode: "full",
+      integrations: { localComputer },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+    const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.mcpConfig).map((row) => row.mcpConfig.automatedLocalComputer)).toEqual([true, true]);
+  });
 
+  it("per-bot Ask retains host approval on a legacy full-auto instance", async () => {
+    await create("permission", {}, true);
+    const localComputer = {
+      command: "/fixture/cua-driver",
+      args: ["mcp"],
+      env: {},
+      platform: "linux" as const,
+      scope: "local-computer" as const,
+    };
     await instance.adapter.sendTurn({
       threadId: "t-pi-ask-override",
       text: "go",

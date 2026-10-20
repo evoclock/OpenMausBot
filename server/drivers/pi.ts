@@ -108,7 +108,6 @@ export function buildMcpServers(turn: SendTurnInput): Record<string, unknown> | 
       command: local.command,
       args: local.args,
       env: local.env,
-      // Host control carries scope so the extension gates every call behind a permission card.
       ...(local.scope ? { scope: local.scope } : {}),
     };
   }
@@ -582,11 +581,6 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       const toolScope = selection.scope;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const fullAuto = turn.approvalMode === undefined ? config.fullAuto : false;
-      // Host control always routes through the permission card, full-auto or not.
-      const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-      if (controlsHost && fullAuto) {
-        throw new Error("local computer control requires the interactive approval broker");
-      }
       const turnId = newId();
       const pending = new Map<string, (decision: { behavior: "allow" | "deny" | "answer"; message?: string }) => void>();
       const askTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -609,7 +603,14 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       const mcpTempDir = mkdtempSync(join(tmpdir(), "omb-pi-mcp-"));
       const scopeReadyPath = toolScope !== undefined ? join(mcpTempDir, "scope-ready.json") : undefined;
       try {
-        writeFileSync(join(mcpTempDir, "mcp.json"), JSON.stringify({ mcpServers: mcpServers ?? {}, toolScope, scopeReadyPath, approvalMode: turn.approvalMode, askUser }), { mode: 0o600 });
+        writeFileSync(join(mcpTempDir, "mcp.json"), JSON.stringify({
+          mcpServers: mcpServers ?? {},
+          toolScope,
+          scopeReadyPath,
+          approvalMode: turn.approvalMode,
+          automatedLocalComputer: fullAuto || turn.approvalMode === "full",
+          askUser,
+        }), { mode: 0o600 });
       } catch (err) {
         // A partial file could still hold credentials.
         try {
