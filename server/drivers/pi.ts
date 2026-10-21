@@ -609,8 +609,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           toolScope,
           scopeReadyPath,
           approvalMode: turn.approvalMode,
-          automatedLocalComputer: turn.approvalMode === "full",
-          askUser,
+          automatedLocalComputer: turn.approvalMode === "full", askUser,
         }), { mode: 0o600 });
       } catch (err) {
         // A partial file could still hold credentials.
