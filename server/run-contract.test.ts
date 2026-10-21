@@ -2,9 +2,9 @@ import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { advanceRun, RunContractStore, type RunContract } from "./run-contract.ts";
+import { advanceRun, runContractSchema, RunContractStore, type RunContractInput } from "./run-contract.ts";
 
-const contract: RunContract = {
+const contract: RunContractInput = {
   id: "11111111-1111-4111-8111-111111111111", botId: "fixture", repository: "fixture/repo", ref: "review",
   successCriteria: ["inner loop confirms the goal"], repositoryClass: "agent-private", allowedEffects: ["edit"],
   authorisedExternalWrites: [],
@@ -27,9 +27,11 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   second.close();
 });
 
-test("run contract does not impose a time or iteration budget", () => {
+test("run contract carries an iteration ceiling; time and spend budgets remain unenforced", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);
+  assert.equal(queued.contract.maxIterations, 8);
+  assert.throws(() => runContractSchema.parse({ ...contract, maxIterations: 0 }), /maxIterations/);
   assert.deepEqual(store.create(contract, 2), queued);
   assert.throws(() => store.create({ ...contract, ref: "other" }, 2), /different contract/);
   assert.throws(() => advanceRun(queued, "running", 1), /time/);
@@ -44,7 +46,7 @@ test("run contract does not impose a time or iteration budget", () => {
 test("external writes need exact per-run authorisation; critical effects cannot enter the contract", () => {
   const store = new RunContractStore(":memory:");
   assert.throws(() => store.create({ ...contract, repositoryClass: "external" }, 1), /external write/);
-  const authorised = { ...contract, repositoryClass: "external" as const,
+  const authorised = { ...contract, repositoryClass: "external" as const, maxIterations: 8,
     authorisedExternalWrites: [{ repository: contract.repository, effects: ["edit" as const] }] };
   assert.equal(store.create(authorised, 1).contract.repositoryClass, "external");
   assert.throws(() => store.create({ ...contract, id: "22222222-2222-4222-8222-222222222222",

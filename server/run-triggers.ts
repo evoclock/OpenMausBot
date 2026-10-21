@@ -1,6 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { runContractSchema, type RunContract, type RunSnapshot } from "./run-contract.ts";
+import { runContractSchema, type RunContract, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
 
 const eventSchema = z.object({
   action: z.string().optional(),
@@ -12,7 +12,7 @@ export interface RunStartPort {
   get(id: string): RunSnapshot | undefined;
 }
 
-export type TriggerTemplate = Omit<RunContract, "id">;
+export type TriggerTemplate = Omit<RunContractInput, "id">;
 
 function triggerId(source: string): string {
   const hex = createHash("sha256").update(source).digest("hex");
@@ -20,7 +20,7 @@ function triggerId(source: string): string {
 }
 
 function agentTemplate(template: TriggerTemplate): TriggerTemplate {
-  if (template.repositoryClass !== "agent-private" || template.authorisedExternalWrites.length > 0) {
+  if (template.repositoryClass !== "agent-private" || (template.authorisedExternalWrites ?? []).length > 0) {
     throw new Error("unattended trigger requires a private agent repository with no external write authorisation");
   }
   runContractSchema.parse({ ...template, id: triggerId("template") });

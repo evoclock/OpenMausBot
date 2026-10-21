@@ -1,4 +1,4 @@
-import type { RunContract } from "./run-contract.ts";
+import type { RunContractInput } from "./run-contract.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
 
 export interface WorkerRoles {
@@ -29,7 +29,7 @@ export interface ReviewReport {
 export interface WorkerHost {
   roles(repository: string): Promise<WorkerRoles | null>;
   /** acquire must be idempotent per requestId: outer-loop replay must return the same workspace and lease. */
-  acquire(contract: RunContract, requestId: string): Promise<IsolatedWorkspace>;
+  acquire(contract: RunContractInput, requestId: string): Promise<IsolatedWorkspace>;
   release(leaseId: string, reason: string): Promise<void>;
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
   review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal): Promise<ReviewReport>;
