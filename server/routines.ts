@@ -1,45 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
-import { writeFileAtomic } from "./atomic.ts";
+import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
-
-/** A routine save is acknowledged only after its directory entry is durable. */
-function syncRoutineDirectory(file: string): void {
-  const fd = openSync(dirname(file), "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-}
-
-export function writeRoutineFile(
-  file: string,
-  data: string,
-  operations: {
-    write?: typeof writeFileAtomic;
-    syncDirectory?: typeof syncRoutineDirectory;
-  } = {},
-): void {
-  try {
-    (operations.write ?? writeFileAtomic)(file, data, { mode: 0o600 });
-  } catch (error) {
-    // A write may throw after rename. Reconcile the exact intended image before rollback.
-    let matches = false;
-    try { matches = readFileSync(file, "utf8") === data; } catch { /* absent or unreadable */ }
-    if (!matches) throw error;
-  }
-  try {
-    (operations.syncDirectory ?? syncRoutineDirectory)(file);
-  } catch (cause) {
-    // The rename may be visible without being durable. Never permit a later save
-    // to overwrite this uncertain image in the same process.
-    throw Object.assign(new Error("Routine store durability is uncertain; restart and inspect before writing"), { cause, uncertainRoutineWrite: true });
-  }
-}
-
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
 import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from "../shared/routine-schedule.ts";
@@ -55,7 +22,6 @@ import {
   dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, requeueOnce, weekRuns, type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
 } from "./routine-recovery.ts";
 import { activeMs, askOf, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
-
 export type { RoutineContextAttachment, RoutineIntervalWindow, RoutineRunStatus, RoutineRunTrigger };
 
 export interface RoutineIntervalSchedule {
@@ -1890,14 +1856,11 @@ export class RoutineManager {
     try { writeRoutineFile(this.file, JSON.stringify({
       version: 1,
       ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
-      routines: [...this.routines, ...this.unloadedRoutines],
-      runs: this.runs,
-      routineRequestReceipts: this.routineRequestReceipts,
-      webhookRunReceipts: this.webhookRunReceipts,
+      routines: [...this.routines, ...this.unloadedRoutines], runs: this.runs,
+      routineRequestReceipts: this.routineRequestReceipts, webhookRunReceipts: this.webhookRunReceipts,
       ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
       ...(this.ownerNotices.length ? { ownerNotices: this.ownerNotices } : {}),
-    } satisfies RoutineFile, null, 2)); }
-    catch (error) {
+    } satisfies RoutineFile, null, 2)); } catch (error) {
       if ((error as { uncertainRoutineWrite?: boolean }).uncertainRoutineWrite) this.unreadable = true;
       throw error;
     }

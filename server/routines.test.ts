@@ -7,11 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import { isRoutineProblemRun } from "../shared/routines.ts";
 import { ROUTINE_SKIPPED_WHILE_WAITING, ROUTINE_SUPERSEDED } from "./routine-execution.ts";
+import { writeRoutineFile } from "./atomic.ts";
 import {
   nextOccurrence,
   RoutineManager,
   RoutineScheduleError,
-  writeRoutineFile,
   type RoutineManagerOptions,
   type RoutineRun,
   type RoutineSchedule,
