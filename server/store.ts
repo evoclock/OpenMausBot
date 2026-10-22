@@ -17,7 +17,7 @@ import { workspaceDir } from "./workspace.ts";
 import type { Destination } from "./surface.ts";
 import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
-import { redactSecretsInText } from "./redact.ts";
+import { redactSecretsInText, redactToolFields } from "./redact.ts";
 import { scrubbedSkillRequest } from "./skill-request-card.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
 import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
@@ -123,10 +123,7 @@ function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number 
   };
   if (typeof out.text === "string") out.text = redactSecretsInText(out.text);
   if (out.compaction) out.compaction = { ...out.compaction, summary: redactSecretsInText(out.compaction.summary) };
-  if (out.tool?.name) {
-    out.tool = { ...out.tool, name: redactSecretsInText(out.tool.name) };
-    if (out.tool.summary) out.tool.summary = redactSecretsInText(out.tool.summary);
-  }
+  if (out.tool?.name) out.tool = redactToolFields(out.tool);
   if (out.routineRun) {
     const routineRun = { ...out.routineRun };
     routineRun.routineName = redactSecretsInText(routineRun.routineName);
@@ -1455,7 +1452,7 @@ export class Store {
     const t = this.thread(threadId);
     const idx = t.messages.findIndex((m) => m.id === messageId);
     if (idx === -1) return null;
-    const next = { ...t.messages[idx], ...patch, card: patch.card ?? t.messages[idx].card };
+    const next = redactBotAuthored({ ...t.messages[idx], ...patch, card: patch.card ?? t.messages[idx].card });
     // Persist before memory: a failed write must not mark a card answered that a restart shows pending.
     let applied = false;
     const persist = () => { mdb.updateMessage(threadId, next); applied = true; return next; };

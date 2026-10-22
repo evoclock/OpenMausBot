@@ -2,6 +2,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
 import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
+import { createLoopStatusRoutes } from "./routes/loop-status.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -441,7 +442,7 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
-import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
+import { addHeldSecretScrubber, redactSecretsInText, redactToolResult } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
@@ -5995,7 +5996,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const key = `${threadId}:${turnId}:${toolUseId}`;
   if (!commandReceipt("hook.ingest", key)) {
     const dir = join(TOOL_RESULTS_DIR, threadId.replace(/[^\w.-]/g, "_"));
-    const redacted = redactSecretsInText(text);
+    const redacted = redactToolResult(text, row.tool.input ?? row.tool.name);
     const fullResult = spillToolResult(dir, key, redacted, TOOL_RESULT_SPILL_MAX);
     store.patchMessage(threadId, row.id, { tool: { ...row.tool, fullResult } }, { kind: "hook.ingest", key });
   }
@@ -13343,9 +13344,8 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   sharedWorkspace: () => workspaceShared({ hosted: HOSTED_WORKSPACE, cloudHome: Boolean(CLOUD_HOME), signIn: signInAllowList() }),
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
-
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
-ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id) }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
 // `routines` is assigned at boot, so it is read per request.

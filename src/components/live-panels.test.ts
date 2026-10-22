@@ -55,7 +55,8 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", SpyEventSource);
   vi.stubGlobal("fetch", (path: string) => {
     fetched.push(path);
-    const body = path.startsWith("/api/threads/") ? { entries: [], total: { runtime: 0, native: 0 } } : { rows: [] };
+    const body = path.startsWith("/api/threads/") ? { entries: [], total: { runtime: 0, native: 0 } }
+      : path.endsWith("/loop-status") ? { runs: [] } : { rows: [] };
     return Promise.resolve(new Response(JSON.stringify(body)));
   });
 });
@@ -92,12 +93,12 @@ describe("Inspector on the app's live stream", () => {
 describe("Activity on the app's live stream", () => {
   it("reloads when one of the bot's turns settles, with no stream of its own", async () => {
     await mount(ActivityPanel);
-    expect(fetched).toEqual(["/api/bots/bot/activity?limit=300"]);
+    expect(fetched).toContain("/api/bots/bot/activity?limit=300");
     frame(runtime("e3", { type: "turn.completed", ok: true }, "other-thread"));
     frame(runtime("e4", { type: "turn.completed", ok: true }));
     await new Promise((resolve) => setTimeout(resolve, 450));
     await settle();
-    expect(fetched).toEqual(["/api/bots/bot/activity?limit=300", "/api/bots/bot/activity?limit=300"]);
+    expect(fetched.filter((path) => path.endsWith("/activity?limit=300"))).toHaveLength(2);
     expect(opened).not.toHaveBeenCalled();
   });
 
@@ -105,6 +106,6 @@ describe("Activity on the app's live stream", () => {
     await mount(ActivityPanel);
     missed();
     await settle();
-    expect(fetched).toHaveLength(2);
+    expect(fetched.filter((path) => path.endsWith("/activity?limit=300"))).toHaveLength(2);
   });
 });

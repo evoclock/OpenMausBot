@@ -1,4 +1,5 @@
 import type { RunContractInput } from "./run-contract.ts";
+import { codingPlaybookPrompt } from "./coding-playbook-prompt.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
 
 export interface WorkerRoles {
@@ -73,7 +74,7 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         const prior = context?.previous;
         const carry = prior ? context?.compactor?.compact(prior) ??
           `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
-        const goal = `Iteration ${context?.iteration ?? _iteration}\n${contract.successCriteria.join("\n")}${carry ? `\n${carry}` : ""}`;
+        const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0)}${carry ? `\n${carry}` : ""}`;
         const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
