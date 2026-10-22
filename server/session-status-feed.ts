@@ -162,13 +162,13 @@ export class SessionStatusFeed {
 
       const wakes: SessionWake[] = [];
       for (const kind of changes) {
+        const detail = wakeDetail(report, kind);
         const inserted = this.db.prepare(`INSERT INTO session_wakes (session_id, kind, detail, created_at)
-          SELECT ?, ?, ?, ? WHERE NOT EXISTS (
+          SELECT ?, ?, ?, ? WHERE ? = 'decision' OR NOT EXISTS (
             SELECT 1 FROM session_wakes WHERE session_id = ? AND kind = ? AND acknowledged_at IS NULL)`)
-          .run(report.sessionId, kind, wakeDetail(report, kind), at, report.sessionId, kind);
+          .run(report.sessionId, kind, detail, at, kind, report.sessionId, kind);
         if (inserted.changes) {
-          const id = Number(inserted.lastInsertRowid);
-          wakes.push({ id, sessionId: report.sessionId, kind, detail: wakeDetail(report, kind), createdAt: at });
+          wakes.push({ id: Number(inserted.lastInsertRowid), sessionId: report.sessionId, kind, detail, createdAt: at });
         }
       }
       this.prune(at);
