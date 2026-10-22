@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ApprovalMode } from "../shared/approval-mode.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
@@ -9,6 +10,7 @@ import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
 import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
+import { requireDriverRunApi } from "./driver-run-api.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 import { flushUsageLedger, readUsage } from "./usage-ledger.ts";
@@ -151,8 +153,20 @@ export async function openProductionCodingRuntime(options: {
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
       threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` }) === "delivered";
   };
-  const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit, workerHost: host,
-    routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver });
+  const driverDir = join(codingDir, "durable-driver");
+  mkdirSync(driverDir, { recursive: true, mode: 0o700 });
+  const { openDurableDriver } = await requireDriverRunApi();
+  const driver = await openDurableDriver({ directory: realpathSync(driverDir) });
+  if (typeof driver.invokeWorker !== "function" || typeof driver.status !== "function" ||
+    typeof driver.reconcile !== "function") {
+    await driver.close();
+    throw new Error("installed driver lacks the durable worker transport");
+  }
+  let runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>;
+  try {
+    runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit, workerHost: host,
+      routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver, driver });
+  } catch (error) { await driver.close(); throw error; }
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;
     const id = run.triggerSource === "schedule" && templates.has(run.routineId)
