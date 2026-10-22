@@ -116,7 +116,6 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
   const harness = await Harness.open(await openNodeSqliteStorage(join(dataDir, "coding-runs.sqlite")),
     { models: createModels(), registry }, BACKGROUND_CONTEXT);
-  reportPending();
   const findTask = async (id: string): Promise<TaskId<string> | undefined> => {
     const matches = (await harness.inspect(BACKGROUND_CONTEXT)).tasks.filter((item) =>
       item.record.kind === "openmausbot.outer-run" && (item.record.input as { id?: string }).id === id);
@@ -131,7 +130,13 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
       return existing;
     }
     const recorded = store.taskId(snapshot.contract.id);
-    if (recorded) return recorded as TaskId<string>;
+    if (recorded) {
+      const task = await harness.getTask(recorded as TaskId<string>, BACKGROUND_CONTEXT);
+      if (task?.kind !== "openmausbot.outer-run" || (task.input as { id?: string }).id !== snapshot.contract.id) {
+        throw new Error("recorded run task identity requires reconciliation");
+      }
+      return recorded as TaskId<string>;
+    }
     if (snapshot.state !== "queued") throw new Error("run task identity requires reconciliation");
     const root = await harness.root(BACKGROUND_CONTEXT);
     const id = await root.commit((tx) => tx.createTask(Task, { id: snapshot.contract.id },
@@ -149,7 +154,14 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     starting.set(snapshot.contract.id, attempt);
     return attempt;
   };
-  for (const contract of store.queued()) await start(contract);
+  try {
+    reportPending();
+    for (const contract of store.queued()) await start(contract);
+  } catch (error) {
+    await harness.close(BACKGROUND_CONTEXT);
+    store.close();
+    throw error;
+  }
   return {
     start,
     resume() { reportPending(); harness.resume(); },
