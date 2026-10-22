@@ -134,6 +134,8 @@
   "server/routine-continuity.e2e.test.ts": 4,
   "server/routine-cron.e2e.test.ts": 7,
   "server/routine-delegation.e2e.test.ts": 50,
+  "server/routine-recovery-acp.e2e.test.ts": 25,
+  "server/routine-recovery.e2e.test.ts": 119,
   "server/routine-results.e2e.test.ts": 6,
   "server/routine-run-broadcast.e2e.test.ts": 1,
   "server/routines-startup.test.ts": 11,

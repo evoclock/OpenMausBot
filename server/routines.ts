@@ -5,6 +5,8 @@ import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
+import type { RunSnapshot } from "./run-contract.ts";
+import { applyCodingSettlement, type CodingSettlementReceipt } from "./routine-settlement.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
@@ -13,7 +15,8 @@ import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from ".
 import {
   isRoutineProblemRun, type RoutineContextAttachment, type RoutineIntervalWindow, type RoutineRetryCause, type RoutineRunStatus, type RoutineRunTrigger,
 } from "../shared/routines.ts";
-import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
+import { loadInstalledPackage, type RoutinePackageStamp } from "./package-parts.ts";
+export type { RoutinePackageStamp } from "./package-parts.ts";
 import {
   composeExecutionPrompt, continuityCarry, ROUTINE_DEFERRAL_NOTICE_MS, ROUTINE_SKIPPED_WHILE_WAITING, ROUTINE_SUPERSEDED,
   routineFailure, routineHostWarning, skipNeedsNotice, supersededBy,
@@ -84,26 +87,6 @@ export interface Routine {
   nextRunAt: number | null;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface RoutinePackageStamp {
-  installId: string;
-  key: string;
-  parts: Record<RoutinePart, PartPair>;
-}
-
-const HASH = /^[a-f0-9]{64}$/;
-function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const stamp = value as Partial<RoutinePackageStamp>;
-  if (typeof stamp.installId !== "string" || !/^[a-f0-9]{32}$/.test(stamp.installId) || typeof stamp.key !== "string" || !stamp.key || stamp.key.length > 80) return undefined;
-  const parts = stamp.parts as Record<string, Partial<PartPair>> | undefined;
-  if (!parts || typeof parts !== "object" || !ROUTINE_PARTS.every((part) => HASH.test(String(parts[part]?.r)) && HASH.test(String(parts[part]?.w)))) return undefined;
-  return {
-    installId: stamp.installId,
-    key: stamp.key,
-    parts: Object.fromEntries(ROUTINE_PARTS.map((part) => [part, { r: parts[part]!.r!, w: parts[part]!.w! }])) as Record<RoutinePart, PartPair>,
-  };
 }
 
 export interface RoutineRun {
@@ -199,6 +182,7 @@ interface RoutineFile {
   runs: RoutineRun[];
   routineRequestReceipts?: RoutineRequestReceipt[];
   webhookRunReceipts?: WebhookRunReceipt[];
+  codingSettlementReceipts?: CodingSettlementReceipt[];
   startupLaunchId?: string;
   ownerNotices?: RoutineOwnerNotice[];
 }
@@ -681,6 +665,7 @@ export class RoutineManager {
   private closing = false;
   private ownerNotices: RoutineOwnerNotice[] = [];
   private readonly failureFacts = new Map<string, RoutineFailureFacts>();
+  private codingSettlementReceipts: CodingSettlementReceipt[] = [];
   /** Saves are refused while set, so an empty state never overwrites an unreadable file. */
   private unreadable = false;
   private frozenPending = false;
@@ -761,6 +746,8 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
+      this.codingSettlementReceipts = Array.isArray(disk.codingSettlementReceipts)
+        ? disk.codingSettlementReceipts : [];
       this.frozenPending = disk.frozenResultsCleared !== true;
       this.ownerNotices = loadOwnerNotices(disk.ownerNotices);
       if (typeof disk.startupLaunchId === "string") this.startupLaunchId = disk.startupLaunchId;
@@ -779,6 +766,7 @@ export class RoutineManager {
       this.runs = [];
       this.routineRequestReceipts = [];
       this.webhookRunReceipts = [];
+      this.codingSettlementReceipts = [];
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.unreadable = true;
         // JSON.parse errors can echo a fragment of the input, so they never reach the log.
@@ -857,6 +845,12 @@ export class RoutineManager {
       .filter((at): at is number => at != null && at <= now + horizonMs)
       .sort((a, b) => a - b)[0];
     return due === undefined ? { hold: false } : { hold: true, reason: "due", at: due };
+  }
+
+  settleCodingRun(routineRunId: string, terminal: RunSnapshot): { status: "applied" | "existing"; receipt: CodingSettlementReceipt } {
+    this.assertWritable();
+    return applyCodingSettlement({ routineRunId, terminal, runs: this.runs, receipts: this.codingSettlementReceipts,
+      now: this.now, commit: (mutate) => this.commitMutation(mutate), notify: (run) => this.notifyRunChanged(run) });
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {
@@ -1822,6 +1816,7 @@ export class RoutineManager {
       routines: this.routines.map(cloneRoutine),
       runs: this.runs.map(cloneRun),
       receipts: this.routineRequestReceipts.map((receipt) => ({ ...receipt })),
+      codingReceipts: this.codingSettlementReceipts.map((receipt) => ({ ...receipt })),
     };
     try {
       mutate();
@@ -1831,6 +1826,7 @@ export class RoutineManager {
       this.routines = before.routines;
       this.runs = before.runs;
       this.routineRequestReceipts = before.receipts;
+      this.codingSettlementReceipts = before.codingReceipts;
       try {
         rollback?.();
       } catch (cleanupError) {
@@ -1858,6 +1854,7 @@ export class RoutineManager {
       ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
       routines: [...this.routines, ...this.unloadedRoutines], runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts, webhookRunReceipts: this.webhookRunReceipts,
+      codingSettlementReceipts: this.codingSettlementReceipts,
       ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
       ...(this.ownerNotices.length ? { ownerNotices: this.ownerNotices } : {}),
     } satisfies RoutineFile, null, 2)); } catch (error) {

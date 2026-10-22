@@ -41,6 +41,14 @@ export function parseVitestJson(text, root = ROOT) {
   return seconds;
 }
 
+export function slowestReport(samples, count = 20) {
+  const files = samples.flatMap((sample) => [...sample]);
+  if (files.length === 0) throw new Error("No Vitest file durations were collected");
+  const rows = files.sort((a, b) => b[1] - a[1]).slice(0, count)
+    .map(([file, seconds]) => `| ${seconds.toFixed(1)} s | ${file} |`);
+  return ["### Slowest 20 Vitest files", "| Duration | File |", "| ---: | --- |", ...rows].join("\n");
+}
+
 export function buildWeights(samples, exists) {
   const seen = new Map();
   for (const sample of samples) {
@@ -67,6 +75,14 @@ function windowsRun(id) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
+  if (args[0] === "--durations-json") {
+    console.log(JSON.stringify([...parseVitestJson(readFileSync(args[1], "utf8"))]));
+    process.exit(0);
+  }
+  if (args[0] === "--slowest") {
+    console.log(slowestReport(args.slice(1).map((file) => new Map(JSON.parse(readFileSync(file, "utf8"))))));
+    process.exit(0);
+  }
   const samples = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--run") samples.push(windowsRun(args[++i]));
