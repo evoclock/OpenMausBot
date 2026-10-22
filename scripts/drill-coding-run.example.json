@@ -1,0 +1,20 @@
+{
+  "destination": "",
+  "confirmedDestination": "",
+  "creationStep": "After Julen confirms the exact name, create a throwaway private GitHub repository; do not create it during harness review.",
+  "host": "mac-mini",
+  "credentialReference": "",
+  "worktree": "",
+  "model": "gpt-6-sol",
+  "thinking": "low",
+  "botConfig": {
+    "originBotId": "",
+    "workerBotId": "",
+    "reviewerBotId": "",
+    "modelSelection": { "instanceId": "", "model": "gpt-6-sol" },
+    "maxIterations": null,
+    "limits": { "maxWallTimeMs": null, "maxSpendUsd": null, "allowedFallbackModels": [], "allowedFallbackDataRoutes": [] }
+  },
+  "expectedRevisions": [],
+  "attribution": { "author": "evoclock", "noreplyEmail": "52983349+evoclock@users.noreply.github.com", "allowSquash": false }
+}

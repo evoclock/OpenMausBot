@@ -3,13 +3,15 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
+import { RunContractStore } from "./run-contract.ts";
+import { scheduledCodingRunId } from "./run-triggers.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
 const serverDir = dirname(fileURLToPath(import.meta.url));
 const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
-async function fixture(mode: "coding" | "happy" | "permission") {
+async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
   const cache = join(root, "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
@@ -29,15 +31,20 @@ async function fixture(mode: "coding" | "happy" | "permission") {
   git(repository, "init", "-b", "main");
   writeFileSync(join(repository, "README.md"), "isolated coding fixture\n");
   git(repository, "add", "README.md");
-  git(repository, "-c", "user.name=evoclock", "-c", "user.email=evoclock@users.noreply.github.com", "commit", "-m", "Fixture base");
-  git(repository, "remote", "add", "origin", "git@github.com:fixture/agents.git");
+  git(repository, "-c", "user.name=evoclock", "-c", `user.email=${mode === "drill" ? "52983349+evoclock@users.noreply.github.com" : "evoclock@users.noreply.github.com"}`, "commit", "-m", "Fixture base");
+  if (mode === "drill") {
+    git(repository, "init", "--bare", join(home, "destination.git"));
+    git(repository, "remote", "add", "origin", "git@github.com:fixture/agents.git");
+    git(repository, "push", join(home, "destination.git"), "main");
+  } else git(repository, "remote", "add", "origin", "git@github.com:fixture/agents.git");
   git(repository, "worktree", "add", "-b", "fixture-lease", leased, "main");
   writeFileSync(join(bin, "gh"), `#!/usr/bin/env node\nconst a=process.argv.slice(2);\nif(a.join(' ') !== 'repo view fixture/agents --json nameWithOwner,isPrivate,viewerPermission') process.exit(2);\nconsole.log(JSON.stringify({nameWithOwner:'fixture/agents',isPrivate:true,viewerPermission:'WRITE'}));\n`, { mode: 0o755 });
   writeFileSync(state, JSON.stringify({ holder: null }));
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini" },
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini",
+    FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json") },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -58,6 +65,7 @@ async function fixture(mode: "coding" | "happy" | "permission") {
     }, "server health");
   };
   const stop = async () => { await waitForExit(child, { signal: "SIGTERM" }); child = undefined; };
+  const kill = async () => { await waitForExit(child, { signal: "SIGKILL" }); child = undefined; };
   const until = async (check: () => Promise<boolean>, label: string) => {
     for (let i = 0; i < 300; i++) {
       if (child?.exitCode !== null) throw new Error(`server exited during ${label}: ${stderr.slice(-4000)}`);
@@ -73,7 +81,7 @@ async function fixture(mode: "coding" | "happy" | "permission") {
     expect(response.status, `${method} ${path}: ${JSON.stringify(value)}`).toBeLessThan(300);
     return value;
   };
-  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, git, start, stop, until, api,
+  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, git, start, stop, kill, until, api,
     logs: () => stderr };
 }
 
@@ -309,4 +317,102 @@ test("composed server interrupts an active coding turn at its wall-clock ceiling
     }
   } catch (error) { console.error(f.logs().slice(-8000)); throw error; }
   finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
+test("drill: SIGKILL during review holds the prepared effect and delivers one blocked report", async () => {
+  const f = await fixture("drill");
+  const marker = join(f.home, "review-started.json");
+  let reviewPid: number | undefined;
+  try {
+    await f.start();
+    const owner = (await f.api("POST", "/api/bots", { name: "Fixture owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Fixture worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Fixture reviewer" })).bot;
+    await f.api("PATCH", `/api/bots/${owner.id}`, { approvalMode: "ask" });
+    for (const bot of [worker, reviewer]) {
+      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
+    }
+    const routine = (await f.api("POST", "/api/routines", {
+      name: "Crash drill", prompt: "Complete fixture coding task", botId: owner.id,
+      schedule: { type: "once", at: Date.now() + 3_600_000 },
+    })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
+        routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"],
+      }] } }));
+    const routinesFile = join(f.dataDir, "routines.json");
+    const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
+    const due = Date.now() - 1000;
+    const scheduled = saved.routines.find((entry: { id: string }) => entry.id === routine.id);
+    scheduled.schedule.at = due;
+    scheduled.nextRunAt = due;
+    writeFileSync(routinesFile, JSON.stringify(saved));
+    await f.start();
+    await f.until(async () => existsSync(marker), "review turn after worker commit");
+    const review = JSON.parse(readFileSync(marker, "utf8")) as { pid: number; revision: string };
+    reviewPid = review.pid;
+    const store = new RunContractStore(join(f.dataDir, "coding-run", "runtime.db"));
+    const activeRun = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const before = store.get(scheduledCodingRunId(activeRun));
+    expect(before?.state).toBe("running");
+    const prepared = store.step(before!.contract.id, before!.iteration);
+    expect(prepared?.status).toBe("prepared");
+    const storeTaskId = store.taskId(before!.contract.id);
+    store.close();
+    expect(f.git(f.leased, "rev-parse", "HEAD")).toBe(review.revision);
+    await f.kill();
+    process.kill(reviewPid, "SIGKILL");
+    reviewPid = undefined;
+    await f.start();
+    await f.until(async () => (await f.api("GET", "/api/routines")).runs
+      .some((run: { routineId: string; status: string }) => run.routineId === routine.id && run.status === "failed"), "blocked settlement");
+    const afterStore = new RunContractStore(join(f.dataDir, "coding-run", "runtime.db"));
+    const after = afterStore.get(before!.contract.id);
+    const receipt = afterStore.step(before!.contract.id, before!.iteration);
+    afterStore.close();
+    expect(after?.state).toBe("blocked");
+    expect(after?.evidence.join(" ")).toContain("unknown outward effect");
+    expect(receipt?.status).toBe("prepared");
+    expect(f.git(f.leased, "rev-list", "--count", "main..HEAD")).toBe("1");
+    const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+      isTurnSpawn?: boolean; cwd?: string;
+    }>;
+    expect(turns.filter((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toHaveLength(2);
+    const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const messages = (await f.api("GET", `/api/threads/${run.threadId}/messages?limit=100`)).messages as Array<{
+      turnId?: string; text?: string;
+    }>;
+    const ownerReports = messages.filter((message) => message.turnId?.startsWith("coding-result:"));
+    expect(ownerReports).toHaveLength(1);
+    expect(ownerReports[0].text).toContain("Coding run blocked:");
+    f.git(f.leased, "push", join(f.home, "destination.git"), `HEAD:refs/heads/draft/drill-${before!.contract.id}`);
+    expect(f.git(f.repository, "--git-dir", join(f.home, "destination.git"), "rev-parse",
+      `refs/heads/draft/drill-${before!.contract.id}`)).toBe(review.revision);
+    const authors = f.git(f.leased, "log", "--format=%an <%ae>|%cn <%ce>|%P", "main..HEAD");
+    expect(authors).toMatch(/^evoclock <52983349\+evoclock@users\.noreply\.github\.com>\|evoclock <52983349\+evoclock@users\.noreply\.github\.com>\|[0-9a-f]{40}$/);
+    const result = { schema: "omb-drill-v1", outcome: "blocked", routineId: routine.id,
+      runId: before!.contract.id, taskId: storeTaskId, revision: review.revision,
+      before: { state: before!.state, iteration: before!.iteration, receipt: prepared },
+      after: { state: after?.state, iteration: after?.iteration, receipt },
+      effects: { workerCommits: 1, reviewerTurns: 1, repeatedTurns: 0, ownerReports: ownerReports.length,
+        pushedRef: `refs/heads/draft/drill-${before!.contract.id}`, mergeCommits: 0, squash: false },
+      verification: { entry: "blocked routine and exactly one owner report", attribution: authors,
+        reviewAcceptance: "not claimed: reviewer interrupted before acceptance" } };
+    if (process.env.OMB_DRILL_PROOF_DIR) {
+      mkdirSync(process.env.OMB_DRILL_PROOF_DIR, { recursive: true });
+      writeFileSync(join(process.env.OMB_DRILL_PROOF_DIR, "report.json"), JSON.stringify(result, null, 2));
+    }
+  } catch (error) {
+    console.error(f.logs().slice(-4000));
+    if (existsSync(f.dump)) console.error(readFileSync(f.dump, "utf8").slice(-4000));
+    if (existsSync(join(f.dataDir, "routines.json"))) console.error(readFileSync(join(f.dataDir, "routines.json"), "utf8").slice(-3000));
+    throw error;
+  } finally {
+    if (reviewPid) { try { process.kill(reviewPid, "SIGKILL"); } catch {} }
+    await f.stop();
+    await removeTempDir(f.home);
+  }
 }, 90_000);
