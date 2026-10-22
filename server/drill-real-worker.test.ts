@@ -85,7 +85,7 @@ test("drill: scripted local worker finishes on iteration two with the previous v
   try {
     writeFileSync(join(proof, "config.json"), JSON.stringify(config, null, 2));
     const id = await runner.start(contract);
-    for (let attempt = 0; attempt < 200 && runner.get(contract.id)?.iteration < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 200 && (runner.get(contract.id)?.iteration ?? 0) < 2; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     during = await status();
