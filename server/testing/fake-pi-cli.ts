@@ -10,7 +10,6 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { parseToolScope } from "../../shared/tool-scope.ts";
 
 const mode = process.env.FAKE_PI_MODE ?? "happy";
 const modelPairs = (process.env.FAKE_PI_MODELS ?? "ollama-cloud/glm-5.2,openai/gpt-4o")
@@ -23,13 +22,15 @@ const modelPairs = (process.env.FAKE_PI_MODELS ?? "ollama-cloud/glm-5.2,openai/g
 
 const argv = process.argv.slice(2);
 
-if (argv[0] === "--mode" && process.env.OMB_MCP_CONFIG) {
+if (process.env.FAKE_PI_SCOPE_ACK === "1" && argv[0] === "--mode" && process.env.OMB_MCP_CONFIG) {
   const config = JSON.parse(readFileSync(process.env.OMB_MCP_CONFIG, "utf8")) as {
-    scopeReadyPath?: string; toolScope?: unknown;
+    scopeReadyPath?: string; toolScope?: { allow?: unknown };
   };
   if (config.scopeReadyPath) {
-    writeFileSync(config.scopeReadyPath, JSON.stringify({ ok: parseToolScope(config.toolScope).ok, toolScope: config.toolScope }),
-      { mode: 0o600 });
+    const allowed = config.toolScope?.allow;
+    const ok = Array.isArray(allowed) && allowed.length === 3 &&
+      ["native:read", "native:write", "native:edit"].every((name) => allowed.includes(name));
+    writeFileSync(config.scopeReadyPath, JSON.stringify({ ok, toolScope: config.toolScope }), { mode: 0o600 });
   }
 }
 
