@@ -1,11 +1,13 @@
 import { strict as assert } from "node:assert";
-import { chmodSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { ensureDirs } from "./config.ts";
 import { PiDriver } from "./drivers/pi.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
+import { openCodingRunRuntime } from "./coding-run-runtime.ts";
+import type { TriggerTemplate } from "./run-triggers.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "testing", "fake-pi-cli.ts");
@@ -52,6 +54,73 @@ test("worker route launches the existing fake process with the scoped approval m
     assert.equal(seen.filter((event) => event.type === "turn.completed").length, 2);
   } finally {
     unsubscribe();
+    await instance.dispose();
+  }
+});
+
+test("a schedule and a webhook delivery reach the real WorkerHost and settle in isolated storage", async () => {
+  ensureDirs();
+  chmodSync(cli, 0o755);
+  const instance = await PiDriver.create({ instanceId: "coding-trigger-fixture", displayName: "fixture",
+    environment: {}, enabled: true, config: { cli, fullAuto: false } });
+  const workspace = { repository: "fixture/agents", directory: process.cwd(), branch: "main",
+    base: "main", leaseId: "trigger-lease" };
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const dataDir = mkdtempSync(join(scratch, "coding-trigger-live-"));
+  const workerTurns: string[] = [];
+  const host = createCodingWorkerHost({
+    roles: new Map([[workspace.repository, { development: "development", independentReview: "review",
+      developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
+    workspace: { async acquire() { return workspace; }, async release() {} },
+    turn: { async run({ botId, prompt, requestId }) {
+      const threadId = `${botId}:${requestId}`;
+      const events: RuntimeEvent[] = [];
+      const done = new Promise<void>((resolve) => {
+        const off = instance.adapter.onEvent((event) => {
+          if (event.threadId !== threadId) return;
+          events.push(event);
+          if (event.type === "turn.completed") { off(); resolve(); }
+        });
+      });
+      await instance.adapter.sendTurn({ threadId, text: prompt, cwd: workspace.directory, approvalMode: "ask" });
+      await done;
+      const answer = events.findLast((event) => event.type === "item.completed" && event.itemType === "assistant_text");
+      if (!answer || answer.type !== "item.completed" || answer.itemType !== "assistant_text") {
+        throw new Error("fixture worker returned no text");
+      }
+      workerTurns.push(botId);
+      return { revision: "fixture-revision", evidence: [answer.text], accepted: true };
+    } },
+    async verify() { return ["fixture verification"]; },
+  });
+  const template: TriggerTemplate = { botId: "origin", repository: workspace.repository, ref: workspace.branch,
+    repositoryClass: "agent-private", successCriteria: ["respond"], allowedEffects: ["edit"], authorisedExternalWrites: [] };
+  const runtime = await openCodingRunRuntime({ dataDir, workerHost: host,
+    routines: new Map([["routine", template]]), webhooks: new Map([["hook", template]]), github: new Map() });
+  try {
+    const schedule = await runtime.scheduled({ id: "occurrence", routineId: "routine", botId: "origin",
+      scheduledFor: 100, triggerSource: "schedule", status: "running" });
+    if (!("id" in schedule)) throw new Error("missing schedule identity");
+    for (let attempt = 0; attempt < 200 && runtime.get(schedule.id)?.state !== "done"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(runtime.get(schedule.id)?.state, "done", JSON.stringify(runtime.get(schedule.id)?.evidence));
+    const event = await runtime.webhook({ id: "delivery-run", routineId: "hook", botId: "origin",
+      webhookId: "hook", deliveryId: "delivery-1", triggerSource: "webhook", status: "running" });
+    if (!("id" in event)) throw new Error("missing event identity");
+    for (let attempt = 0; attempt < 200 && runtime.get(event.id)?.state !== "done"; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(runtime.get(event.id)?.state, "done", JSON.stringify(runtime.get(event.id)?.evidence));
+    assert.equal((await runtime.scheduled({ id: "occurrence", routineId: "routine", botId: "origin",
+      scheduledFor: 100, triggerSource: "schedule", status: "running" })).status, "existing");
+    assert.equal((await runtime.webhook({ id: "delivery-run", routineId: "hook", botId: "origin",
+      webhookId: "hook", deliveryId: "delivery-1", triggerSource: "webhook", status: "running" })).status, "existing");
+    assert.deepEqual(workerTurns.sort(), ["reviewer", "reviewer", "worker", "worker"]);
+    console.log("isolated WorkerHost: schedule done; webhook done; four fake-engine role turns; replay unchanged");
+  } finally {
+    await runtime.close();
     await instance.dispose();
   }
 });

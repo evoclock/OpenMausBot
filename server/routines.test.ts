@@ -239,6 +239,18 @@ describe("bounded scheduled overlap and run health", () => {
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
   });
 
+  it("settles a queued restart replay when its durable coding result is already terminal", async () => {
+    const h = harness(start);
+    h.manager.create(input());
+    h.setNow(start + 5 * 60_000); await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+    const restarted = new RoutineManager(h.options);
+    expect(restarted.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("queued");
+    expect(restarted.settleCodingRun(run.id, "done", "Verified before restart")?.status).toBe("completed");
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "completed", output: "Verified before restart" });
+  });
+
   it("persists failed coding settlement for a verified webhook delivery", async () => {
     const h = harness(start);
     const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",

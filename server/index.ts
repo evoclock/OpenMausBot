@@ -6,7 +6,7 @@ import { createCodingWorkerHost } from "./coding-worker-host.ts";
 import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
-import { scheduledCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
+import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -9468,17 +9468,19 @@ export function codingStartTurnPort(originForRequest: (requestId: string) => { b
       const origin = originForRequest(requestId);
       const run = origin && routines?.runForThread(origin.threadId);
       if (!run || run.id !== origin.runId || run.botId !== origin.botId || run.status !== "running" ||
-        run.triggerSource !== "schedule") {
+        (run.triggerSource !== "schedule" && run.triggerSource !== "webhook")) {
         throw new Error("coding run has no active originating routine thread");
       }
-      return sourceApprovalMode(origin.botId, origin.threadId);
+      return run.triggerSource === "webhook" ? "ask" : sourceApprovalMode(origin.botId, origin.threadId);
     },
     driverKind(botId) {
       const bot = store.bot(botId);
       return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
     },
     async startTurn(botId, text, options) {
-      await startTurn(botId, text, { ...options, automationSource: "schedule" });
+      const origin = originForRequest(options.requestId);
+      const run = origin && routines?.runForThread(origin.threadId);
+      await startTurn(botId, text, { ...options, automationSource: run?.triggerSource === "webhook" ? "webhook" : "schedule" });
     },
     async interrupt(botId, threadId) {
       const bot = botForThread(botId, threadId);
@@ -9492,6 +9494,7 @@ export function codingStartTurnPort(originForRequest: (requestId: string) => { b
 }
 
 const codingRegistrations = new Map<string, TriggerTemplate>();
+const codingWebhookRegistrations = new Map<string, TriggerTemplate>();
 const codingOrigins = new Map<string, { botId: string; threadId: string; runId: string }>();
 let codingRuntime: Awaited<ReturnType<typeof openCodingRunRuntime>> | null = null;
 let codingDelivery: CodingResultDelivery | null = null;
@@ -9499,15 +9502,20 @@ let codingWorkspace: CodingTreehouseWorkspace | null = null;
 let codingRunStore: RunContractStore | null = null;
 
 function deliverCodingTerminal(snapshot: RunSnapshot): void {
+  if (snapshot.state !== "done" && snapshot.state !== "blocked" &&
+    snapshot.state !== "failed" && snapshot.state !== "cancelled") return;
   const linked = codingRunStore?.routineLink(snapshot.contract.id);
   const origin = codingOrigins.get(snapshot.contract.id);
   const routineRunId = linked?.routineId ?? origin?.runId;
   const run = routineRunId ? routines?.listRuns().find((candidate) => candidate.id === routineRunId) : undefined;
   if (!run?.threadId || !codingDelivery) return;
   codingRunStore?.linkRoutine(run.id, snapshot.contract.id);
+  codingRunStore?.claimRoutineTerminal(snapshot.contract.id, snapshot);
   const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
+  const detail = evidence || "No result was reported.";
+  routines?.settleCodingRun(run.id, snapshot.state, detail);
   codingDelivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-    threadId: run.threadId, text: `Coding run ${snapshot.state}: ${evidence || "No result was reported."}` });
+    threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` });
 }
 
 routines = new RoutineManager({
@@ -9576,10 +9584,18 @@ routines = new RoutineManager({
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
     const run = routines?.runForThread(threadId);
-    if (triggerSource === "schedule" && run && codingRegistrations.has(run.routineId)) {
+    if (run && codingRegistrations.has(run.routineId) &&
+      (triggerSource === "schedule" || triggerSource === "webhook")) {
       if (!codingRuntime) throw new Error("coding runtime is unavailable");
-      codingOrigins.set(scheduledCodingRunId(run), { botId, threadId, runId: run.id });
-      const result = await codingRuntime.scheduled(run);
+      if (triggerSource === "webhook" && (!run.webhookId || !run.deliveryId ||
+        !codingWebhookRegistrations.has(run.webhookId) ||
+        !webhooks.list().some((hook) => hook.id === run.webhookId && hook.enabled && hook.delivery !== "post"))) {
+        throw new Error("coding webhook registration is not active");
+      }
+      const codingId = triggerSource === "webhook"
+        ? webhookCodingRunId(run.webhookId!, run.deliveryId!) : scheduledCodingRunId(run);
+      codingOrigins.set(codingId, { botId, threadId, runId: run.id });
+      const result = triggerSource === "webhook" ? await codingRuntime.webhook(run) : await codingRuntime.scheduled(run);
       if ("id" in result && result.id && codingRunStore) {
         codingRunStore.linkRoutine(run.id, result.id);
         const current = codingRuntime.get(result.id);
@@ -9647,14 +9663,6 @@ if (cfg.codingRuns) {
     development: entry.developmentRole, independentReview: entry.reviewRole,
     developmentBotId: entry.workerBotId, reviewerBotId: entry.reviewerBotId,
   }]));
-  for (const entry of registrations) {
-    if (codingRegistrations.has(entry.routineId)) throw new Error("duplicate coding routine registration");
-    codingRegistrations.set(entry.routineId, {
-      botId: routines.listRoutines().find((routine) => routine.id === entry.routineId)?.botId ?? "",
-      repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
-      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
-    });
-  }
   const turn = codingStartTurnPort((requestId) => {
     const source = requestId.startsWith("review:") ? requestId.slice(7) : requestId;
     const id = source.slice(0, 36);
@@ -9674,7 +9682,8 @@ if (cfg.codingRuns) {
     },
   });
   codingRuntime = await openCodingRunRuntime({ dataDir: codingDir, workerHost: host,
-    routines: codingRegistrations, github: new Map(), onTerminal: deliverCodingTerminal });
+    routines: codingRegistrations, webhooks: codingWebhookRegistrations,
+    github: new Map(), onTerminal: deliverCodingTerminal });
 }
 // Settle Cloud ownership before anything is served and before any routine can run.
 if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
@@ -10313,6 +10322,21 @@ const webhooks = new WebhookManager({
   },
 });
 const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (botId) => store.bot(botId)?.name ?? "the bot" });
+
+for (const entry of cfg.codingRuns?.registrations ?? []) {
+  if (codingRegistrations.has(entry.routineId)) throw new Error("duplicate coding trigger registration");
+  const routine = routines!.listRoutines().find((candidate) => candidate.id === entry.routineId);
+  const hook = webhooks.list().find((candidate) => candidate.id === entry.routineId);
+  if (Boolean(routine) === Boolean(hook) || (hook && (hook.delivery === "post" || !hook.enabled))) {
+    throw new Error("coding trigger registration requires one applied schedule or active run webhook");
+  }
+  const botId = routine?.botId ?? hook!.botId;
+  codingRegistrations.set(entry.routineId, {
+    botId, repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
+    successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
+  });
+  if (hook) codingWebhookRegistrations.set(entry.routineId, codingRegistrations.get(entry.routineId)!);
+}
 
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;

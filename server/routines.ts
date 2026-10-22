@@ -1581,7 +1581,7 @@ export class RoutineManager {
   settleCodingRun(runId: string, status: "done" | "blocked" | "failed" | "cancelled", detail: string): RoutineRun | null {
     const run = this.runs.find((candidate) => candidate.id === runId &&
       candidate.target === "bot" && ["schedule", "webhook"].includes(candidate.triggerSource ?? "") &&
-      ["running", "waiting"].includes(candidate.status));
+      ["queued", "running", "waiting"].includes(candidate.status));
     if (!run) return null;
     this.assertWritable();
     const safeDetail = redactSecretsInText(detail).trim();
