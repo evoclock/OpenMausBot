@@ -2,7 +2,25 @@
 import { describe, expect, it } from "vitest";
 
 import { holdsCredential } from "../shared/redact.ts";
-import { redactSecrets } from "./redact.ts";
+import { redactSecrets, redactToolInput, redactToolResult } from "./redact.ts";
+
+describe("tool result sensitive paths", () => {
+  it.each([".env", ".env.production", "/home/fixture/.ssh/id_ed25519", "~/.aws/credentials",
+    "/work/.npmrc", "/work/.netrc", "/work/login.keychain-db", "/work/service-account.json"])(
+    "masks an unshaped secret read from %s", (path) => {
+      const result = `response: temporary-test-secret-57 ${path}`;
+      expect(redactToolResult("short-value-57", `cat ${path}`)).not.toContain("short-value-57");
+      expect(redactToolResult(result)).not.toContain("temporary-test-secret-57");
+      expect(redactToolInput(`cat ${path}`)).not.toContain(path);
+    });
+  it("preserves ordinary code while masking key-shaped content", () => {
+    expect(redactToolResult("result: API_KEY=quick-57", "cat README.md"))
+      .toBe("result: API_KEY=«redacted 8 chars»");
+    expect(redactToolResult('{"api_key":"x7"}', "cat settings.json"))
+      .toBe('{"api_key":"«redacted 2 chars»"}');
+    expect(redactToolResult("name=good", "cat README.md")).toBe("name=good");
+  });
+});
 
 const flat = (value: unknown) => JSON.stringify(value);
 
