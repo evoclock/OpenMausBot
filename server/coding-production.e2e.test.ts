@@ -23,6 +23,10 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
   const state = join(home, "treehouse.json");
   const calls = join(home, "treehouse-calls.jsonl");
   const dump = join(home, "pi-turns.jsonl");
+  const rolesFilePath = join(home, "pstack-model-roles.v1.json");
+  writeFileSync(rolesFilePath, JSON.stringify({ schema: "pstack-model-roles.v1", roles: {
+    development: "fixture/development", "independent-review": "fixture/review",
+  } }));
   mkdirSync(dataDir);
   mkdirSync(bin);
   mkdirSync(repository);
@@ -96,7 +100,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
     expect(response.status, `${method} ${path}: ${JSON.stringify(value)}`).toBeLessThan(300);
     return value;
   };
-  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, port,
+  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, rolesFilePath, port,
     webhookPort: webhookPort.port, git, start, stop, kill, until, api,
     logs: () => stderr };
 }
@@ -134,10 +138,10 @@ test.each([
       schedule: { type: "once", at: Date.now() + 3_600_000 },
     })).routine;
     await f.stop();
-    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
       routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-      developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+      developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
       successCriteria: ["coding-fixture-result.txt exists"],
     }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
@@ -175,7 +179,7 @@ test.each([
     }, "scheduled coding result");
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     expect(run.triggerSource).toBe("schedule");
-    expect(run.status).toBe(mode === "coding" ? "completed" : "failed");
+    expect(run.status, JSON.stringify(run)).toBe(mode === "coding" ? "completed" : "failed");
     const workers = (await f.api("GET", "/api/bots")).bots;
     const workerTask = workers.find((bot: { id: string }) => bot.id === worker.id).tasks.find((task: { title: string }) => task.title.startsWith("Coding "));
     expect(workerTask?.cwd).toBe(f.leased);
@@ -265,9 +269,9 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
       schedule: { type: "once", at: Date.now() + 3_600_000 },
     })).routine;
     await f.stop();
-    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
         successCriteria: ["coding-fixture-result.txt exists"] }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -310,10 +314,10 @@ test("composed server interrupts an active coding turn at its wall-clock ceiling
       schedule: { type: "once", at: Date.now() + 3_600_000 },
     })).routine;
     await f.stop();
-    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       bots: { [origin.id]: { maxWallTimeMs: 5_000, maxSpendUsd: 1 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
         successCriteria: ["coding-fixture-result.txt exists"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
@@ -366,10 +370,10 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
       schedule: { type: "once", at: Date.now() + 3_600_000 },
     })).routine;
     await f.stop();
-    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       bots: { [owner.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1, maxIterations: 3 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
         successCriteria: ["coding-fixture-result.txt exists"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");

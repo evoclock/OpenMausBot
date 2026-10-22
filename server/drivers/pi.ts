@@ -574,10 +574,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       if (startupModelRefresh) await startupModelRefresh;
       const { threadId } = turn;
-      if (config.agentDir) {
-        const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
-        if (!readiness.skill.ready) throw new Error(readiness.skill.action);
-      }
+      const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
+      if (!readiness.skill.ready) throw new Error(readiness.skill.action);
       const selection = parseToolScope(turn.toolScope);
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;

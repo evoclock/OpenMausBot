@@ -3,6 +3,7 @@ import { codingRunLimitsSchema } from "./run-contract.ts";
 
 export const codingRunConfigSchema = z.object({
   repositoryRoot: z.string().min(1),
+  rolesFilePath: z.string().min(1),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({
     maxIterations: z.number().int().positive().optional(),
