@@ -12,7 +12,7 @@ const effects: CodingEffect[] = [
 function inspector(overrides: Partial<ForgeEffectInspector> = {}): ForgeEffectInspector {
   return {
     async branch() { return { sha: revision }; },
-    async pullRequests() { return { complete: true, items: [{ head: "feature", base: "main", number: 7 }] }; },
+    async pullRequests() { return { complete: true, items: [{ headRepository: "owner/repo", head: "feature", base: "main", number: 7 }] }; },
     async comments() { return { complete: true, bodies: ["Reviewed <!-- omb-effect:run-1 -->"] }; },
     ...overrides,
   };
@@ -48,8 +48,10 @@ test("different branch revision and partial or duplicate PR matches are inconclu
   assert.equal((await observeCodingEffect(inspector({ async branch() { return { sha: "b".repeat(40) }; } }), effects[0]!)).status,
     "inconclusive");
   for (const items of [
-    [{ head: "feature", base: "elsewhere", number: 7 }],
-    [{ head: "feature", base: "main", number: 7 }, { head: "feature", base: "main", number: 8 }],
+    [{ headRepository: "owner/repo", head: "feature", base: "elsewhere", number: 7 }],
+    [{ headRepository: "fork/repo", head: "feature", base: "main", number: 7 }],
+    [{ headRepository: "owner/repo", head: "feature", base: "main", number: 7 },
+      { headRepository: "owner/repo", head: "feature", base: "main", number: 8 }],
   ]) {
     const result = await observeCodingEffect(inspector({ async pullRequests() { return { complete: true, items }; } }), effects[1]!);
     assert.equal(result.status, "inconclusive");

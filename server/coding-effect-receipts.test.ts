@@ -22,7 +22,7 @@ function scratch() {
 function host(effect: CodingEffect, present: () => boolean, apply: () => void): EffectReconcileHost {
   return {
     async branch() { return present() ? { sha } : null; },
-    async pullRequests() { return { complete: true, items: present() ? [{ head: "review", base: "main", number: 7 }] : [] }; },
+    async pullRequests() { return { complete: true, items: present() ? [{ headRepository: "owner/repo", head: "review", base: "main", number: 7 }] : [] }; },
     async comments() { return { complete: true, bodies: present() ? ["done <!-- omb-effect:effect-1 -->"] : [] }; },
     async applyMissing(receipt) { assert.deepEqual(receipt.effect, effect); apply(); },
   };

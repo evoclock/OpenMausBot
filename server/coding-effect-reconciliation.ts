@@ -14,7 +14,8 @@ export type CodingEffect = z.infer<typeof codingEffectSchema>;
 
 export interface ForgeEffectInspector {
   branch(repository: string, ref: string): Promise<{ sha: string } | null>;
-  pullRequests(repository: string, head: string): Promise<{ complete: boolean; items: Array<{ head: string; base: string; number: number }> }>;
+  pullRequests(repository: string, head: string): Promise<{ complete: boolean; items: Array<{
+    headRepository: string; head: string; base: string; number: number }> }>;
   comments(repository: string, pullNumber: number): Promise<{ complete: boolean; bodies: string[] }>;
 }
 
@@ -33,10 +34,12 @@ export async function observeCodingEffect(inspector: ForgeEffectInspector, input
     }
     if (effect.kind === "pr-open") {
       const result = await inspector.pullRequests(effect.repository, effect.head);
-      if (!result.complete || result.items.some((pr) => pr.head !== effect.head || !Number.isSafeInteger(pr.number) || pr.number <= 0)) {
+      if (!result.complete || result.items.some((pr) => !repository.safeParse(pr.headRepository).success ||
+        !Number.isSafeInteger(pr.number) || pr.number <= 0)) {
         return { status: "inconclusive", evidence: "pull request listing is incomplete or inconsistent" };
       }
-      const matches = result.items.filter((pr) => pr.base === effect.base);
+      const matches = result.items.filter((pr) => pr.headRepository === effect.repository &&
+        pr.head === effect.head && pr.base === effect.base);
       if (matches.length === 1 && result.items.length === 1) {
         return { status: "present", evidence: `pull request ${matches[0]!.number} matches head and base` };
       }
