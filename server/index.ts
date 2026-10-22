@@ -1,13 +1,8 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
-import { createCodingStartTurnPort } from "./coding-start-turn.ts";
-import { createCodingWorkerHost } from "./coding-worker-host.ts";
-import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
-import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
-import { openCodingRunRuntime } from "./coding-run-runtime.ts";
-import { scheduledCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
-import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
+import { openProductionCodingRuntime } from "./coding-production.ts";
+import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
   DRIVER_SCOPED_GATE_CONFIG,
@@ -17,7 +12,6 @@ import {
   runDriverScopedModelCall,
 } from "./driver-startup-gate.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -9424,91 +9418,20 @@ async function interruptRoutineGroupGoal(
 }
 
 /** Cancellation flags flip synchronously; the awaited work only drains capabilities and interrupts started processes. */
-async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void> {
-  const bot = store.bot(botId);
-  if (!bot) return;
-  for (const task of store.tasks(botId)) {
-    if (task.approvalMode === "full" || task.approvalMode === "custom") {
-      store.patchTask(botId, task.threadId, { approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    }
-  }
-  const directStop = interruptAllDirectThreads(botId);
+const stopBotForEmergencyApprovalDowngrade = createEmergencyApprovalDowngrade({
+  store, stopDirect: interruptAllDirectThreads,
+  activeRoutine: (botId) => routines?.activeBotRunForBot(botId),
+  cancelRoutine: (runId) => routines!.cancelRun(runId),
+  activeGroup: activeGroupTurnForBot, cancelGroup: cancelGroupTurnOperations,
+  revoke: revokeInternalCapabilitiesForThread, cancelDispatch: cancelDirectTurnDispatch,
+  closeApprovals: closeOpenApprovals,
+  interruptGroup: (botId, threadId) => {
+    const bot = store.bot(botId);
+    return bot ? runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId) : undefined;
+  },
+});
 
-  const routineRun = routines?.activeBotRunForBot(bot.id);
-  if (routineRun) {
-    if (routineRun.threadId) revokeInternalCapabilitiesForThread(routineRun.threadId);
-    cancelDirectTurnDispatch(bot.id, routineRun.threadId);
-    await routines!.cancelRun(routineRun.id);
-    if (routineRun.threadId) closeOpenApprovals(routineRun.threadId);
-    await directStop;
-    return;
-  }
-
-  const groupTurn = activeGroupTurnForBot(bot.id);
-  if (groupTurn) {
-    revokeInternalCapabilitiesForThread(groupTurn.threadId);
-    cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-    const results = await Promise.allSettled([
-      directStop,
-      runningTurnInstance(bot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId),
-    ]);
-    closeOpenApprovals(groupTurn.threadId);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) throw failure.reason;
-    return;
-  }
-
-  await directStop;
-}
-
-export function codingStartTurnPort(originForRequest: (requestId: string) => { botId: string; threadId: string; runId: string } | null) {
-  return createCodingStartTurnPort({
-    store,
-    approvalMode(requestId) {
-      const origin = originForRequest(requestId);
-      const run = origin && routines?.runForThread(origin.threadId);
-      if (!run || run.id !== origin.runId || run.botId !== origin.botId || run.status !== "running" ||
-        run.triggerSource !== "schedule") {
-        throw new Error("coding run has no active originating routine thread");
-      }
-      return sourceApprovalMode(origin.botId, origin.threadId);
-    },
-    driverKind(botId) {
-      const bot = store.bot(botId);
-      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
-    },
-    async startTurn(botId, text, options) {
-      await startTurn(botId, text, { ...options, automationSource: "schedule" });
-    },
-    async interrupt(botId, threadId) {
-      const bot = botForThread(botId, threadId);
-      cancelDirectTurnDispatch(botId, threadId);
-      revokeInternalCapabilitiesForThread(threadId);
-      stopParkedCards(threadId);
-      try { await runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId); }
-      finally { closeOpenApprovals(threadId); }
-    },
-  });
-}
-
-const codingRegistrations = new Map<string, TriggerTemplate>();
-const codingOrigins = new Map<string, { botId: string; threadId: string; runId: string }>();
-let codingRuntime: Awaited<ReturnType<typeof openCodingRunRuntime>> | null = null;
-let codingDelivery: CodingResultDelivery | null = null;
-let codingWorkspace: CodingTreehouseWorkspace | null = null;
-let codingRunStore: RunContractStore | null = null;
-
-function deliverCodingTerminal(snapshot: RunSnapshot): void {
-  const linked = codingRunStore?.routineLink(snapshot.contract.id);
-  const origin = codingOrigins.get(snapshot.contract.id);
-  const routineRunId = linked?.routineId ?? origin?.runId;
-  const run = routineRunId ? routines?.listRuns().find((candidate) => candidate.id === routineRunId) : undefined;
-  if (!run?.threadId || !codingDelivery) return;
-  codingRunStore?.linkRoutine(run.id, snapshot.contract.id);
-  const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
-  codingDelivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-    threadId: run.threadId, text: `Coding run ${snapshot.state}: ${evidence || "No result was reported."}` });
-}
+let coding: Awaited<ReturnType<typeof openProductionCodingRuntime>> | null = null;
 
 routines = new RoutineManager({
   emit: broadcast,
@@ -9576,15 +9499,8 @@ routines = new RoutineManager({
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
     const run = routines?.runForThread(threadId);
-    if (triggerSource === "schedule" && run && codingRegistrations.has(run.routineId)) {
-      if (!codingRuntime) throw new Error("coding runtime is unavailable");
-      codingOrigins.set(scheduledCodingRunId(run), { botId, threadId, runId: run.id });
-      const result = await codingRuntime.scheduled(run);
-      if ("id" in result && result.id && codingRunStore) {
-        codingRunStore.linkRoutine(run.id, result.id);
-        const current = codingRuntime.get(result.id);
-        if (current && ["done", "blocked", "failed", "cancelled"].includes(current.state)) deliverCodingTerminal(current);
-      }
+    if (triggerSource === "schedule" && run && coding?.registered(run.routineId)) {
+      await coding.scheduled(run, botId, threadId);
       return;
     }
     await startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError });
@@ -9629,52 +9545,17 @@ routines = new RoutineManager({
   },
 });
 if (cfg.codingRuns) {
-  const registrations = cfg.codingRuns.registrations;
-  const repository = registrations[0]?.repository;
-  const first = registrations[0];
-  if (!repository || registrations.some((entry) => entry.repository !== repository ||
-    entry.workerBotId !== first?.workerBotId || entry.reviewerBotId !== first.reviewerBotId ||
-    entry.developmentRole !== first.developmentRole || entry.reviewRole !== first.reviewRole ||
-    entry.workerBotId === entry.reviewerBotId || entry.developmentRole === entry.reviewRole)) {
-    throw new Error("coding registrations require one repository and distinct worker and reviewer routes");
-  }
-  const codingDir = join(DATA_DIR, "coding-run");
-  codingWorkspace = new CodingTreehouseWorkspace({ repository, root: cfg.codingRuns.repositoryRoot, dataDir: codingDir });
-  codingRunStore = new RunContractStore(join(codingDir, "runtime.db"));
-  codingDelivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
-  codingDelivery.replay();
-  const roles = new Map(registrations.map((entry) => [entry.repository, {
-    development: entry.developmentRole, independentReview: entry.reviewRole,
-    developmentBotId: entry.workerBotId, reviewerBotId: entry.reviewerBotId,
-  }]));
-  for (const entry of registrations) {
-    if (codingRegistrations.has(entry.routineId)) throw new Error("duplicate coding routine registration");
-    codingRegistrations.set(entry.routineId, {
-      botId: routines.listRoutines().find((routine) => routine.id === entry.routineId)?.botId ?? "",
-      repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
-      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
-    });
-  }
-  const turn = codingStartTurnPort((requestId) => {
-    const source = requestId.startsWith("review:") ? requestId.slice(7) : requestId;
-    const id = source.slice(0, 36);
-    const live = codingOrigins.get(id);
-    if (live) return live;
-    const linked = codingRunStore?.routineLink(id);
-    const run = linked && routines?.listRuns().find((candidate) => candidate.id === linked.routineId);
-    return run?.threadId ? { botId: run.botId, threadId: run.threadId, runId: run.id } : null;
-  });
-  const host = createCodingWorkerHost({ roles, workspace: codingWorkspace, turn,
-    async verify(workspace, revision) {
-      try {
-        execFileSync("git", ["cat-file", "-e", `${revision}^{commit}`], { cwd: workspace.directory, timeout: 10_000 });
-        execFileSync("git", ["diff", "--check", `${workspace.base}...${revision}`], { cwd: workspace.directory, timeout: 10_000 });
-        return ["Review accepted; revision exists and diff has no whitespace errors"];
-      } catch { return null; }
+  coding = await openProductionCodingRuntime({
+    config: cfg.codingRuns, dataDir: DATA_DIR, store, routines, sourceApprovalMode,
+    driverKind(botId) {
+      const bot = store.bot(botId);
+      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
     },
+    async startTurn(botId, text, options) {
+      await startTurn(botId, text, { ...options, automationSource: "schedule" });
+    },
+    interrupt: interruptDirectThread,
   });
-  codingRuntime = await openCodingRunRuntime({ dataDir: codingDir, workerHost: host,
-    routines: codingRegistrations, github: new Map(), onTerminal: deliverCodingTerminal });
 }
 // Settle Cloud ownership before anything is served and before any routine can run.
 if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
@@ -17366,12 +17247,7 @@ const gracefulShutdown = createGracefulShutdown({
       webhookIngress?.server.close();
       tunnelListener?.close(); stopCloudHomeConnectedApps();
     },
-    async () => {
-      await codingRuntime?.close();
-      codingDelivery?.close();
-      codingRunStore?.close();
-      codingWorkspace?.close();
-    },
+    async () => { await coding?.close(); },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {
