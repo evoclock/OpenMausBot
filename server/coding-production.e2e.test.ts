@@ -37,7 +37,7 @@ async function fixture(mode: "coding" | "happy" | "permission") {
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini" },
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini", FAKE_PI_SCOPE_ACK: "1" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -155,9 +155,13 @@ test.each([
     }
     const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
+      mcpConfig?: { toolScope?: { allow?: string[] } };
     }>;
     if (mode === "permission") expect(turns.some((turn) => turn.uiResponse?.value === "Deny")).toBe(true);
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
+    for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
+      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit"]);
+    }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);
     const returns = operations.filter((operation) => operation[0] === "return");
