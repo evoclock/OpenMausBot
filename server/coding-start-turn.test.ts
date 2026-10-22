@@ -25,7 +25,8 @@ test("normal turn callback gets the originating approval mode and persisted outp
     messagesFor: () => messages,
   } as unknown as Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor">;
   const port = createCodingStartTurnPort({ store, approvalMode: () => "ask", driverKind: () => "piAgent",
-    async startTurn(_botId, _text, { onTurnSettled }) {
+    async startTurn(_botId, _text, { requestId, onTurnSettled }) {
+      assert.equal(requestId, "review:1");
       assert.deepEqual(pinned, { cwd, approvalMode: "ask" });
       messages.push({ id: "answer", role: "bot", kind: "text", text: `ACCEPT ${revision}`, turnTerminal: true });
       onTurnSettled();

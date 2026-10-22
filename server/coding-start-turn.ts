@@ -8,7 +8,7 @@ interface CodingStartTurnOptions {
   store: Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor">;
   approvalMode: (requestId: string) => ApprovalMode;
   /** The server's normal turn entry, not ProviderInstance.adapter.sendTurn. */
-  startTurn: (botId: string, text: string, options: { threadId: string;
+  startTurn: (botId: string, text: string, options: { threadId: string; requestId: string;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   driverKind: (botId: string) => string | undefined;
@@ -47,7 +47,7 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
       const abort = () => { void options.interrupt(botId, task.threadId).finally(() => fail(new Error("coding turn cancelled"))); };
       signal.addEventListener("abort", abort, { once: true });
       try {
-        await options.startTurn(botId, prompt, { threadId: task.threadId, onTurnSettled: settle,
+        await options.startTurn(botId, prompt, { threadId: task.threadId, requestId, onTurnSettled: settle,
           onDispatchError: (error) => fail(new Error(error)) });
         await finished;
         if (signal.aborted) throw new Error("coding turn cancelled");

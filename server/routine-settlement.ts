@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { runSnapshotSchema, type RunSnapshot } from "./run-contract.ts";
 import type { RoutineRun } from "./routines.ts";
@@ -47,4 +48,46 @@ export function applyCodingSettlement(options: {
   });
   notify(run);
   return { status: "applied", receipt: { ...receipt } };
+}
+
+export function finishGoalRun(port: {
+  runs: readonly RoutineRun[];
+  now(): number;
+  clone(run: RoutineRun): RoutineRun;
+  fail(run: RoutineRun, detail: string): void;
+  wait(run: RoutineRun, detail: string): void;
+  save(): void;
+  emit(run: RoutineRun): void;
+  tick(): Promise<void>;
+}, runId: string, status: GroupGoalRunStatus, detail: string): RoutineRun | null {
+  const run = port.runs.find(
+    (candidate) => candidate.id === runId &&
+      candidate.target === "room-goal" &&
+      ["running", "waiting"].includes(candidate.status),
+  );
+  if (!run || status === "working") return null;
+  const safeDetail = redactSecretsInText(detail).trim();
+  run.goalStatus = status;
+  if (status === "failed" || status === "blocked" || status === "limit-reached") {
+    port.fail(
+      run,
+      safeDetail ||
+        (status === "limit-reached" ? "The room goal reached its turn limit" : "The room goal is blocked"),
+    );
+  } else if (status === "needs-input" || status === "paused") {
+    port.wait(run, safeDetail.slice(0, 500) || (status === "paused" ? "The room goal is paused" : "The team needs your input"));
+    run.error = undefined;
+    port.save();
+    port.emit(run);
+  } else {
+    run.status = status === "stopped" ? "cancelled" : "completed";
+    run.attention = undefined;
+    run.finishedAt = port.now();
+    run.error = undefined;
+    if (status !== "stopped") run.output = safeDetail.slice(0, 2_000) || undefined;
+    port.save();
+    port.emit(run);
+  }
+  queueMicrotask(() => void port.tick());
+  return port.clone(run);
 }

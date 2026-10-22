@@ -213,6 +213,36 @@ describe("bounded scheduled overlap and run health", () => {
     eventId: "done", provider: "fake", threadId, createdAt: new Date().toISOString(), type: "turn.completed", ok,
   });
 
+  it("settles a queued restart replay when its durable coding result is already terminal", async () => {
+    const h = harness(start);
+    h.manager.create(input());
+    h.setNow(start + 5 * 60_000); await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+    const terminal = runSnapshotSchema.parse({ contract: { id: "88888888-8888-4888-8888-888888888888", botId: run.botId,
+      repository: "fixture/private", ref: "main", successCriteria: ["verified"], repositoryClass: "agent-private",
+      allowedEffects: ["edit"] }, state: "done", iteration: 1, updatedAt: start + 5 * 60_000,
+      evidence: ["Verified before restart"] });
+    const restarted = new RoutineManager(h.options);
+    expect(restarted.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("queued");
+    expect(restarted.settleCodingRun(run.id, terminal).status).toBe("applied");
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "completed", output: "Verified before restart" });
+  });
+
+  it("holds a failed coding settlement for a verified webhook delivery", async () => {
+    const h = harness(start);
+    const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",
+      botId: "maus-1", runOn: "maus", deliveryId: "delivery-1", receivedAt: start });
+    await h.manager.tick();
+    const terminal = runSnapshotSchema.parse({ contract: { id: "99999999-9999-4999-8999-999999999999", botId: "maus-1",
+      repository: "fixture/private", ref: "main", successCriteria: ["verified"], repositoryClass: "agent-private",
+      allowedEffects: ["edit"] }, state: "blocked", iteration: 1, updatedAt: start,
+      evidence: ["No verified result"] });
+    expect(h.manager.settleCodingRun(run.id, terminal).receipt.disposition).toBe("held");
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "failed", error: "Coding run needs reconciliation" });
+  });
+
   it.each<RoutineSchedule>([
     input().schedule,
     { type: "cron", expression: "*/5 * * * *", timeZone: "UTC" },

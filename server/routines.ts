@@ -6,7 +6,7 @@ import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
-import { applyCodingSettlement, type CodingSettlementReceipt } from "./routine-settlement.ts";
+import { applyCodingSettlement, finishGoalRun as finishGoalRunState, type CodingSettlementReceipt } from "./routine-settlement.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
@@ -850,7 +850,7 @@ export class RoutineManager {
   settleCodingRun(routineRunId: string, terminal: RunSnapshot): { status: "applied" | "existing"; receipt: CodingSettlementReceipt } {
     this.assertWritable();
     return applyCodingSettlement({ routineRunId, terminal, runs: this.runs, receipts: this.codingSettlementReceipts,
-      now: this.now, commit: (mutate) => this.commitMutation(mutate), notify: (run) => this.notifyRunChanged(run) });
+      now: this.now, commit: (mutate) => this.commitMutation(mutate), notify: (run) => this.emitRun(run) });
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {
@@ -1591,36 +1591,10 @@ export class RoutineManager {
   }
 
   finishGoalRun(runId: string, status: GroupGoalRunStatus, detail: string): RoutineRun | null {
-    const run = this.runs.find(
-      (candidate) => candidate.id === runId &&
-        candidate.target === "room-goal" &&
-        ["running", "waiting"].includes(candidate.status),
-    );
-    if (!run || status === "working") return null;
-    const safeDetail = redactSecretsInText(detail).trim();
-    run.goalStatus = status;
-    if (status === "failed" || status === "blocked" || status === "limit-reached") {
-      this.failRun(
-        run,
-        safeDetail ||
-          (status === "limit-reached" ? "The room goal reached its turn limit" : "The room goal is blocked"),
-      );
-    } else if (status === "needs-input" || status === "paused") {
-      this.wait(run, safeDetail.slice(0, 500) || (status === "paused" ? "The room goal is paused" : "The team needs your input"));
-      run.error = undefined;
-      this.save();
-      this.emitRun(run);
-    } else {
-      run.status = status === "stopped" ? "cancelled" : "completed";
-      run.attention = undefined;
-      run.finishedAt = this.now();
-      run.error = undefined;
-      if (status !== "stopped") run.output = safeDetail.slice(0, 2_000) || undefined;
-      this.save();
-      this.emitRun(run);
-    }
-    queueMicrotask(() => void this.tick());
-    return cloneRun(run);
+    return finishGoalRunState({ runs: this.runs, now: () => this.now(), clone: cloneRun,
+      fail: (run, message) => this.failRun(run, message), wait: (run, attention) => this.wait(run, attention),
+      save: () => this.save(), emit: (run) => this.emitRun(run), tick: () => this.tick(),
+    }, runId, status, detail);
   }
 
   /** Timed from when it began, so a later occurrence can tell a wait that went unanswered. */

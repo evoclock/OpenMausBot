@@ -9499,9 +9499,8 @@ routines = new RoutineManager({
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
     const run = routines?.runForThread(threadId);
-    if (triggerSource === "schedule" && run && coding?.registered(run.routineId)) {
-      await coding.scheduled(run, botId, threadId);
-      return;
+    if (run && coding?.registered(run.routineId) && (triggerSource === "schedule" || triggerSource === "webhook")) {
+      return coding.start(run, botId, threadId, triggerSource);
     }
     await startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError });
   },
@@ -9544,19 +9543,6 @@ routines = new RoutineManager({
     notify(buildNotification("routine-deferred", routineSourceOwner(run)?.bot ?? bot, routineSourceThread(run) ?? bot.threadId, detail));
   },
 });
-if (cfg.codingRuns) {
-  coding = await openProductionCodingRuntime({
-    config: cfg.codingRuns, dataDir: DATA_DIR, store, routines, sourceApprovalMode,
-    driverKind(botId) {
-      const bot = store.bot(botId);
-      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
-    },
-    async startTurn(botId, text, options) {
-      await startTurn(botId, text, { ...options, automationSource: "schedule" });
-    },
-    interrupt: interruptDirectThread,
-  });
-}
 // Settle Cloud ownership before anything is served and before any routine can run.
 if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
   cloudHome = settleCloudHome({ file: join(DATA_DIR, "cloud-owner.json"), machineId: CLOUD_HOME.machineId, ownerKey: CLOUD_OWNER_KEY, nobodyKey: CLOUD_NOBODY_KEY,
@@ -10194,6 +10180,20 @@ const webhooks = new WebhookManager({
   },
 });
 const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (botId) => store.bot(botId)?.name ?? "the bot" });
+if (cfg.codingRuns) {
+  coding = await openProductionCodingRuntime({
+    config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
+    sourceApprovalMode,
+    driverKind(botId) {
+      const bot = store.bot(botId);
+      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
+    },
+    async startTurn(botId, text, { triggerSource, ...options }) {
+      await startTurn(botId, text, { ...options, automationSource: triggerSource });
+    },
+    interrupt: interruptDirectThread,
+  });
+}
 
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
