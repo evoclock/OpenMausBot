@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { ApprovalMode } from "../shared/approval-mode.ts";
+import type { ToolScope } from "../shared/tool-scope.ts";
+import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost, type CodingGitRequest } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
@@ -14,6 +16,12 @@ import type { RoutineManager, RoutineRun } from "./routines.ts";
 import type { Store } from "./store.ts";
 import type { WebhookManager } from "./webhooks.ts";
 
+export function codingTurnToolScope(config: CodingRunConfig | undefined, botId: string,
+  existing: ToolScope | undefined): ToolScope | undefined {
+  return config?.registrations.some((entry) => entry.workerBotId === botId || entry.reviewerBotId === botId)
+    ? codingGitToolScope(existing) : existing;
+}
+
 export async function openProductionCodingRuntime(options: {
   config: CodingRunConfig;
   dataDir: string;
@@ -26,6 +34,7 @@ export async function openProductionCodingRuntime(options: {
     triggerSource: "schedule" | "webhook"; allowedFallbackModels: Array<{ instanceId: string; model: string }>;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
+  gitHost?: CodingGitHost;
 }) {
   const { config, dataDir, store, routines } = options;
   const registrations = config.registrations;
@@ -153,6 +162,10 @@ export async function openProductionCodingRuntime(options: {
     if (id && runtime.get(id)) runStore.linkRoutine(run.id, id);
   }
   runtime.reportPending();
+  const gitAction = options.gitHost ? createCodingGitRunPolicy(config, runStore, options.gitHost)
+    : async (_request: CodingGitRequest): Promise<"applied" | "owner-eligible"> => {
+      throw new Error("Git destination refused: no credential provider and checked host Git port are configured");
+    };
   const dispatch = async (run: RoutineRun, botId: string, threadId: string) => {
     const id = run.triggerSource === "webhook" && run.webhookId && run.deliveryId
       ? webhookCodingRunId(run.webhookId, run.deliveryId) : scheduledCodingRunId(run);
@@ -165,6 +178,7 @@ export async function openProductionCodingRuntime(options: {
     if (current && ["done", "blocked", "failed", "cancelled"].includes(current.state)) deliver(current);
   };
   return {
+    gitAction,
     registered(routineId: string) { return templates.has(routineId) || webhookTemplates.has(routineId); },
     start(run: RoutineRun, botId: string, threadId: string, triggerSource: "schedule" | "webhook") {
       if (triggerSource === "webhook" && (!run.webhookId || !run.deliveryId ||
