@@ -21,6 +21,7 @@ steps:
       - "node --test .github/tools/*.test.mjs"
       - "python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
   - label: "Tests 1/4"
+    if: build.pull_request.id == null
     agents: { queue: mac-mini }
     timeout_in_minutes: 90
     command:
@@ -28,6 +29,7 @@ steps:
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=1/4"
   - label: "Tests 2/4"
+    if: build.pull_request.id == null
     agents: { queue: mac-mini }
     timeout_in_minutes: 90
     command:
@@ -35,6 +37,7 @@ steps:
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=2/4"
   - label: "Tests 3/4"
+    if: build.pull_request.id == null
     agents: { queue: mac-mini }
     timeout_in_minutes: 90
     command:
@@ -42,12 +45,50 @@ steps:
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=3/4"
   - label: "Tests 4/4"
+    if: build.pull_request.id == null
     agents: { queue: mac-mini }
     timeout_in_minutes: 90
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=4/4"
+  - label: "PR tests %n/8"
+    if: build.pull_request.id != null
+    agents: { queue: linux-small }
+    parallelism: 8
+    timeout_in_minutes: 30
+    cache:
+      name: "omb-pr-${BUILDKITE_PULL_REQUEST}-pnpm"
+      paths:
+        - .pnpm-store
+        - .omb-scratch/hosted-tools
+    command:
+      - |
+        mkdir -p .omb-scratch/hosted-tools .omb-scratch/buildkite-reports
+        if ! test -x .omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin/node; then
+          curl -fsSL https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.xz -o .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz
+          printf '%s  %s\n' f52ec50e959d72d5c680d9731420b2661cd2a8070e94c7369b6ddfcd8b7278be .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz | sha256sum -c -
+          tar -xJf .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz -C .omb-scratch/hosted-tools
+        fi
+        if ! printf '%s  %s\n' cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670 .omb-scratch/hosted-tools/sfw | sha256sum -c --status; then
+          curl -fsSL https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/sfw-free-linux-x86_64 -o .omb-scratch/hosted-tools/sfw
+        fi
+        printf '%s  %s\n' cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670 .omb-scratch/hosted-tools/sfw | sha256sum -c -
+        chmod +x .omb-scratch/hosted-tools/sfw
+        export PATH="$PWD/.omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin:$PWD/.omb-scratch/hosted-tools/pnpm/node_modules/.bin:$PWD/.omb-scratch/hosted-tools:$PATH"
+        if ! test "$(pnpm --version 2>/dev/null)" = 10.33.0; then
+          sfw npm install --prefix "$PWD/.omb-scratch/hosted-tools/pnpm" pnpm@10.33.0
+        fi
+        sfw pnpm install --frozen-lockfile --store-dir .pnpm-store
+      - |
+        report=".omb-scratch/buildkite-reports/vitest-${BUILDKITE_PARALLEL_JOB}.json"
+        status=0
+        pnpm exec vitest run --shard=$((BUILDKITE_PARALLEL_JOB+1))/$BUILDKITE_PARALLEL_JOB_COUNT --reporter=default --reporter=json --outputFile.json="$report" || status=$?
+        if test -s "$report"; then
+          node scripts/testing/update-shard-weights.mjs --durations-json "$report" > ".omb-scratch/buildkite-reports/durations-${BUILDKITE_PARALLEL_JOB}.json"
+          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-${BUILDKITE_PARALLEL_JOB}.json"
+        fi
+        exit "$status"
   - label: "Docs"
     agents: { queue: mac-mini }
     timeout_in_minutes: 15
@@ -74,3 +115,13 @@ steps:
   - label: "PR review gate"
     agents: { queue: mac-mini }
     command: ".buildkite/pr-checks.sh review"
+  - wait:
+      continue_on_failure: true
+  - label: "Slowest 20 tests"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    command:
+      - ".buildkite/host.sh"
+      - "mkdir -p .omb-scratch/shard-durations"
+      - 'buildkite-agent artifact download ".omb-scratch/buildkite-reports/durations-*.json" .omb-scratch/shard-durations'
+      - 'node scripts/testing/update-shard-weights.mjs --slowest .omb-scratch/shard-durations/.omb-scratch/buildkite-reports/durations-*.json | buildkite-agent annotate --context vitest-slowest-20 --style info'

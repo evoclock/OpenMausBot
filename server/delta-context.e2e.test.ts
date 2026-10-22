@@ -91,10 +91,12 @@ async function fixture(test: (f: any) => Promise<void>, options: { env?: NodeJS.
         { FAKE_CODEX_MODE: "resume", FAKE_CODEX_ROOM_PLAN: planPath, FAKE_CODEX_DUMP: codexDumpPath, ...options.codex }) }, "PATCH");
     }
     const bot = async (name: string, section: string) => (await cli("new-bot", "--name", name, "--section", section)).bot;
-    const chief = await bot("Clive", "Leadership");
-    const lead = await bot("Engineering lead", "Engineering");
-    const qa = await bot("QA", "Engineering");
-    const ops = await bot("Ops", "Engineering");
+    const [chief, lead, qa, ops] = await Promise.all([
+      bot("Clive", "Leadership"),
+      bot("Engineering lead", "Engineering"),
+      bot("QA", "Engineering"),
+      bot("Ops", "Engineering"),
+    ]);
     await api(`/api/bots/${chief.id}`, { chiefOfStaff: true, managedSections: ["Engineering"], acknowledgePeerScope: true }, "PATCH");
     const plan: Record<string, any> = {};
     const save = () => writeFileSync(planPath, JSON.stringify(plan));
