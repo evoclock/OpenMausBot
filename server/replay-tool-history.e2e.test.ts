@@ -7,7 +7,7 @@ import { request } from "../scripts/mcp-server.ts";
 import type { WireMessage } from "../shared/wire.ts";
 import { withoutTurnClock } from "./testing/turn-clock-text.ts";
 
-it("names earlier tool calls in a rebuilt session only when switched on", async () => {
+it("replays safe tool work by default, with an explicit opt-out", async () => {
   const fixture = await launchVerificationServer({
     // The launcher keeps only OS launch variables and FAKE_CLAUDE_* knobs.
     ...process.env,
@@ -60,18 +60,18 @@ it("names earlier tool calls in a rebuilt session only when switched on", async 
     // A turn that resumes its session is sent the message, and no replay.
     expect(await send("SECOND_REQUEST anything else?")).toBe("SECOND_REQUEST anything else?");
 
-    // Off (the default): the rewind replays what was said, as it always has.
-    const off = await rewind("SECOND_REQUEST, edited");
+    // A rewind sends the earlier work without changing the stored conversation.
+    const byDefault = await rewind("SECOND_REQUEST, edited");
+    expect(toolLines(byDefault)).toEqual(["Assistant: [ran: Bash: pnpm test — failed]", "Assistant: [ran: Read: /fixture/notes.md — ok]"]);
+
+    await request("/api/config", { method: "PATCH", body: JSON.stringify({ context: { replayToolHistory: false } }) }, fixture.info.url);
+    const off = await rewind("SECOND_REQUEST, edited again");
     expect(off).toContain("rewound this conversation");
     expect(off).toContain("User: FIRST_REQUEST run the tests");
     expect(off).not.toContain("[ran: ");
 
     await request("/api/config", { method: "PATCH", body: JSON.stringify({ context: { replayToolHistory: true } }) }, fixture.info.url);
-
-    // On: the same replay, plus one line per earlier call, between the
-    // request it followed and the reply it led to: the command that ran,
-    // and the file that was read.
-    const on = await rewind("SECOND_REQUEST, edited again");
+    const on = await rewind("SECOND_REQUEST, edited yet again");
     expect(toolLines(on)).toEqual(["Assistant: [ran: Bash: pnpm test — failed]", "Assistant: [ran: Read: /fixture/notes.md — ok]"]);
     expect(on).toMatch(/User: FIRST_REQUEST run the tests\nAssistant: \[ran: Bash: pnpm test — failed\]\nAssistant: \[ran: Read: \/fixture\/notes\.md — ok\]\nAssistant: (?!\[)/);
     // no tool result, and of the input preview behind the chip only its target
@@ -79,7 +79,7 @@ it("names earlier tool calls in a rebuilt session only when switched on", async 
     expect(on).not.toContain("INPUT_PREVIEW_ONLY");
     // and nothing else moved: without those lines it is the replay sent while off
     expect(on.split("\n").filter(line => !line.startsWith("Assistant: [ran: ")).join("\n"))
-      .toBe(off.replace("SECOND_REQUEST, edited", "SECOND_REQUEST, edited again"));
+      .toBe(off.replace("SECOND_REQUEST, edited again", "SECOND_REQUEST, edited yet again"));
 
     // Still on, a turn that resumes its session is sent no replay.
     expect(await send("THIRD_REQUEST thanks")).toBe("THIRD_REQUEST thanks");
