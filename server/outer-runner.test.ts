@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
@@ -9,6 +9,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
+import type { CodingEffect } from "./coding-effect-reconciliation.ts";
 
 const contract: RunContractInput = {
   id: "33333333-3333-4333-8333-333333333333", botId: "fixture", repository: "fixture/agents", ref: "review",
@@ -543,4 +545,123 @@ test("a queued run past its persisted deadline blocks on restart without an invo
     assert.equal(calls, 0);
     assert.equal(runner.get(contract.id)?.state, "blocked");
   } finally { await runner.close(); }
+});
+
+const crashEffects: CodingEffect[] = [
+  { kind: "branch-push", repository: "owner/repo", ref: "review", expectedSha: "a".repeat(40) },
+  { kind: "pr-open", repository: "owner/repo", head: "review", base: "main" },
+  { kind: "pr-comment", repository: "owner/repo", pullNumber: 7, key: "effect-1" },
+];
+
+function recoveryForge(effect: CodingEffect, present: () => boolean, apply: () => void): EffectReconcileHost {
+  return {
+    async getBranchRef() { return present() ? { kind: "found" as const, sha: "a".repeat(40) } : { kind: "absent" as const }; },
+    async findPullRequests() { return present()
+      ? { kind: "found" as const, prs: [{ number: 7, headSha: "a".repeat(40), state: "open" }] }
+      : { kind: "absent" as const }; },
+    async findCommentsByIdempotencyKey() { return present()
+      ? { kind: "found" as const, ids: [15] } : { kind: "absent" as const }; },
+    async applyMissing(receipt) { assert.deepEqual(receipt.effect, effect); apply(); },
+  };
+}
+
+for (const effect of crashEffects) {
+  for (const boundary of ["prepared", "applied", "confirmed"]) {
+    test(`SIGKILL ${effect.kind} at ${boundary} resumes without repeating an effect or worker turn`, async () => {
+      const dir = fixtureDir();
+      const receiptPath = join(dir, "effects.sqlite");
+      const marker = join(dir, "effect.txt");
+      const source = `import { writeFileSync } from 'node:fs';
+        import { openOuterRunner } from './server/outer-runner.ts';
+        import { CodingEffectReceipts } from './server/coding-effect-receipts.ts';
+        const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+          async invoke() {
+            const receipts = new CodingEffectReceipts(${JSON.stringify(receiptPath)});
+            const receipt = receipts.prepare(${JSON.stringify(contract.id)}, 1, 'effect-1', ${JSON.stringify(effect)});
+            receipts.saveResult(${JSON.stringify(contract.id)}, 1, ${JSON.stringify(contract.id + ":1")},
+              { kind: 'verified', evidence: ['saved verified result'], costUsd: 0 });
+            if (${JSON.stringify(boundary)} !== 'prepared') writeFileSync(${JSON.stringify(marker)}, 'one');
+            if (${JSON.stringify(boundary)} === 'confirmed') receipts.confirm(receipt);
+            receipts.close();
+            process.stdout.write('effect boundary\\n');
+            return new Promise(() => {});
+          }
+        });
+        await runner.start(${JSON.stringify(contract)});
+        setInterval(() => {}, 1000);`;
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+        { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] });
+      let stderr = "";
+      child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error(`effect boundary timed out: ${stderr}`)), 15_000);
+          child.stdout?.on("data", (chunk) => {
+            if (String(chunk).includes("effect boundary")) { clearTimeout(timeout); resolve(); }
+          });
+          child.once("error", reject);
+          child.once("exit", (code) => reject(new Error(`effect child exited ${code}: ${stderr}`)));
+        });
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGKILL");
+          await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+        }
+      }
+      const receipts = new CodingEffectReceipts(receiptPath);
+      let outwardCalls = existsSync(marker) ? 1 : 0;
+      let workerCalls = 0;
+      const forge = recoveryForge(effect, () => outwardCalls > 0, () => {
+        outwardCalls += 1; writeFileSync(marker, "one");
+      });
+      const runner = await openOuterRunner(dir, {
+        async invoke() { workerCalls += 1; throw new Error("worker turn repeated"); },
+      }, { effectRecovery: { receipts, host: forge,
+        async recoverResult(_contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
+      } });
+      try {
+        runner.resume();
+        for (let i = 0; i < 100 && runner.get(contract.id)?.state !== "done"; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(runner.get(contract.id)?.state, "done", JSON.stringify(runner.get(contract.id)?.evidence));
+        assert.equal(outwardCalls, 1);
+        assert.equal(workerCalls, 0);
+        assert.equal(receipts.list(contract.id, 1)[0]?.status, "confirmed");
+        assert.equal(readFileSync(marker, "utf8"), "one");
+      } finally { await runner.close(); receipts.close(); }
+    }, 30_000);
+  }
+}
+
+test("inconclusive forge inspection holds a crashed run and reports the reason", async () => {
+  const dir = fixtureDir();
+  const receiptPath = join(dir, "effects.sqlite");
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { CodingEffectReceipts } from './server/coding-effect-receipts.ts';
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, { async invoke() {
+      const receipts = new CodingEffectReceipts(${JSON.stringify(receiptPath)});
+      receipts.prepare(${JSON.stringify(contract.id)}, 1, 'effect-1', ${JSON.stringify(crashEffects[0])});
+      receipts.close();
+      process.stdout.write('prepared effect\\n');
+      process.exit(0);
+    } });
+    await runner.start(${JSON.stringify(contract)});
+    await new Promise(() => {});`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /prepared effect/);
+  const receipts = new CodingEffectReceipts(receiptPath);
+  const forge = recoveryForge(crashEffects[0]!, () => false, () => { throw new Error("must not write"); });
+  forge.getBranchRef = async () => ({ kind: "inconclusive", reason: "authorization failed" });
+  const runner = await openOuterRunner(dir, { async invoke() { throw new Error("must not replay"); } },
+    { effectRecovery: { receipts, host: forge,
+      async recoverResult() { return { kind: "verified", evidence: ["saved result"], costUsd: 0 }; },
+    } });
+  try {
+    await runner.wait(await runner.start(contract));
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.ok(runner.report(contract.id)?.snapshot.evidence.some((line) => line.includes("branch revision could not be verified")));
+  } finally { await runner.close(); receipts.close(); }
 });

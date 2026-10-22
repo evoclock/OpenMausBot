@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
 import { openOuterRunner } from "./outer-runner.ts";
+import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
 import { startGithubCodingRun, startScheduledCodingRun, startWebhookCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
@@ -16,9 +18,24 @@ export async function openCodingRunRuntime(options: {
   github: ReadonlyMap<string, GithubRegistration>;
   webhooks?: ReadonlyMap<string, TriggerTemplate>;
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  effectInspector?: EffectReconcileHost;
 }) {
-  const runner = await openOuterRunner(options.dataDir, createWorkerRoute(options.workerHost),
-    { onTerminal: options.onTerminal, restartLimit: options.restartLimit });
+  const receipts = new CodingEffectReceipts(join(options.dataDir, "effect-receipts.sqlite"));
+  const route = createWorkerRoute(options.workerHost);
+  let runner: Awaited<ReturnType<typeof openOuterRunner>>;
+  try {
+    runner = await openOuterRunner(options.dataDir, { async invoke(contract, iteration, requestId, signal, remainingUsd) {
+      const result = await route.invoke(contract, iteration, requestId, signal, remainingUsd);
+      if (result.costUsd != null && Number.isFinite(result.costUsd) && result.costUsd >= 0) {
+        receipts.saveResult(contract.id, iteration, requestId, result);
+      }
+      return result;
+    } }, { onTerminal: options.onTerminal, restartLimit: options.restartLimit,
+      ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
+        async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
+      } } : {}),
+    });
+  } catch (error) { receipts.close(); throw error; }
   runner.resume();
   return {
     scheduled(run: { id: string; routineId: string; botId: string; scheduledFor: number;
@@ -42,6 +59,6 @@ export async function openCodingRunRuntime(options: {
     report: runner.report,
     reportPending: runner.reportPending,
     cancel: runner.cancel,
-    close: runner.close,
+    async close() { try { await runner.close(); } finally { receipts.close(); } },
   };
 }

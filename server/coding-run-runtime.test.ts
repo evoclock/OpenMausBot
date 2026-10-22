@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
+import { CodingEffectReceipts } from "./coding-effect-receipts.ts";
 import type { WorkerHost } from "./inner-worker-route.ts";
 import { webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 
@@ -42,7 +43,8 @@ async function settled(runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>
 
 test("a scheduled occurrence and signed event drive the same outer/inner route", async () => {
   const calls: string[] = [];
-  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+  const dataDir = fixtureDir();
+  const runtime = await openCodingRunRuntime({ dataDir, workerHost: host(calls),
     routines: new Map([["routine", template]]), github: new Map([["registration", { secret: "fixture-secret", template }]]) });
   try {
     const run = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
@@ -51,6 +53,11 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal(scheduled.status, "accepted");
     if (!("id" in scheduled)) throw new Error("missing scheduled id");
     assert.equal(await settled(runtime, scheduled.id), "done");
+    const receipts = new CodingEffectReceipts(join(dataDir, "effect-receipts.sqlite"));
+    try {
+      assert.deepEqual(receipts.savedResult(scheduled.id, 1, `${scheduled.id}:1`),
+        { kind: "verified", evidence: ["work", "review", "verified"], costUsd: 0 });
+    } finally { receipts.close(); }
     assert.equal((await runtime.scheduled(run)).status, "existing");
     const nextOccurrence = await runtime.scheduled({ ...run, id: "next-occurrence", scheduledFor: 200 });
     assert.equal(nextOccurrence.status, "accepted");
