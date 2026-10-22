@@ -18,7 +18,7 @@ steps:
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm lint"
       - ".buildkite/public-scan.sh"
-      - "node --test .github/tools/*.test.mjs"
+      - "node --test .github/tools/*.test.mjs electron/shared-computer-access.node-test.mjs"
       - "python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
   - label: "Tests 1/4"
     if: build.pull_request.id == null
