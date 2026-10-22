@@ -1,0 +1,74 @@
+# Host-only checks. Platform-specific Windows builds and release publishing remain in GitHub Actions.
+# Mac-1 needs sfw, Node >=24, pnpm 10.33.0, Python 3.12, git and gh on PATH.
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+steps:
+  - label: "Typecheck"
+    agents: { queue: mac-mini }
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm typecheck"
+  - label: "Lint and policy tests"
+    agents: { queue: mac-mini }
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm lint"
+      - ".buildkite/public-scan.sh"
+      - "node --test .github/tools/*.test.mjs"
+      - "python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
+  - label: "Tests 1/4"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=1/4"
+  - label: "Tests 2/4"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=2/4"
+  - label: "Tests 3/4"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=3/4"
+  - label: "Tests 4/4"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=4/4"
+  - label: "Docs"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 15
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm --filter @openmausbot/docs types:check"
+      - "pnpm --filter @openmausbot/docs lint"
+      - "pnpm docs:build"
+  - label: "Dependencies"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - ".buildkite/pr-checks.sh dependencies"
+  - label: "Author check"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    command: ".buildkite/pr-checks.sh author"
+  - label: "PR wording"
+    agents: { queue: mac-mini }
+    command: ".buildkite/pr-checks.sh wording"
+  - label: "PR review gate"
+    agents: { queue: mac-mini }
+    command: ".buildkite/pr-checks.sh review"
