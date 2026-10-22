@@ -96,7 +96,19 @@ describe("session status feed routes", () => {
     expect(read.body.sessions[0]).toMatchObject({ sessionId: "lease-1", needsDecision: true, changes: ["decision"] });
     expect(read.body.wakes).toHaveLength(1);
 
-    const consumed = await ack(base, read.body.wakes.map((wake: { id: number }) => wake.id));
+    const revised = await push(base, report({ reportId: "lease-1:3", sequence: 3,
+      needsDecision: true, decision: "wait for main?" }));
+    expect(revised.body).toMatchObject({ accepted: true, changed: true, changes: ["decision"] });
+    expect(wakes).toHaveLength(2);
+    expect(frames).toHaveLength(2);
+    const refreshed = await get(base);
+    expect(refreshed.body.wakes).toHaveLength(2);
+    expect(refreshed.body.wakes[1].id).not.toBe(read.body.wakes[0].id);
+    expect(refreshed.body.wakes[1].detail).toContain("wait for main?");
+    expect((await ack(base, [read.body.wakes[0].id])).body).toEqual({ acknowledged: 1 });
+    expect((await get(base)).body.wakes.map((wake: { id: number }) => wake.id)).toEqual([refreshed.body.wakes[1].id]);
+
+    const consumed = await ack(base, [refreshed.body.wakes[1].id]);
     expect(consumed.body).toEqual({ acknowledged: 1 });
     expect((await get(base)).body.wakes).toEqual([]);
     expect((await ack(base, [999]))).toEqual({ status: 200, body: { acknowledged: 0 } });
