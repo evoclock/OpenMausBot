@@ -772,6 +772,24 @@ describe("saving the newer sections", () => {
       rmSync(path, { force: true });
     }
   });
+
+  it("accepts one routine id as the status feed's wake target and nothing else", () => {
+    expect(parseConfigPatch({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } })).toEqual({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } });
+    expect(parseConfigPatch({ sessionStatus: {} })).toEqual({ sessionStatus: {} });
+    expect(() => parseConfigPatch({ sessionStatus: { wakeRoutineId: "../escape" } })).toThrow(/wakeRoutineId/);
+    expect(() => parseConfigPatch({ sessionStatus: { wakeRoutineId: "x".repeat(65) } })).toThrow(/wakeRoutineId/);
+    expect(() => parseConfigPatch({ sessionStatus: { unknown: true } })).toThrow();
+    const path = join(DATA_DIR, "config.json");
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(path, JSON.stringify({}));
+    try {
+      saveConfig({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } });
+      expect(JSON.parse(readFileSync(path, "utf8")).sessionStatus).toEqual({ wakeRoutineId: "checkpoint-routine" });
+      expect(loadConfig().sessionStatus).toEqual({ wakeRoutineId: "checkpoint-routine" });
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
 });
 
 describe("default fleet", () => {

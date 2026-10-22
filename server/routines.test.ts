@@ -1,5 +1,6 @@
 // Modified in 2026: cover fail-closed loading of persisted routine queues.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import { isRoutineProblemRun } from "../shared/routines.ts";
 import { ROUTINE_SKIPPED_WHILE_WAITING, ROUTINE_SUPERSEDED } from "./routine-execution.ts";
 import { writeRoutineFile } from "./atomic.ts";
+import { runSnapshotSchema } from "./run-contract.ts";
 import {
   nextOccurrence,
   RoutineManager,
@@ -211,56 +213,34 @@ describe("bounded scheduled overlap and run health", () => {
     eventId: "done", provider: "fake", threadId, createdAt: new Date().toISOString(), type: "turn.completed", ok,
   });
 
-  it("persists coding settlement and ignores replay of the same terminal run", async () => {
-    const h = harness(start);
-    const routine = h.manager.create({ ...input(), schedule: { type: "cron", expression: "*/5 * * * *", timeZone: "UTC" } });
-    h.setNow(routine.nextRunAt!); await h.manager.tick();
-    const run = h.manager.listRuns()[0]!;
-    expect(run.status).toBe("running");
-    expect(h.manager.settleCodingRun(run.id, "done", "Verified revision")).toMatchObject({
-      status: "completed", output: "Verified revision",
-    });
-    expect(h.manager.settleCodingRun(run.id, "blocked", "late failure")).toBeNull();
-    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
-      .toMatchObject({ status: "completed", output: "Verified revision" });
-  });
-
-  it("retries coding settlement after a failed durable write", async () => {
-    const h = harness(start);
-    h.manager.create(input());
-    h.setNow(start + 5 * 60_000); await h.manager.tick();
-    const run = h.manager.listRuns()[0]!;
-    const save = vi.spyOn(h.manager as unknown as { save(): void }, "save")
-      .mockImplementationOnce(() => { throw new Error("fixture disk full"); });
-    expect(() => h.manager.settleCodingRun(run.id, "done", "Verified revision")).toThrow("fixture disk full");
-    expect(h.manager.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("running");
-    save.mockRestore();
-    expect(h.manager.settleCodingRun(run.id, "done", "Verified revision")?.status).toBe("completed");
-    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
-  });
-
   it("settles a queued restart replay when its durable coding result is already terminal", async () => {
     const h = harness(start);
     h.manager.create(input());
     h.setNow(start + 5 * 60_000); await h.manager.tick();
     const run = h.manager.listRuns()[0]!;
+    const terminal = runSnapshotSchema.parse({ contract: { id: "88888888-8888-4888-8888-888888888888", botId: run.botId,
+      repository: "fixture/private", ref: "main", successCriteria: ["verified"], repositoryClass: "agent-private",
+      allowedEffects: ["edit"] }, state: "done", iteration: 1, updatedAt: start + 5 * 60_000,
+      evidence: ["Verified before restart"] });
     const restarted = new RoutineManager(h.options);
     expect(restarted.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("queued");
-    expect(restarted.settleCodingRun(run.id, "done", "Verified before restart")?.status).toBe("completed");
+    expect(restarted.settleCodingRun(run.id, terminal).status).toBe("applied");
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
       .toMatchObject({ status: "completed", output: "Verified before restart" });
   });
 
-  it("persists failed coding settlement for a verified webhook delivery", async () => {
+  it("holds a failed coding settlement for a verified webhook delivery", async () => {
     const h = harness(start);
     const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",
       botId: "maus-1", runOn: "maus", deliveryId: "delivery-1", receivedAt: start });
     await h.manager.tick();
-    expect(h.manager.settleCodingRun(run.id, "blocked", "No verified result")).toMatchObject({
-      status: "failed", error: "No verified result",
-    });
+    const terminal = runSnapshotSchema.parse({ contract: { id: "99999999-9999-4999-8999-999999999999", botId: "maus-1",
+      repository: "fixture/private", ref: "main", successCriteria: ["verified"], repositoryClass: "agent-private",
+      allowedEffects: ["edit"] }, state: "blocked", iteration: 1, updatedAt: start,
+      evidence: ["No verified result"] });
+    expect(h.manager.settleCodingRun(run.id, terminal).receipt.disposition).toBe("held");
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
-      .toMatchObject({ status: "failed", error: "No verified result" });
+      .toMatchObject({ status: "failed", error: "Coding run needs reconciliation" });
   });
 
   it.each<RoutineSchedule>([
@@ -1613,6 +1593,126 @@ describe("RoutineManager", () => {
     expect(saved.routines.find((routine) => routine.id === malformed.id)).toEqual(malformedOnDisk);
     expect(saved.routines).toHaveLength(3);
     expect(new RoutineManager(h.options).listRoutines().map((routine) => routine.name).sort()).toEqual(["Added later", "Valid interval"]);
+  });
+
+  it("commits coding disposition and keyed receipt in one image across restart and duplicate reports", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "33333333-3333-4333-8333-333333333333", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified; token=verysecretvalue123"],
+    });
+    expect(h.manager.settleCodingRun(run.id, terminal).status).toBe("applied");
+    const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    expect(disk.runs.find((candidate: RoutineRun) => candidate.id === run.id).status).toBe("completed");
+    expect(disk.runs.find((candidate: RoutineRun) => candidate.id === run.id).output).not.toContain("verysecretvalue123");
+    expect(disk.codingSettlementReceipts).toHaveLength(1);
+    expect(disk.codingSettlementReceipts[0].status).toBe("APPLIED");
+    const reopened = new RoutineManager(h.options);
+    expect(reopened.settleCodingRun(run.id, terminal).status).toBe("existing");
+    expect(() => reopened.settleCodingRun(run.id, { ...terminal, evidence: ["changed"] })).toThrow(/conflicting/);
+    expect(() => reopened.settleCodingRun("other", terminal)).toThrow(/conflicting/);
+    expect(reopened.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
+  });
+
+  it("persists a blocked coding disposition without replaying on restart", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "44444444-4444-4444-8444-444444444444", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "blocked", iteration: 1, updatedAt: Date.now(), evidence: ["needs review"],
+    });
+    const settled = h.manager.settleCodingRun(run.id, terminal);
+    expect(settled.receipt.disposition).toBe("held");
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)).toMatchObject({
+      status: "failed", error: "Coding run needs reconciliation",
+    });
+  });
+
+  it("recovers an applied receipt after the writer exits before acknowledging it", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "77777777-7777-4777-8777-777777777777", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified"],
+    });
+    const source = `import { RoutineManager } from './server/routines.ts';
+      const manager = new RoutineManager({ file: ${JSON.stringify(h.options.file)}, now: () => ${Date.now()},
+        emit() {}, botState() { return 'ready'; }, goalState() { return 'ready'; },
+        createTask() { return { threadId: 'unused' }; }, startTurn() {} });
+      manager.settleCodingRun(${JSON.stringify(run.id)}, ${JSON.stringify(terminal)});
+      process.exit(0);`;
+    const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+    expect(child.status).toBe(0);
+    const reopened = new RoutineManager(h.options);
+    expect(reopened.settleCodingRun(run.id, terminal).status).toBe("existing");
+    expect(reopened.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
+  });
+
+  it("does not acknowledge settlement when the routines file cannot be replaced", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "55555555-5555-4555-8555-555555555555", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified"],
+    });
+    const file = h.options.file!;
+    renameSync(file, `${file}.saved`);
+    mkdirSync(file);
+    expect(() => h.manager.settleCodingRun(run.id, terminal)).toThrow();
+    expect(h.manager.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe(run.status);
+    renameSync(file, `${file}.obstacle`);
+    renameSync(`${file}.saved`, file);
+    expect(new RoutineManager(h.options).settleCodingRun(run.id, terminal).status).toBe("applied");
+  });
+
+  it("keeps an applied receipt after the routine run is pruned", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "66666666-6666-4666-8666-666666666666", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified"],
+    });
+    h.manager.settleCodingRun(run.id, terminal);
+    const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    disk.runs = disk.runs.filter((candidate: RoutineRun) => candidate.id !== run.id);
+    writeFileSync(h.options.file!, JSON.stringify(disk));
+    const reopened = new RoutineManager(h.options);
+    expect(reopened.settleCodingRun(run.id, terminal).status).toBe("existing");
+    expect(reopened.listRuns().some((candidate) => candidate.id === run.id)).toBe(false);
+  });
+
+  it("refuses to rewrite malformed settlement history", () => {
+    const h = harness();
+    h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    disk.codingSettlementReceipts = [{ status: "APPLIED", routineRunId: "run", codingRunId: "coding", terminalHash: "bad",
+      disposition: "completed", appliedAt: 1 }];
+    writeFileSync(h.options.file!, JSON.stringify(disk));
+    expect(() => new RoutineManager(h.options).create({ name: "Other", prompt: "Do something", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } })).toThrow(/could not be read/i);
   });
 
   it("persists confirmation receipts with the scheduler mutation and removes them after settlement", () => {

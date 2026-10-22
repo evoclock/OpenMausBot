@@ -1,5 +1,5 @@
 # Host-only checks. Release publishing remains in GitHub Actions.
-# Mac-1 needs sfw, Node >=24, pnpm 10.33.0, Python 3.12, git and gh on PATH.
+# Mac-1 needs sfw, Node >=24, pnpm 10.33.0, uv-managed Python 3.12, git and gh on PATH.
 env:
   PYTHONDONTWRITEBYTECODE: "1"
   # Mac-1 already has the pinned pnpm under the Pi harness bin directory.
@@ -21,7 +21,7 @@ steps:
       - "pnpm lint"
       - ".buildkite/public-scan.sh"
       - "node --test .github/tools/*.test.mjs electron/shared-computer-access.node-test.mjs"
-      - "python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
+      - "uv run --no-project --managed-python --no-python-downloads --python 3.12 python -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
   - label: "Tests 1/4"
     if: build.pull_request.id == null
     agents: { queue: mac-mini }

@@ -116,8 +116,7 @@ export async function openProductionCodingRuntime(options: {
     runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
     const detail = evidence || "No result was reported.";
-    const settled = routines.settleCodingRun(run.id, snapshot.state, detail);
-    if (!settled && run.status !== "completed" && run.status !== "failed") return false;
+    routines.settleCodingRun(run.id, snapshot);
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
       threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` }) === "delivered";
   };

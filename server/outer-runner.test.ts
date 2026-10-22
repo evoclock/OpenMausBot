@@ -186,6 +186,46 @@ test("a queued contract survives a crash before the task commit and starts on re
   } finally { await reopened.close(); }
 });
 
+test("a run pointing at a missing durable task is held instead of recreated", async () => {
+  const dir = fixtureDir();
+  const store = new RunContractStore(join(dir, "runtime.db"));
+  store.create(contract, Date.now());
+  store.bindTask(contract.id, 999999);
+  store.close();
+  await assert.rejects(openOuterRunner(dir, { async invoke() { throw new Error("unexpected work"); } }),
+    /recorded run task identity requires reconciliation/);
+  const reopened = new RunContractStore(join(dir, "runtime.db"));
+  try { assert.equal(reopened.get(contract.id)?.state, "queued"); } finally { reopened.close(); }
+});
+
+test("a committed task without its run-task link is recovered without another task", async () => {
+  const dir = fixtureDir();
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    RunContractStore.prototype.bindTask = function() { process.stdout.write('task committed\\n'); process.exit(0); };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { throw new Error('unexpected work'); }
+    });
+    await runner.start(${JSON.stringify(contract)});
+    setInterval(() => {}, 1000);`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.match(child.stdout, /task committed/);
+  const calls: string[] = [];
+  const runner = await openOuterRunner(dir, {
+    async invoke(_contract, _iteration, requestId) { calls.push(requestId); return { kind: "verified", evidence: ["recovered"] }; },
+  });
+  try {
+    const taskId = await runner.start(contract);
+    await runner.wait(taskId);
+    assert.deepEqual(calls, [`${contract.id}:1`]);
+    const store = new RunContractStore(join(dir, "runtime.db"));
+    assert.equal(store.taskId(contract.id), taskId);
+    store.close();
+  } finally { await runner.close(); }
+});
+
 test("a finished effect without its task checkpoint resumes at the next step", async () => {
   const dir = fixtureDir();
   const source = `import { openOuterRunner } from './server/outer-runner.ts';

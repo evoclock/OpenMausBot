@@ -16,11 +16,12 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
   export GH_TOKEN
 fi
 repo=evoclock/OpenMausBot
+python="$(uv python find --managed-python --no-python-downloads 3.12)"
 scratch="$PWD/.omb-scratch/buildkite/${BUILDKITE_BUILD_ID:-local}-${mode}"
 test ! -e "$scratch"
 mkdir -p "$scratch"
 gh api "repos/$repo/pulls/$pr" > "$scratch/pr.json"
-base_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["base"]["sha"])' "$scratch/pr.json")"
+base_sha="$("$python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["base"]["sha"])' "$scratch/pr.json")"
 git fetch --quiet origin "$base_sha"
 case "$mode" in
   wording)
@@ -33,13 +34,13 @@ case "$mode" in
     for name in pr_wording_lint.py pr_wording_rules.json; do
       git show "$base_sha:$base/$name" > "$scratch/pr-wording/$name"
     done
-    python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); json.dump({"pull_request":{"title":p["title"],"body":p["body"]}},open(sys.argv[2],"w"))' "$scratch/pr.json" "$scratch/event.json"
+    "$python" -c 'import json,sys; p=json.load(open(sys.argv[1])); json.dump({"pull_request":{"title":p["title"],"body":p["body"]}},open(sys.argv[2],"w"))' "$scratch/pr.json" "$scratch/event.json"
     args=(--event "$scratch/event.json")
     if git cat-file -e "$base_sha:.github/pr-wording.json" 2>/dev/null; then
       git show "$base_sha:.github/pr-wording.json" > "$scratch/pr-wording.json"
       args+=(--config "$scratch/pr-wording.json")
     fi
-    python3 "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"
+    "$python" "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"
     ;;
   review)
     if ! git cat-file -e "$base_sha:.github/tools/pr_review_gate.js" 2>/dev/null; then
