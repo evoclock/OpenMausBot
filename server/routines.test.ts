@@ -1574,11 +1574,12 @@ describe("RoutineManager", () => {
       contract: { id: "33333333-3333-4333-8333-333333333333", botId: "maus-1",
         repository: "fixture/private", ref: "main", successCriteria: ["verified"],
         repositoryClass: "agent-private", allowedEffects: ["edit"] },
-      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified"],
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified; token=verysecretvalue123"],
     });
     expect(h.manager.settleCodingRun(run.id, terminal).status).toBe("applied");
     const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
     expect(disk.runs.find((candidate: RoutineRun) => candidate.id === run.id).status).toBe("completed");
+    expect(disk.runs.find((candidate: RoutineRun) => candidate.id === run.id).output).not.toContain("verysecretvalue123");
     expect(disk.codingSettlementReceipts).toHaveLength(1);
     expect(disk.codingSettlementReceipts[0].status).toBe("APPLIED");
     const reopened = new RoutineManager(h.options);

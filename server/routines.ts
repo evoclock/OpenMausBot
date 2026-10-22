@@ -895,7 +895,7 @@ export class RoutineManager {
     this.commitMutation(() => {
       run.status = disposition === "held" ? "failed" : disposition;
       run.finishedAt = this.now();
-      run.output = snapshot.evidence.join("; ");
+      run.output = redactSecretsInText(snapshot.evidence.join("; ")).trim().slice(0, 2_000);
       if (disposition === "held") run.error = "Coding run needs reconciliation";
       this.codingSettlementReceipts.push(receipt);
     });
