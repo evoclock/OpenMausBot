@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
 import { RunContractStore, type RunContractInput } from "./run-contract.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import type { CodingEffect } from "./coding-effect-reconciliation.ts";
 
@@ -20,6 +24,22 @@ function fixtureDir() {
   mkdirSync(scratch, { recursive: true });
   return mkdtempSync(join(scratch, "outer-runner-"));
 }
+
+test("backs up the configured SQLite database before reopening, and refuses a failed backup", async () => {
+  const dir = fixtureDir();
+  const inner = { async invoke() { return { kind: "verified" as const, evidence: ["complete"], costUsd: 0 }; } };
+  const first = await openOuterRunner(dir, inner);
+  await first.close();
+  const backupPath = join(dir, "coding-runs.sqlite.pre-1.4.0.bak");
+  const second = await openOuterRunner(dir, inner);
+  try { assert.equal(existsSync(backupPath), true); }
+  finally { await second.close(); }
+  const blockedDir = fixtureDir();
+  const third = await openOuterRunner(blockedDir, inner);
+  await third.close();
+  mkdirSync(join(blockedDir, "coding-runs.sqlite.pre-1.4.0.bak"));
+  await assert.rejects(openOuterRunner(blockedDir, inner));
+});
 
 test("outer loop invokes fresh inner iterations until its verified verdict", async () => {
   const calls: string[] = [];
@@ -353,6 +373,72 @@ test("SIGKILL after a finished step holds an unknown effect without repeating wo
     }
   } finally { await reopened.close(); }
 }, 30_000);
+
+test("configured crash limit parks the run with owner-visible restart_limit evidence", async () => {
+  const dir = fixtureDir();
+  const first = `import { openOuterRunner } from './server/outer-runner.ts';
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { process.stdout.write('effect started\\n'); process.exit(0); }
+    }, { restartLimit: 3 });
+    await runner.start(${JSON.stringify(contract)});
+    await new Promise(() => {});`;
+  const initial = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", first],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(initial.status, 0, initial.stderr);
+  assert.match(initial.stdout, /effect started/);
+  const crash = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const get = RunContractStore.prototype.get;
+    RunContractStore.prototype.get = function(id) {
+      if (id === ${JSON.stringify(contract.id)}) { process.stdout.write('phase restarted\\n'); process.exit(0); }
+      return get.call(this, id);
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { throw new Error('replayed outward effect'); }
+    }, { restartLimit: 3 });
+    runner.resume();
+    await new Promise(() => {});`;
+  for (let count = 0; count < 2; count += 1) {
+    const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", crash],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /phase restarted/);
+  }
+  const runner = await openOuterRunner(dir, {
+    async invoke() { throw new Error("replayed outward effect"); },
+  }, { restartLimit: 3 });
+  try {
+    runner.resume();
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.ok(runner.get(contract.id)?.evidence.some((entry) => entry.includes("restart_limit")));
+  } finally { await runner.close(); }
+  const store = new RunContractStore(join(dir, "runtime.db"));
+  const id = store.taskId(contract.id) as TaskId<string>;
+  store.close();
+  let retried = 0;
+  const Task = defineTask<{ id: string }, { phase: "iterate"; sequence: number }, string>({
+    name: "openmausbot.outer-run", version: 1,
+    initial: () => ({ phase: "iterate", sequence: 0 }),
+    phases: { iterate: async (_task, runtime, context) => {
+      retried += 1;
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+    } },
+    abort: async (_task, runtime, context) => {
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+    },
+  });
+  const registry = createRegistry();
+  registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
+  const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "coding-runs.sqlite")),
+    { models: createModels(), registry, settings: { restartLimit: 3 } }, BACKGROUND_CONTEXT);
+  try {
+    assert.equal(retried, 0);
+    await harness.retryTask(id, BACKGROUND_CONTEXT);
+    const settled = await harness.waitForTask(id, BACKGROUND_CONTEXT);
+    assert.equal(settled.state.outcome.status, "completed");
+    assert.equal(retried, 1);
+  } finally { await harness.close(BACKGROUND_CONTEXT); }
+}, 60_000);
 
 test("an interrupted outward effect is parked after a process crash", async () => {
   const dir = fixtureDir();

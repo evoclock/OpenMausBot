@@ -33,6 +33,8 @@ export const codingGitDestinationSchema = z.object({
 }).strict();
 export type CodingGitDestination = z.output<typeof codingGitDestinationSchema>;
 
+export const CODING_RESTART_LIMIT_DEFAULT = 5;
+
 export const codingRunConfigSchema = z.object({
   /** Destinations and credential references are operator-owned; missing entries never grant a Git write. */
   gitDestinations: z.record(z.string().min(1), z.array(codingGitDestinationSchema).max(50)).optional(),
@@ -41,6 +43,8 @@ export const codingRunConfigSchema = z.object({
   gitAppInstallations: z.record(reference, codingGitAppInstallationSchema).optional(),
   repositoryRoot: z.string().min(1),
   rolesFilePath: z.string().min(1).optional(),
+  /** Consecutive interrupted task invocations before parking; default 5. */
+  restartLimit: z.number().int().positive().optional(),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({
     maxIterations: z.number().int().positive().optional(),

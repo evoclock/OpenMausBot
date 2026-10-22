@@ -3,7 +3,10 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { join } from "node:path";
+import { access } from "node:fs/promises";
+import { backup, DatabaseSync } from "node:sqlite";
 import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
 import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
 
@@ -21,11 +24,37 @@ const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  restartLimit?: number;
   effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
     /** Only read a durably saved result and priced usage; never restart a worker turn. */
     recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null> };
   contextCompactor?: IterationContextCompactor;
 } = {}) {
+  const durablePath = join(dataDir, "coding-runs.sqlite");
+  const restartLimit = options.restartLimit ?? CODING_RESTART_LIMIT_DEFAULT;
+  try {
+    await access(durablePath);
+    const backupPath = `${durablePath}.pre-1.4.0.bak`;
+    let alreadyBackedUp = false;
+    try {
+      await access(backupPath);
+      const saved = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        if (saved.prepare("PRAGMA quick_check").get()?.quick_check !== "ok") throw new Error("durable backup is invalid");
+        alreadyBackedUp = true;
+      } finally { saved.close(); }
+    }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (!alreadyBackedUp) {
+      const source = new DatabaseSync(durablePath);
+      try { await backup(source, backupPath); }
+      finally { source.close(); }
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
   const store = new RunContractStore(join(dataDir, "runtime.db"));
   const ledger = openLoopLedger(join(dataDir, "runtime.db"));
   const reportPending = () => {
@@ -185,10 +214,40 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
       await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
   });
+  const runByTask = new Map<number, string>();
+  let sessionFailed = false;
+  let sessionFailure: unknown;
+  const requireHealthy = () => {
+    if (sessionFailed) throw new Error("durable session failed; owner review required", { cause: sessionFailure });
+  };
   const registry = createRegistry();
   registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
-  const harness = await Harness.open(await openNodeSqliteStorage(join(dataDir, "coding-runs.sqlite")),
-    { models: createModels(), registry }, BACKGROUND_CONTEXT);
+  const harness = await Harness.open(await openNodeSqliteStorage(durablePath),
+    { models: createModels(), registry, settings: { restartLimit },
+      onReport(error, info) {
+        if (info.type === "session_failed") { sessionFailed = true; sessionFailure = error; }
+        if (info.type !== "task_parked" && !(info.type === "task_faulted" && info.reason === "restart_limit")) return;
+        const id = runByTask.get(info.task.id);
+        if (!id) return;
+        const snapshot = store.get(id);
+        if (snapshot && !terminalStates.has(snapshot.state)) {
+          transition(id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["restart_limit: durable task parked after repeated crashes; owner review required"]);
+        }
+      } }, BACKGROUND_CONTEXT);
+  for (const item of (await harness.inspect(BACKGROUND_CONTEXT)).tasks) {
+    if (item.record.kind === "openmausbot.outer-run") {
+      const id = (item.record.input as { id: string }).id;
+      runByTask.set(item.record.id, id);
+      if (item.record.restarts !== undefined && item.record.restarts >= restartLimit) {
+        const snapshot = store.get(id);
+        if (snapshot && !terminalStates.has(snapshot.state)) {
+          transition(id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["restart_limit: durable task parked after repeated crashes; owner review required"]);
+        }
+      }
+    }
+  }
   const findTask = async (id: string): Promise<TaskId<string> | undefined> => {
     const matches = (await harness.inspect(BACKGROUND_CONTEXT)).tasks.filter((item) =>
       item.record.kind === "openmausbot.outer-run" && (item.record.input as { id?: string }).id === id);
@@ -198,6 +257,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   const startOne = async (snapshot: RunSnapshot): Promise<TaskId<string>> => {
     const existing = await findTask(snapshot.contract.id);
     if (existing) {
+      runByTask.set(existing, snapshot.contract.id);
       store.bindTask(snapshot.contract.id, existing);
       harness.resume();
       return existing;
@@ -208,18 +268,21 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
       if (task?.kind !== "openmausbot.outer-run" || (task.input as { id?: string }).id !== snapshot.contract.id) {
         throw new Error("recorded run task identity requires reconciliation");
       }
+      runByTask.set(recorded as TaskId<string>, snapshot.contract.id);
       return recorded as TaskId<string>;
     }
     if (snapshot.state !== "queued") throw new Error("run task identity requires reconciliation");
     const root = await harness.root(BACKGROUND_CONTEXT);
     const id = await root.commit((tx) => tx.createTask(Task, { id: snapshot.contract.id },
       { ownership: { kind: "conversation" } }), BACKGROUND_CONTEXT);
+    runByTask.set(id, snapshot.contract.id);
     store.bindTask(snapshot.contract.id, id);
     harness.resume();
     return id;
   };
   const starting = new Map<string, Promise<TaskId<string>>>();
   const start = (contract: RunContractInput): Promise<TaskId<string>> => {
+    requireHealthy();
     const snapshot = store.create(contract, Date.now());
     const existing = starting.get(snapshot.contract.id);
     if (existing) return existing;
@@ -237,13 +300,14 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   }
   return {
     start,
-    resume() { reportPending(); harness.resume(); },
-    async wait(taskId: TaskId<string>) { return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
-    get(id: string) { return store.get(id); },
-    report(id: string) { return store.report(id); },
-    ledger(id: string) { return ledger.entries(id); },
+    resume() { requireHealthy(); reportPending(); harness.resume(); },
+    async wait(taskId: TaskId<string>) { requireHealthy(); return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
+    get(id: string) { requireHealthy(); return store.get(id); },
+    report(id: string) { requireHealthy(); return store.report(id); },
+    ledger(id: string) { requireHealthy(); return ledger.entries(id); },
     reportPending,
     async cancel(id: string) {
+      requireHealthy();
       const taskId = store.taskId(id);
       if (!taskId) return "not_found";
       return harness.abortTask(taskId as TaskId<string>, BACKGROUND_CONTEXT);

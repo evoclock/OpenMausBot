@@ -12,6 +12,7 @@ interface GithubRegistration {
 
 export async function openCodingRunRuntime(options: {
   dataDir: string;
+  restartLimit?: number;
   workerHost: WorkerHost;
   routines: ReadonlyMap<string, TriggerTemplate>;
   github: ReadonlyMap<string, GithubRegistration>;
@@ -29,7 +30,7 @@ export async function openCodingRunRuntime(options: {
         receipts.saveResult(contract.id, iteration, requestId, result);
       }
       return result;
-    } }, { onTerminal: options.onTerminal,
+    } }, { onTerminal: options.onTerminal, restartLimit: options.restartLimit,
       ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
         async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
       } } : {}),

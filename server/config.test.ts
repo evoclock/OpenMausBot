@@ -62,6 +62,8 @@ describe("configuration boundaries", () => {
     }] };
     expect(parseStoredConfig({}).codingRuns).toBeUndefined();
     expect(parseStoredConfig({ codingRuns }).codingRuns).toEqual(codingRuns);
+    expect(parseStoredConfig({ codingRuns: { ...codingRuns, restartLimit: 3 } }).codingRuns?.restartLimit).toBe(3);
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, restartLimit: 0 } })).toThrow();
     expect(parseConfigPatch({ codingRuns })).not.toHaveProperty("codingRuns");
     expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, registrations: [] } })).toThrow();
     const bots = { origin: { maxWallTimeMs: 60_000, maxSpendUsd: 1 } };
