@@ -22,21 +22,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2; do
-            status=0
-            pnpm audit --audit-level high --prod --json > "$RUNNER_TEMP/prod-audit.json" || status=$?
-            if ((status > 1)); then
-              echo '::error::pnpm audit failed for a reason other than findings'
-              exit "$status"
-            fi
-            if node -e 'const r = require(process.argv[1]); process.exit(r && r.advisories && !r.error ? 0 : 1)' "$RUNNER_TEMP/prod-audit.json"; then
-              break
-            fi
-            if ((attempt == 2)); then
-              echo '::error::Production audit did not return findings after two attempts'
-              exit 1
-            fi
-          done
+          status=0
+          pnpm audit --audit-level high --prod --json > "$RUNNER_TEMP/prod-audit.json" || status=$?
+          if ((status > 1)); then
+            echo '::error::pnpm audit failed for a reason other than findings'
+            exit "$status"
+          fi
       - name: Check weekly audit against the recorded main baseline
         if: github.event_name == 'schedule'
         run: node .github/tools/deps_audit_gate.mjs "$RUNNER_TEMP/prod-audit.json"
@@ -51,21 +42,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in 1 2; do
-            status=0
-            (cd trusted-base && pnpm audit --audit-level high --prod --json) > "$RUNNER_TEMP/base-audit.json" || status=$?
-            if ((status > 1)); then
-              echo '::error::Baseline audit failed for a reason other than findings'
-              exit "$status"
-            fi
-            if node -e 'const r = require(process.argv[1]); process.exit(r && r.advisories && !r.error ? 0 : 1)' "$RUNNER_TEMP/base-audit.json"; then
-              break
-            fi
-            if ((attempt == 2)); then
-              echo '::error::Baseline audit did not return findings after two attempts'
-              exit 1
-            fi
-          done
+          status=0
+          (cd trusted-base && pnpm audit --audit-level high --prod --json) > "$RUNNER_TEMP/base-audit.json" || status=$?
+          if ((status > 1)); then
+            echo '::error::Baseline audit failed for a reason other than findings'
+            exit "$status"
+          fi
           node --input-type=module - "$RUNNER_TEMP/prod-audit.json" "$RUNNER_TEMP/base-audit.json" <<'NODE'
           import { readFileSync } from 'node:fs';
           const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
