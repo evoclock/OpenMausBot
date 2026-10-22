@@ -79,6 +79,33 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
   } finally { await runtime.close(); }
 });
 
+test("the outer invocation hands one opaque goal to the durable transport", async () => {
+  const calls: string[] = [];
+  const requests: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map([["routine", template]]), github: new Map(), driver: {
+      async invokeWorker({ requestId, goal, transport }) {
+        requests.push(requestId);
+        assert.match(goal, /^Iteration 1\n/);
+        const receipt = await transport.invoke();
+        assert.equal(receipt.verified, true);
+        assert.match(receipt.reference, /^omb-result:[a-f0-9]{64}$/);
+        return { runId: "correlated", state: "finished", result: receipt.result };
+      },
+      async status() { return null; },
+      async reconcile() {},
+      async close() {},
+    } });
+  try {
+    const accepted = await runtime.scheduled({ id: "occurrence", routineId: "routine", botId: "fixture",
+      scheduledFor: 100, triggerSource: "schedule", status: "running" });
+    if (!("id" in accepted)) throw new Error("missing run");
+    assert.equal(await settled(runtime, accepted.id), "done");
+    assert.deepEqual(requests, [`${accepted.id}:1`]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+  } finally { await runtime.close(); }
+});
+
 test("concurrent re-fire does not start two workers for one occurrence", async () => {
   const calls: string[] = [];
   const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),

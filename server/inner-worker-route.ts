@@ -39,9 +39,17 @@ export interface WorkerHost {
   verifyWithPstack(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
 }
 
-export function createWorkerRoute(host: WorkerHost): InnerLoop {
+export function createWorkerRoute(host: WorkerHost, durable?: {
+  invoke(requestId: string, goal: string, signal: AbortSignal,
+    work: () => Promise<InnerLoopResult>): Promise<InnerLoopResult>;
+}): InnerLoop {
   return {
     async invoke(contract, _iteration, requestId, signal, remainingUsd, context): Promise<InnerLoopResult> {
+      const prior = context?.previous;
+      const carry = prior ? context?.compactor?.compact(prior) ??
+        `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
+      const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0)}${carry ? `\n${carry}` : ""}`;
+      const work = async (): Promise<InnerLoopResult> => {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
       if (contract.repositoryClass !== "agent-private") return { kind: "blocked", evidence: ["external repository requires a separate verified route"], costUsd: 0 };
       const roles = await host.roles(contract.repository);
@@ -71,10 +79,6 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           !workspace.base || !workspace.directory || !workspace.leaseId) {
           return blocked("isolated workspace does not match the run contract");
         }
-        const prior = context?.previous;
-        const carry = prior ? context?.compactor?.compact(prior) ??
-          `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
-        const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0)}${carry ? `\n${carry}` : ""}`;
         const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
@@ -107,6 +111,8 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           }
         }
       }
+      };
+      return durable ? durable.invoke(requestId, goal, signal, work) : work();
     },
   };
 }

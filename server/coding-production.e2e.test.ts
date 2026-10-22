@@ -1,10 +1,12 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { RunContractStore } from "./run-contract.ts";
+import { requireDriverRunApi } from "./driver-run-api.ts";
 import { scheduledCodingRunId } from "./run-triggers.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -403,7 +405,21 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     store.close();
     expect(f.git(f.leased, "rev-parse", "HEAD")).toBe(review.revision);
     await f.kill();
-    process.kill(reviewPid, "SIGKILL");
+    const driver = await (await requireDriverRunApi()).openDurableDriver({
+      directory: join(f.dataDir, "coding-run", "durable-driver"),
+    });
+    try {
+      const driverRunId = createHash("sha256").update(`worker:${prepared!.requestId}`).digest("hex");
+      const intent = await driver.status(driverRunId);
+      expect(intent?.steps).toHaveLength(1);
+      expect(intent?.steps[0]?.state).toBe("intent");
+      const held = await driver.resume(driverRunId);
+      expect(held.state).toBe("held");
+      expect(held.steps[0]?.state).toBe("held");
+    } finally { await driver.close(); }
+    try { process.kill(reviewPid, "SIGKILL"); } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
     reviewPid = undefined;
     await f.start();
     await f.until(async () => (await f.api("GET", "/api/routines")).runs

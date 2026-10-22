@@ -17,6 +17,15 @@ test("installed Pi Durable 1.4.0 provides OMB's harness but not the driver-run p
   assert.equal("DURABLE_DRIVER_PROTOCOL" in durable, false);
 });
 
-test("a driver-run request refuses before any effect when its installed package lacks the protocol", async () => {
-  await assert.rejects(requireDriverRunApi(), /installed driver-run API is unavailable.*agentic-driver\.run\.v1/i);
+test("driver-run requires a compatible installed protocol and otherwise fails closed", async () => {
+  let installed: unknown;
+  const moduleName = "@evoclock/pi-agentic-driver/scripts/enforcement/durable_driver_pi.js";
+  try { installed = await import(moduleName); }
+  catch { installed = null; }
+  if (!installed) {
+    await assert.rejects(requireDriverRunApi(), /installed driver-run API is unavailable.*agentic-driver\.run\.v1/i);
+  } else {
+    assert.equal((installed as { DURABLE_DRIVER_PROTOCOL?: string }).DURABLE_DRIVER_PROTOCOL, "agentic-driver.run.v1");
+    assert.equal(typeof (await requireDriverRunApi()).openDurableDriver, "function");
+  }
 });
