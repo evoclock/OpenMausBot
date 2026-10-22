@@ -2,6 +2,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
 import { openProductionCodingRuntime } from "./coding-production.ts";
+import { loopStatus, openLoopStatusReader } from "./loop-status.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -16099,6 +16100,16 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
+    if (path.startsWith("/api/bots/") && path.endsWith("/loop-status") && method === "GET") {
+      const botId = decodeURIComponent(path.slice("/api/bots/".length, -"/loop-status".length));
+      if (!store.bot(botId) || !visible.bot(botId)) return json(res, 404, { error: "no such bot" });
+      const reader = openLoopStatusReader(DATA_DIR);
+      if (!reader) return json(res, 200, { runs: [] });
+      try {
+        return json(res, 200, { runs: reader.list(botId).map((snapshot) =>
+          loopStatus(snapshot, reader.recent(snapshot.contract.id))) });
+      } finally { reader.close(); }
+    }
     if (path === "/api/routines" && method === "GET") {
       const fromParam = url.searchParams.get("from");
       const toParam = url.searchParams.get("to");
