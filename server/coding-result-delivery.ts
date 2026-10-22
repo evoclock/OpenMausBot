@@ -33,7 +33,9 @@ export function codingResultStoreSink(store: Pick<Store, "taskByThread" | "messa
 
 export class CodingResultDelivery {
   private readonly db: DatabaseSync;
-  constructor(path: string, private readonly sink: CodingResultSink) {
+  private readonly sink: CodingResultSink;
+  constructor(path: string, sink: CodingResultSink) {
+    this.sink = sink;
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec(`CREATE TABLE IF NOT EXISTS coding_result_delivery (
