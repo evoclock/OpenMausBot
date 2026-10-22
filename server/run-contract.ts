@@ -61,9 +61,36 @@ export class RunContractStore {
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA synchronous = FULL");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_runs (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, version INTEGER NOT NULL, snapshot TEXT NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS coding_routine_links (routine_id TEXT PRIMARY KEY, coding_id TEXT NOT NULL UNIQUE, terminal TEXT, status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'claimed')))");
   }
   close(): void { this.db.close(); }
+  /** A claim is not an applied settlement receipt. Once claimed, an uncertain external effect must be held. */
+  routineLink(codingId: string): { routineId: string; status: "pending" | "claimed"; terminal?: RunSnapshot } | undefined {
+    const row = this.db.prepare("SELECT routine_id, status, terminal FROM coding_routine_links WHERE coding_id = ?")
+      .get(codingId) as { routine_id: string; status: "pending" | "claimed"; terminal: string | null } | undefined;
+    return row ? { routineId: row.routine_id, status: row.status,
+      ...(row.terminal ? { terminal: runSnapshotSchema.parse(JSON.parse(row.terminal)) } : {}) } : undefined;
+  }
+  linkRoutine(routineId: string, codingId: string): { status: "pending" | "claimed" } {
+    if (!routineId || !codingId) throw new Error("empty routine/coding run id");
+    this.db.prepare("INSERT OR IGNORE INTO coding_routine_links (routine_id, coding_id) VALUES (?, ?)").run(routineId, codingId);
+    const linked = this.db.prepare("SELECT coding_id, status FROM coding_routine_links WHERE routine_id = ?")
+      .get(routineId) as { coding_id: string; status: "pending" | "claimed" };
+    if (!linked) throw new Error("coding run linked to a different routine");
+    if (linked.coding_id !== codingId) throw new Error("routine linked to a different coding run");
+    return { status: linked.status };
+  }
+  claimRoutineTerminal(codingId: string, terminal: RunSnapshot): ReturnType<RunContractStore["routineLink"]> {
+    const checked = runSnapshotSchema.parse(terminal);
+    if (checked.contract.id !== codingId || !["done", "blocked", "failed", "cancelled"].includes(checked.state)) {
+      throw new Error("terminal report does not match coding run");
+    }
+    this.db.prepare("UPDATE coding_routine_links SET terminal = ?, status = 'claimed' WHERE coding_id = ? AND status = 'pending'")
+      .run(JSON.stringify(checked), codingId);
+    return this.routineLink(codingId);
+  }
   get(id: string): RunSnapshot | undefined {
     const row = this.db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;
     return row ? runSnapshotSchema.parse(JSON.parse(row.snapshot)) : undefined;

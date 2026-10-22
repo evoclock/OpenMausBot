@@ -14,6 +14,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { dirname } from "node:path";
 
 export type AtomicWriteOptions = {
   mode?: number;
@@ -102,6 +103,36 @@ function holdsExactly(path: string, data: string, mode: number | undefined): boo
       } catch {
       }
     }
+  }
+}
+
+/** A routine save is acknowledged only after its directory entry is durable. */
+function syncRoutineDirectory(file: string): void {
+  const fd = openSync(dirname(file), "r");
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+export function writeRoutineFile(
+  file: string,
+  data: string,
+  operations: {
+    write?: typeof writeFileAtomic;
+    syncDirectory?: typeof syncRoutineDirectory;
+  } = {},
+): void {
+  try {
+    (operations.write ?? writeFileAtomic)(file, data, { mode: 0o600 });
+  } catch (error) {
+    let matches = false;
+    try { matches = readFileSync(file, "utf8") === data; } catch { /* absent or unreadable */ }
+    if (!matches) throw error;
+  }
+  try {
+    (operations.syncDirectory ?? syncRoutineDirectory)(file);
+  } catch (cause) {
+    // The rename may be visible without being durable. Never permit a later save
+    // to overwrite this uncertain image in the same process.
+    throw Object.assign(new Error("Routine store durability is uncertain; restart and inspect before writing"), { cause, uncertainRoutineWrite: true });
   }
 }
 
