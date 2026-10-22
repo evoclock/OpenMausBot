@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,7 +33,23 @@ if (mode === "--fixture-real-worker" && process.argv.length === 3) {
   if (report.outcome !== "blocked" || report.effects.ownerReports !== 1 || report.effects.repeatedTurns !== 0)
     throw new Error("Drill report did not prove fail-closed settlement");
   console.log(join(proof, "report.json"));
-} else if (mode === "--live" || mode === "--audit-sandbox") {
+} else if (mode === "--live") {
+  const file = process.argv[3];
+  if (!file || process.argv.length !== 4 || !existsSync(file)) throw new Error("Set a named live sandbox config path");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  const { runLive } = await import("./drill-live-worker.mjs");
+  try {
+    const report = await runLive(config);
+    writeFileSync(file, JSON.stringify({ ...config, expectedRevisions: [report.revision] }, null, 2));
+    console.log(JSON.stringify({ outcome: report.outcome, destination: report.destination, revision: report.revision, url: report.url }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "live drill failed";
+    const proofDir = join(root, ".omb-scratch", "proof", "omb-e2e-loop-drill", "live");
+    mkdirSync(proofDir, { recursive: true });
+    writeFileSync(join(proofDir, "drill-report.json"), JSON.stringify({ outcome: "fail", reason: message }, null, 2));
+    throw new Error(`live sandbox drill failed: ${message}`);
+  }
+} else if (mode === "--audit-sandbox") {
   const file = process.argv[3];
   if (!file || !existsSync(file)) throw new Error("Set a named drill config path; destination, host and credential reference are required");
   const config = JSON.parse(readFileSync(file, "utf8"));
@@ -47,7 +63,6 @@ if (mode === "--fixture-real-worker" && process.argv.length === 3) {
     !/^[0-9a-f]{40}$/.test(config.baseRevision ?? "") || !config.expectedRevisions?.length) {
     throw new Error("Refusing incomplete or unconfirmed sandbox drill configuration");
   }
-  if (mode === "--live") throw new Error("Live drill is owner-held until this PR merges green; no sandbox was created or contacted");
   const localFixture = config.host === "fixture" && config.destination === "fixture/agents" &&
     resolve(config.worktree).startsWith(join(root, "node_modules", ".cache") + "/");
   if (!localFixture && (config.host !== "mac-mini" || config.destination !== "evoclock/omb-drill-sandbox"))
@@ -69,7 +84,7 @@ if (mode === "--fixture-real-worker" && process.argv.length === 3) {
     if (identity !== "evoclock <52983349+evoclock@users.noreply.github.com>|evoclock <52983349+evoclock@users.noreply.github.com>")
       throw new Error("Unattributed bot commit or merge");
   }
-  const history = git("rev-list", "--parents", head).split("\n");
+  const history = git("rev-list", "--parents", `${config.baseRevision}..${head}`).split("\n");
   for (const entry of history) {
     const [revision, ...parents] = entry.split(" ");
     const identity = git("show", "-s", "--format=%an <%ae>|%cn <%ce>", revision);
