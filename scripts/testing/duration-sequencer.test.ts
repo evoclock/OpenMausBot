@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaseSequencer, type TestSequencerConstructor, type TestSpecification, type Vitest } from "vitest/node";
 import viteConfig from "../../vite.config.ts";
 import { DurationSequencer, SHARD_WEIGHTS_FILE, loadShardWeights, planShards, weightKey } from "./duration-sequencer.ts";
-import { buildWeights, parseVitestLog } from "./update-shard-weights.mjs";
+import { buildWeights, parseVitestJson, parseVitestLog, slowestReport } from "./update-shard-weights.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const WEIGHTS = loadShardWeights(ROOT);
@@ -116,6 +116,16 @@ describe("update-shard-weights", () => {
       "scripts/testing/cloud-preview.e2e.test.ts": 0,
       "server/c.test.ts": 9,
     });
+  });
+
+  it("reports the slowest files from Vitest JSON durations without host paths", () => {
+    const sample = parseVitestJson(JSON.stringify({ testResults: [
+      { name: "/checkout/server/slow.test.ts", startTime: 1000, endTime: 4150 },
+      { name: "/checkout/server/fast.test.ts", startTime: 1000, endTime: 1200 },
+    ] }), "/checkout");
+    expect(slowestReport([sample], 1)).toContain("| 3.1 s | server/slow.test.ts |");
+    expect(slowestReport([sample], 1)).not.toContain("/checkout");
+    expect(() => slowestReport([])).toThrow("No Vitest file durations");
   });
 
   it("keeps each slow or e2e file's median, and drops light and deleted files", () => {

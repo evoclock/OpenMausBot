@@ -8,6 +8,7 @@ dist-native
 dist-companion
 dist-server
 *.local
+/scan-terms.local.json
 .DS_Store
 *.tsbuildinfo
 electron/resources/speech-helper
