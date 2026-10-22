@@ -1,8 +1,17 @@
 # OpenMausBot agent notes
 
 Before claiming a server or conversation change works, follow
-[`docs/verification/README.md`](docs/verification/README.md). Always launch an
-isolated fixture; never verify mutations against the user's live app or data.
+[`docs/verification/README.md`](docs/verification/README.md). Launch an isolated
+fixture for verification. Permission release checks may additionally use a running
+app only when the owner explicitly names its URL, test bot ID and test thread ID.
+Before a live check, recheck that exact thread's provider, permission mode and idle
+state; preserve its original settings and restore any test changes. Use harmless
+scoped operations and record the prompt, effective mode, decision, outcome,
+timestamps and issuing component. Keep all other bots, conversations and user
+data isolated. This exception permits no installs, deletion, publication,
+sensitive screen capture or external writes, and does not bypass any approval.
+A session that already loaded the fixture-only rule must hand off live checks to
+a fresh session that loads this amendment.
 
 ## Comments
 

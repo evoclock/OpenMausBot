@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
-import { writeFileAtomic } from "./atomic.ts";
+import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
@@ -23,7 +22,6 @@ import {
   dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, requeueOnce, weekRuns, type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
 } from "./routine-recovery.ts";
 import { activeMs, askOf, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
-
 export type { RoutineContextAttachment, RoutineIntervalWindow, RoutineRunStatus, RoutineRunTrigger };
 
 export interface RoutineIntervalSchedule {
@@ -1829,6 +1827,7 @@ export class RoutineManager {
       mutate();
       this.save();
     } catch (error) {
+      if ((error as { uncertainRoutineWrite?: boolean }).uncertainRoutineWrite) this.unreadable = true;
       this.routines = before.routines;
       this.runs = before.runs;
       this.routineRequestReceipts = before.receipts;
@@ -1854,15 +1853,16 @@ export class RoutineManager {
       excess -= 1;
     }
     mkdirSync(dirname(this.file), { recursive: true });
-    writeFileAtomic(this.file, JSON.stringify({
+    try { writeRoutineFile(this.file, JSON.stringify({
       version: 1,
       ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
-      routines: [...this.routines, ...this.unloadedRoutines],
-      runs: this.runs,
-      routineRequestReceipts: this.routineRequestReceipts,
-      webhookRunReceipts: this.webhookRunReceipts,
+      routines: [...this.routines, ...this.unloadedRoutines], runs: this.runs,
+      routineRequestReceipts: this.routineRequestReceipts, webhookRunReceipts: this.webhookRunReceipts,
       ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
       ...(this.ownerNotices.length ? { ownerNotices: this.ownerNotices } : {}),
-    } satisfies RoutineFile, null, 2), { mode: 0o600 });
+    } satisfies RoutineFile, null, 2)); } catch (error) {
+      if ((error as { uncertainRoutineWrite?: boolean }).uncertainRoutineWrite) this.unreadable = true;
+      throw error;
+    }
   }
 }

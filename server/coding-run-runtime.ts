@@ -1,5 +1,6 @@
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
 import { openOuterRunner } from "./outer-runner.ts";
+import type { RunSnapshot } from "./run-contract.ts";
 import { startGithubCodingRun, startScheduledCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
 interface GithubRegistration {
@@ -12,8 +13,10 @@ export async function openCodingRunRuntime(options: {
   workerHost: WorkerHost;
   routines: ReadonlyMap<string, TriggerTemplate>;
   github: ReadonlyMap<string, GithubRegistration>;
+  onTerminal?: (snapshot: RunSnapshot) => void;
 }) {
-  const runner = await openOuterRunner(options.dataDir, createWorkerRoute(options.workerHost));
+  const runner = await openOuterRunner(options.dataDir, createWorkerRoute(options.workerHost),
+    { onTerminal: options.onTerminal });
   runner.resume();
   return {
     scheduled(run: { id: string; routineId: string; botId: string; scheduledFor: number;

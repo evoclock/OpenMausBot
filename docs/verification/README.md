@@ -31,6 +31,13 @@ and `OMB_OPENAI_LIVE_KEY` crosses only with it, so that key can only ever
 reach the fake. `OMB_PRO_PLAN` crosses only as `1`: Live calls from a phone need a Pro plan,
 and that is how a server the desktop app did not start says so.
 
+On macOS, keep the fixture's `TMPDIR` short: permission brokers use Unix
+sockets, whose path length is limited by the OS. A long Treehouse scratch path
+can produce `permission broker unavailable` with `listen EINVAL` before a
+provider starts. Use a short repository or harness scratch directory and rerun
+the same fixture; keep its failed log as evidence. Do not switch to live app
+data to avoid this failure.
+
 Pass the printed URL explicitly from a second terminal:
 
 ```sh
