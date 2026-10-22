@@ -70,12 +70,17 @@ export async function openProductionCodingRuntime(options: {
       throw new Error("coding trigger registration requires one applied schedule or run webhook");
     }
     const botId = (routine ?? hook)!.botId;
-    const limits = config.bots?.[botId];
+    const botConfig = config.bots?.[botId];
+    const limits = botConfig && {
+      maxWallTimeMs: botConfig.maxWallTimeMs, maxSpendUsd: botConfig.maxSpendUsd,
+      allowedFallbackModels: botConfig.allowedFallbackModels,
+      allowedFallbackDataRoutes: botConfig.allowedFallbackDataRoutes,
+    };
     const template: TriggerTemplate = {
       botId,
       repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
       successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
-      ...(limits ? { limits } : {}),
+      ...(limits ? { limits, ...(botConfig.maxIterations ? { maxIterations: botConfig.maxIterations } : {}) } : {}),
     };
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
   }
