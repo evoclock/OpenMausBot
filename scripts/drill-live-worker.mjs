@@ -8,7 +8,8 @@ import { openOuterRunner } from "../server/outer-runner.ts";
 import { createLoopStatusRoutes } from "../server/routes/loop-status.ts";
 import { json, readBody } from "../server/harness/http.ts";
 import { redactToolResult } from "../server/redact.ts";
-import { SANDBOX, mintSandboxToken, runGit, withSandboxGitToken } from "./drill-github-app.mjs";
+import { createGitHubAppCredentialProvider } from "../server/github-app-credential.ts";
+import { SANDBOX, runGit, withSandboxGitToken } from "./drill-github-app.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const proofRoot = join(root, ".omb-scratch", "proof", "omb-e2e-loop-drill", "live");
@@ -18,7 +19,14 @@ const save = (name, value) => writeFileSync(join(proofRoot, name), JSON.stringif
 
 export function checkLiveConfig(config) {
   if (config.destination !== SANDBOX || config.host !== "mac-mini" ||
-    config.credentialReference?.kind !== "github-app" || config.model !== "openai-codex/gpt-6-sol" ||
+    config.credentialReference?.kind !== "github-app" || config.credentialReference.reference !== "sandbox-drill" ||
+    config.gitAppInstallations?.["sandbox-drill"]?.appId !== 5424694 ||
+    config.gitAppInstallations?.["sandbox-drill"]?.installationId !== 174083987 ||
+    config.gitAppInstallations?.["sandbox-drill"]?.visibility !== "private" ||
+    config.gitAppInstallations?.["sandbox-drill"]?.repositories?.length !== 1 ||
+    config.gitAppInstallations["sandbox-drill"].repositories[0] !== SANDBOX ||
+    !config.gitAppInstallations["sandbox-drill"].privateKeyPath?.startsWith("/") ||
+    config.model !== "openai-codex/gpt-6-sol" ||
     config.thinking !== "low" || config.botConfig?.modelSelection?.model !== config.model ||
     !Number.isSafeInteger(config.botConfig?.maxIterations) || config.botConfig.maxIterations < 2 ||
     !Number.isSafeInteger(config.botConfig?.limits?.maxWallTimeMs) || config.botConfig.limits.maxWallTimeMs < 30_000 ||
@@ -79,7 +87,9 @@ export async function runLive(config) {
   if (existsSync(config.worktree)) throw new Error("live destination must be a fresh sandbox checkout");
   mkdirSync(proofRoot, { recursive: true });
   const started = Date.now();
-  const token = await mintSandboxToken(config);
+  const credentials = createGitHubAppCredentialProvider({ installations: config.gitAppInstallations });
+  const token = await credentials.scopedToken(config.credentialReference, SANDBOX);
+  if (!token) throw new Error("scoped GitHub App installation credential unavailable");
   const destination = `https://github.com/${SANDBOX}.git`;
   const askpass = join(root, "scripts", "drill-git-askpass.mjs");
   const parent = dirname(config.worktree);
