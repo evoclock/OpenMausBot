@@ -1,4 +1,5 @@
 // Modified in 2026: cover fail-closed loading of persisted routine queues.
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1603,6 +1604,31 @@ describe("RoutineManager", () => {
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)).toMatchObject({
       status: "failed", error: "Coding run needs reconciliation",
     });
+  });
+
+  it("recovers an applied receipt after the writer exits before acknowledging it", () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+    const run = h.manager.runNow(routine.id)!;
+    const terminal = runSnapshotSchema.parse({
+      contract: { id: "77777777-7777-4777-8777-777777777777", botId: "maus-1",
+        repository: "fixture/private", ref: "main", successCriteria: ["verified"],
+        repositoryClass: "agent-private", allowedEffects: ["edit"] },
+      state: "done", iteration: 1, updatedAt: Date.now(), evidence: ["verified"],
+    });
+    const source = `import { RoutineManager } from './server/routines.ts';
+      const manager = new RoutineManager({ file: ${JSON.stringify(h.options.file)}, now: () => ${Date.now()},
+        emit() {}, botState() { return 'ready'; }, goalState() { return 'ready'; },
+        createTask() { return { threadId: 'unused' }; }, startTurn() {} });
+      manager.settleCodingRun(${JSON.stringify(run.id)}, ${JSON.stringify(terminal)});
+      process.exit(0);`;
+    const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+    expect(child.status).toBe(0);
+    const reopened = new RoutineManager(h.options);
+    expect(reopened.settleCodingRun(run.id, terminal).status).toBe("existing");
+    expect(reopened.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
   });
 
   it("does not acknowledge settlement when the routines file cannot be replaced", () => {
