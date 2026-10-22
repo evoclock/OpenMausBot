@@ -126,7 +126,7 @@ export async function openProductionCodingRuntime(options: {
     },
     interrupt: options.interrupt,
   });
-  const host = createCodingWorkerHost({ roles, workspace, turn,
+  const host = createCodingWorkerHost({ roles, rolesFilePath: config.rolesFilePath, workspace, turn,
     async verify(leased, revision) {
       try {
         execFileSync("git", ["cat-file", "-e", `${revision}^{commit}`], { cwd: leased.directory, timeout: 10_000 });
