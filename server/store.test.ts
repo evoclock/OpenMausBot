@@ -1955,6 +1955,30 @@ describe("Store redacts bot-authored secrets on write", () => {
     rmSync(DATA_DIR, { recursive: true, force: true });
   });
 
+  it("scrubs sensitive file results on append and patch before persistence and replay", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const tool = store.appendMessage(bot.threadId, { role: "bot", kind: "activity",
+      tool: { name: "Read /work/.env.local", input: "cat /work/.env.local", output: "private-value-73" } });
+    expect(tool.tool?.name).not.toContain(".env.local");
+    expect(tool.tool?.input).not.toContain(".env.local");
+    expect(tool.tool?.output).not.toContain("private-value-73");
+    const patched = store.patchMessage(bot.threadId, tool.id, {
+      tool: { ...tool.tool!, output: "new-private-value-74", summary: "new-private-value-74" },
+    });
+    expect(JSON.stringify(patched)).not.toContain("private-value-74");
+    const other = store.appendMessage(bot.threadId, { role: "bot", kind: "activity",
+      tool: { name: "Read docs", input: "cat README.md", output: 'api_key: "unshaped-value-75"' } });
+    expect(other.tool?.output).not.toContain("unshaped-value-75");
+    const restarted = new Store(selection);
+    const stored = JSON.stringify(restarted.activePath(bot.threadId));
+    expect(stored).not.toContain("private-value-73");
+    expect(stored).not.toContain("private-value-74");
+    expect(stored).not.toContain("unshaped-value-75");
+    expect(stored).toContain("«redacted sensitive file result»");
+    expect(stored).toContain("«redacted 17 chars»");
+  });
+
   it("masks a key in bot text, tools and cards — but never in what the user typed", () => {
     const store = new Store(selection);
     const bot = store.createBot();

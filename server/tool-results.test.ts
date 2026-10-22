@@ -4,6 +4,12 @@ import { ToolResults, TOOL_RESULT_MAX_CHARS, TOOL_RESULT_PREVIEW_CHARS, TOOL_RES
 const owner = { botId: "a", threadId: "chat" };
 
 describe("temporary agent tool results", () => {
+  it("does not retain a sensitive-path result with an unshaped secret", () => {
+    const results = new ToolResults();
+    const saved = results.save(owner, "read .npmrc: small-private-value-97");
+    expect(results.read(owner, saved.id, 0)?.text).toBe("«redacted sensitive file result»");
+  });
+
   it("pages losslessly across emoji boundaries and redacts before retaining", () => {
     const results = new ToolResults();
     const secret = `sk-test-${"s".repeat(30)}`;

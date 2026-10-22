@@ -70,7 +70,7 @@ if (argv[0] === "update" && argv.includes("--models")) {
   process.exit(mode === "update-error" ? 1 : 0);
 }
 
-if (mode === "exit-early") {
+if (mode === "exit-early" && argv.includes("-e")) {
   process.exit(1);
 }
 
@@ -288,6 +288,12 @@ function handle(cmd: any) {
         send({ type: "response", command: "negotiate_protocol", success: false, error: "fake pi: only protocol version 2 is supported" });
       }
       return;
+    case "get_commands": {
+      send({ type: "response", command: "get_commands", success: true, data: {
+        commands: process.env.FAKE_PI_MISSING_SKILL === "1" ? [] : [{ name: "poteto-mode-pi", source: "skill" }],
+      } });
+      break;
+    }
     case "get_available_models": {
       const response = {
         type: "response",

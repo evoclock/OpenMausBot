@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { chmodSync, mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
@@ -11,6 +11,38 @@ import type { TriggerTemplate } from "./run-triggers.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "testing", "fake-pi-cli.ts");
+const roleDir = join(process.cwd(), "node_modules", ".cache");
+mkdirSync(roleDir, { recursive: true });
+const rolesFilePath = join(roleDir, "coding-worker-roles.json");
+writeFileSync(rolesFilePath, JSON.stringify({ schema: "pstack-model-roles.v1", roles: {
+  development: "fixture/development", "independent-review": "fixture/review",
+} }));
+
+test("a Pi turn fails closed when the skill is not loaded", async () => {
+  const instance = await PiDriver.create({ instanceId: "missing-skill-fixture", displayName: "fixture",
+    environment: { FAKE_PI_MISSING_SKILL: "1" }, enabled: true, config: { cli, fullAuto: false } });
+  try {
+    await assert.rejects(instance.adapter.sendTurn({ threadId: "missing-skill", text: "check",
+      cwd: process.cwd(), approvalMode: "ask" }), /did not load poteto-mode-pi/);
+  } finally { await instance.dispose(); }
+});
+
+test("missing or invalid role maps block before workspace acquisition", async () => {
+  let acquired = false;
+  const base = { roles: new Map([["fixture/agents", { development: "fixture/development",
+    independentReview: "fixture/review", developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
+    workspace: { async acquire() { acquired = true; throw new Error("should not acquire"); }, async release() {} },
+    turn: { async run() { throw new Error("should not dispatch"); } },
+    async verify() { return null; },
+  };
+  assert.equal(await createCodingWorkerHost(base).roles("fixture/agents"), null);
+  const missing = createCodingWorkerHost({ ...base, rolesFilePath: join(roleDir, "absent-roles.json") });
+  assert.equal(await missing.roles("fixture/agents"), null);
+  const invalid = join(roleDir, "invalid-coding-roles.json");
+  writeFileSync(invalid, JSON.stringify({ schema: "wrong", roles: {} }));
+  assert.equal(await createCodingWorkerHost({ ...base, rolesFilePath: invalid }).roles("fixture/agents"), null);
+  assert.equal(acquired, false);
+});
 
 test("worker route launches the existing fake process with the scoped approval mode and captures its output", async () => {
   ensureDirs();
@@ -21,7 +53,8 @@ test("worker route launches the existing fake process with the scoped approval m
   const seen: RuntimeEvent[] = [];
   const unsubscribe = instance.adapter.onEvent((event) => { seen.push(event); });
   const host = createCodingWorkerHost({
-    roles: new Map([[workspace.repository, { development: "development", independentReview: "review",
+    rolesFilePath,
+    roles: new Map([[workspace.repository, { development: "fixture/development", independentReview: "fixture/review",
       developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
     workspace: { async acquire() { return workspace; }, async release() {} },
     turn: { async run({ botId, prompt, requestId, signal }) {
@@ -46,9 +79,9 @@ test("worker route launches the existing fake process with the scoped approval m
     const contract = { id: "00000000-0000-4000-8000-000000000001", botId: "origin", repository: workspace.repository,
       ref: workspace.branch, repositoryClass: "agent-private" as const, successCriteria: ["respond"], allowedEffects: ["edit" as const] };
     const acquired = await host.acquire(contract, "request");
-    const report = await host.runPlaybook(acquired, "development", "respond", "request", new AbortController().signal);
+    const report = await host.runPlaybook(acquired, "fixture/development", "respond", "request", new AbortController().signal);
     assert.deepEqual(report.evidence, ["Hello from pi"]);
-    const review = await host.review(acquired, "review", report.revision, new AbortController().signal);
+    const review = await host.review(acquired, "fixture/review", report.revision, new AbortController().signal);
     assert.deepEqual(review.evidence, ["Hello from pi"]);
     assert.equal(review.accepted, true);
     assert.equal(seen.filter((event) => event.type === "turn.completed").length, 2);
@@ -70,7 +103,8 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
   const dataDir = mkdtempSync(join(scratch, "coding-trigger-live-"));
   const workerTurns: string[] = [];
   const host = createCodingWorkerHost({
-    roles: new Map([[workspace.repository, { development: "development", independentReview: "review",
+    rolesFilePath,
+    roles: new Map([[workspace.repository, { development: "fixture/development", independentReview: "fixture/review",
       developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
     workspace: { async acquire() { return workspace; }, async release() {} },
     turn: { async run({ botId, prompt, requestId }) {
