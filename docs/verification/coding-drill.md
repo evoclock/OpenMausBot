@@ -1,5 +1,17 @@
 # Coding-run crash drill
 
+## Watching a coding loop
+
+The Activity panel shows a read-only Loop watch section for the selected bot.
+`GET /api/bots/:botId/loop-status` returns up to 20 recent runs for a visible
+bot, with state, iteration, spent and remaining budgets, the last persisted
+iteration verdict, and up to 10 recent durable iteration receipts per run.
+Unknown spend and unavailable limits display as unknown rather than an
+estimated remaining budget. An absent coding-run database returns an empty list.
+The receipts are the currently available history; a separate detailed loop
+ledger is not yet integrated. This endpoint cannot start, steer or stop a run.
+
+
 Run the local fixture with `node scripts/drill-coding-run.mjs --fixture`. It creates an
 isolated server home, local bare Git destination and fake Pi process. The fake
 GitHub identity is confined to the fixture; the local bare repository receives
