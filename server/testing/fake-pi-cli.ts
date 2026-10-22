@@ -346,14 +346,16 @@ function handle(cmd: any) {
       else if (mode === "question-input") streamQuestionInputTurn();
       else if (mode === "interleave") streamInterleaveTurn();
       else if (mode === "turn-error") streamErrorTurn();
-      else if (mode === "coding") {
+      else if (mode === "coding" || mode === "drill") {
         const git = (...args: string[]) => execFileSync("git", args, { cwd: process.cwd(), encoding: "utf8" }).trim();
         if (String(cmd.message).includes("Review revision ")) {
-          streamTurn(`ACCEPT ${git("rev-parse", "HEAD")}`);
+          if (mode === "drill" && process.env.FAKE_PI_DRILL_REVIEW_MARKER) {
+            writeFileSync(process.env.FAKE_PI_DRILL_REVIEW_MARKER, JSON.stringify({ pid: process.pid, revision: git("rev-parse", "HEAD") }));
+          } else streamTurn(`ACCEPT ${git("rev-parse", "HEAD")}`);
         } else {
           writeFileSync("coding-fixture-result.txt", "fixture work completed\n");
           git("add", "coding-fixture-result.txt");
-          git("-c", "user.name=evoclock", "-c", "user.email=evoclock@users.noreply.github.com",
+          git("-c", "user.name=evoclock", "-c", `user.email=${mode === "drill" ? "52983349+evoclock@users.noreply.github.com" : "evoclock@users.noreply.github.com"}`,
             "commit", "-m", "Complete fixture coding task");
           streamTurn("Coding fixture committed");
         }
