@@ -14,7 +14,7 @@ export async function openCodingRunRuntime(options: {
   routines: ReadonlyMap<string, TriggerTemplate>;
   github: ReadonlyMap<string, GithubRegistration>;
   webhooks?: ReadonlyMap<string, TriggerTemplate>;
-  onTerminal?: (snapshot: RunSnapshot) => void;
+  onTerminal?: (snapshot: RunSnapshot) => boolean | void;
 }) {
   const runner = await openOuterRunner(options.dataDir, createWorkerRoute(options.workerHost),
     { onTerminal: options.onTerminal });
