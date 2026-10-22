@@ -38,6 +38,9 @@ export async function openCodingRunRuntime(options: {
       return startGithubCodingRun(runner, { ...input, secret: registration.secret }, registration.template);
     },
     get: runner.get,
+    report: runner.report,
+    reportPending: runner.reportPending,
+    cancel: runner.cancel,
     close: runner.close,
   };
 }

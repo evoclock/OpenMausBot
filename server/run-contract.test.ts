@@ -61,6 +61,30 @@ test("run contract carries an iteration ceiling; time and spend budgets remain u
   store.close();
 });
 
+test("prepared effects and finished results survive reopen with stable request identity", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "run-receipt-")), "runtime.db");
+  let store = new RunContractStore(path);
+  store.create(contract, 1);
+  store.bindTask(contract.id, 42);
+  assert.equal(store.beginIteration(contract.id, 0, `${contract.id}:1`, 2).iteration, 1);
+  assert.throws(() => store.beginIteration(contract.id, 0, `${contract.id}:1`, 3), /not ready/);
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.taskId(contract.id), 42);
+    assert.equal(store.step(contract.id, 1)?.status, "prepared");
+    assert.throws(() => store.finishIteration(contract.id, 1, "wrong", "waiting", 3, ["work"]), /does not match/);
+    assert.equal(store.step(contract.id, 1)?.status, "prepared");
+    const finished = store.finishIteration(contract.id, 1, `${contract.id}:1`, "waiting", 4, ["work"]);
+    assert.equal(store.step(contract.id, 1)?.result?.updatedAt, finished.updatedAt);
+    assert.equal(store.step(contract.id, 1)?.status, "finished");
+    assert.throws(() => store.bindTask(contract.id, 43), /identity changed/);
+    assert.equal(store.taskId(contract.id), 42);
+  } finally { store.close(); }
+});
+
 test("external writes need exact per-run authorisation; critical effects cannot enter the contract", () => {
   const store = new RunContractStore(":memory:");
   assert.throws(() => store.create({ ...contract, repositoryClass: "external" }, 1), /external write/);
