@@ -8,7 +8,8 @@ import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shar
 
 import { writeFileAtomic } from "./atomic.ts";
 import { withoutComputerEngine } from "./computer-engine-removal.ts";
-import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
+import { newBotDefaultsSchema, newBotsConfigSchema, newBotsPatchSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
+import { codingRunConfigSchema } from "./coding-run-config.ts";
 import { replaySettings } from "./replay-settings.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelSelection } from "./contracts.ts";
@@ -307,28 +308,11 @@ const threadsConfigSchema = z.object({
   /** Days a closed or archived thread's event logs survive; absent keeps them forever. */
   eventLogRetentionDays: z.number().int().min(1).max(3650).optional(),
 }).strict();
-const newBotsConfigSchema = z.object({
-  /** Effort for a new bot whose model selection names none. */
-  effort: z.enum(EFFORT_LEVELS).optional(),
-}).strict();
-const newBotsPatchSchema = z.object({
-  effort: newBotsConfigSchema.shape.effort.nullable(),
-}).strict();
 const threadsPatchSchema = threadsConfigSchema.extend({
   maxConcurrentPerBot: threadsConfigSchema.shape.maxConcurrentPerBot.optional(),
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
-const codingRunConfigSchema = z.object({
-  repositoryRoot: z.string().min(1),
-  registrations: z.array(z.object({
-    routineId: z.string().min(1), workerBotId: z.string().min(1), reviewerBotId: z.string().min(1),
-    developmentRole: z.string().min(1), reviewRole: z.string().min(1),
-    repository: z.string().min(1), ref: z.string().min(1),
-    successCriteria: z.array(z.string().min(1)).min(1),
-  }).strict()).min(1).max(20),
-}).strict();
-
 const appConfigSchema = z.object({
   /** Operator-owned coding registrations; absent means there are no coding triggers. */
   codingRuns: codingRunConfigSchema.optional(),
