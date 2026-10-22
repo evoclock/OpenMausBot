@@ -9499,17 +9499,8 @@ routines = new RoutineManager({
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
     const run = routines?.runForThread(threadId);
-    if (run && coding?.registered(run.routineId) &&
-      (triggerSource === "schedule" || triggerSource === "webhook")) {
-      if (triggerSource === "webhook") {
-        if (!run.webhookId || !run.deliveryId || !coding.webhookActive(run.webhookId)) {
-          throw new Error("coding webhook registration is not active");
-        }
-        await coding.webhook(run, botId, threadId);
-      } else {
-        await coding.scheduled(run, botId, threadId);
-      }
-      return;
+    if (run && coding?.registered(run.routineId) && (triggerSource === "schedule" || triggerSource === "webhook")) {
+      return coding.start(run, botId, threadId, triggerSource);
     }
     await startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError });
   },
@@ -10189,7 +10180,6 @@ const webhooks = new WebhookManager({
   },
 });
 const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (botId) => store.bot(botId)?.name ?? "the bot" });
-
 if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,

@@ -145,12 +145,14 @@ export async function openProductionCodingRuntime(options: {
   };
   return {
     registered(routineId: string) { return templates.has(routineId) || webhookTemplates.has(routineId); },
-    webhookActive(webhookId: string) {
-      return webhookTemplates.has(webhookId) && options.webhooks.list().some((hook) =>
-        hook.id === webhookId && hook.enabled && hook.delivery !== "post");
+    start(run: RoutineRun, botId: string, threadId: string, triggerSource: "schedule" | "webhook") {
+      if (triggerSource === "webhook" && (!run.webhookId || !run.deliveryId ||
+        !webhookTemplates.has(run.webhookId) || !options.webhooks.list().some((hook) =>
+          hook.id === run.webhookId && hook.enabled && hook.delivery !== "post"))) {
+        throw new Error("coding webhook registration is not active");
+      }
+      return dispatch(run, botId, threadId);
     },
-    scheduled: dispatch,
-    webhook: dispatch,
     async close() { await runtime.close(); delivery.close(); runStore.close(); workspace.close(); },
   };
 }
