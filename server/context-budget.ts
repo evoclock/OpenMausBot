@@ -12,6 +12,11 @@ export function contextWindowFor(model: string | undefined, catalog?: ModelCatal
   return positive(inferred) ? inferred : DEFAULT_CONTEXT_WINDOW;
 }
 
+export function replayBudgetBytes(window: number, configured?: number): number {
+  if (!positive(window)) throw new Error("invalid model context window");
+  return Math.max(1_024, Math.floor(Math.min(window, configured ?? Infinity, 1_000_000)));
+}
+
 /** A "meter" reading (an ACP agent's own usage_update) is shown only; it never times OpenMausBot's compaction. */
 export function compactionReading<T>(capabilities: { contextReading?: "meter" } | undefined, reading: T | undefined): T | undefined {
   return capabilities?.contextReading === "meter" ? undefined : reading;

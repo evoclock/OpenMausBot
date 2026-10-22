@@ -1,10 +1,33 @@
 import { expect, it } from "vitest";
-import { compactBudget, compactionReading, contextWindowFor, shouldCompact, DEFAULT_CONTEXT_WINDOW } from "./context-budget.ts";
+import { compactBudget, compactionReading, contextWindowFor, replayBudgetBytes, shouldCompact, DEFAULT_CONTEXT_WINDOW } from "./context-budget.ts";
+import { selectReplay } from "./context-rebuild.ts";
 
 it("keeps compaction reachable below small model windows", () => {
   expect(compactBudget(8_000)).toBe(6_400);
   expect(compactBudget(2_000, 20_000)).toBe(1_800);
   expect(compactBudget(100_000, 0.7, 50_000)).toBe(45_000);
+});
+
+it("scales model-facing replay for the target model while leaving room for instructions and output", () => {
+  expect(replayBudgetBytes(8_000)).toBe(8_000);
+  expect(replayBudgetBytes(200_000)).toBe(200_000);
+  expect(replayBudgetBytes(2_000_000)).toBe(1_000_000);
+  expect(replayBudgetBytes(8_000, 24_000)).toBe(8_000);
+  expect(replayBudgetBytes(200_000, 24_000)).toBe(24_000);
+  expect(replayBudgetBytes(200_000, 2_048)).toBe(2_048);
+  for (const value of [NaN, Infinity, 0, -1]) expect(() => replayBudgetBytes(value)).toThrow();
+});
+
+it("rebuilds more than 40 short exchanges on a large model and reserves room for safe work on a small one", () => {
+  const history = Array.from({ length: 120 }, (_, i) => ({ id: String(i), role: (i % 2 ? "assistant" : "user") as "assistant" | "user", text: `message ${i} ${"x".repeat(80)}` }));
+  const tools = [{ afterId: "118", text: "[ran: Read: notes.md — ok]" }];
+  const large = selectReplay(history, { budgetBytes: replayBudgetBytes(200_000), maxMessages: Number.MAX_SAFE_INTEGER, tools, reserveToolBytes: 3_000 });
+  expect(large.transcript.filter(entry => entry.id)).toHaveLength(120);
+  expect(large.inline.map(entry => entry.text)).toContain(tools[0]!.text);
+  const small = selectReplay(history, { budgetBytes: replayBudgetBytes(8_000), maxMessages: Number.MAX_SAFE_INTEGER, tools, reserveToolBytes: 3_000 });
+  expect(small.dropped).toBeGreaterThan(0);
+  expect(small.inline.map(entry => entry.text)).toContain(tools[0]!.text);
+  expect(small.inline.reduce((n, entry) => n + Buffer.byteLength(entry.text) + 16, 0)).toBeLessThanOrEqual(8_000);
 });
 
 it("rejects invalid window values and ignores invalid provider readings", () => {

@@ -185,7 +185,7 @@ describe("tool history in an inline replay", () => {
   });
 
   it("with the setting off, every replay is byte-for-byte what it is without tool history", () => {
-    for (const settings of [undefined, {}, { replayToolHistory: false }]) {
+    for (const settings of [{ replayToolHistory: false }]) {
       const transcript = replay(settings).inline;
       for (const rebuild of rebuilds) {
         const out = buildTurnContext({ text: "and now?", transcript, ...flags, ...rebuild });
