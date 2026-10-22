@@ -75,20 +75,20 @@ steps:
         fi
         printf '%s  %s\n' cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670 .omb-scratch/hosted-tools/sfw | sha256sum -c -
         chmod +x .omb-scratch/hosted-tools/sfw
-        export PATH="$PWD/.omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin:$PWD/.omb-scratch/hosted-tools/pnpm/node_modules/.bin:$PWD/.omb-scratch/hosted-tools:$PATH"
-        if ! test "$(pnpm --version 2>/dev/null)" = 10.33.0; then
-          sfw npm install --prefix "$PWD/.omb-scratch/hosted-tools/pnpm" pnpm@10.33.0
+        export PATH="$$PWD/.omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin:$$PWD/.omb-scratch/hosted-tools/pnpm/node_modules/.bin:$$PWD/.omb-scratch/hosted-tools:$$PATH"
+        if ! test "$$(pnpm --version 2>/dev/null)" = 10.33.0; then
+          sfw npm install --prefix "$$PWD/.omb-scratch/hosted-tools/pnpm" pnpm@10.33.0
         fi
         sfw pnpm install --frozen-lockfile --store-dir .pnpm-store
       - |
-        report=".omb-scratch/buildkite-reports/vitest-${BUILDKITE_PARALLEL_JOB}.json"
+        report=".omb-scratch/buildkite-reports/vitest-$${BUILDKITE_PARALLEL_JOB}.json"
         status=0
-        pnpm exec vitest run --shard=$((BUILDKITE_PARALLEL_JOB+1))/$BUILDKITE_PARALLEL_JOB_COUNT --reporter=default --reporter=json --outputFile.json="$report" || status=$?
-        if test -s "$report"; then
-          node scripts/testing/update-shard-weights.mjs --durations-json "$report" > ".omb-scratch/buildkite-reports/durations-${BUILDKITE_PARALLEL_JOB}.json"
-          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-${BUILDKITE_PARALLEL_JOB}.json"
+        pnpm exec vitest run --shard=$$((BUILDKITE_PARALLEL_JOB+1))/$$BUILDKITE_PARALLEL_JOB_COUNT --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
+        if test -s "$$report"; then
+          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$${BUILDKITE_PARALLEL_JOB}.json"
+          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$${BUILDKITE_PARALLEL_JOB}.json"
         fi
-        exit "$status"
+        exit "$$status"
   - label: "Docs"
     agents: { queue: mac-mini }
     timeout_in_minutes: 15
