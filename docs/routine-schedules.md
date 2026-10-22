@@ -44,6 +44,10 @@ minutes field does not mean every 90 elapsed minutes. Holidays, external events,
 and conditions such as "after a payment arrives" are not calendar expressions;
 use an appropriate event/webhook workflow instead of a fake weekly schedule.
 
+The server accepts an interval only as a whole number of minutes from 5 to
+1440 (`server/routines.ts`, `server/routine-requests.ts`); shorter and longer
+values are refused at the API boundary, not merely warned about in the editor.
+
 ## Dates, clock changes and downtime
 
 - Dates that do not exist are skipped: the 31st skips shorter months and

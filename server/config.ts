@@ -441,6 +441,7 @@ const appConfigSchema = z.object({
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
   loopGuard: loopGuardConfigSchema.optional(),
   safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(), // off by default: safetyFloorEnabled in server/safety-floor-gate.ts
+  sessionStatus: z.object({ wakeRoutineId: z.string().trim().max(64).regex(/^[\w-]+$/).optional() }).strict().optional(),
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
   onboarding: onboardingConfigSchema.optional(),
@@ -452,7 +453,6 @@ const appConfigSchema = z.object({
 });
 const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
-  /** Loose like mcpServers: a bad provider key is dropped later, never the whole file. */
   opencodeGo: z.object({
     apiKey: optionalText,
     providerKeys: z.record(z.string(), z.unknown()).catch({})
@@ -467,7 +467,6 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 export interface AppConfig extends HelperConfig {
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
-  /** Preferred selection for newly created bots; existing bots keep theirs. */
   defaultModelSelection?: ModelSelection;
   /** Off by default; one backup attempt only before any work starts. */
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
@@ -495,6 +494,7 @@ export interface AppConfig extends HelperConfig {
   decisions?: { retentionDays?: number };
   loopGuard?: LoopGuardConfig;
   safetyFloor?: { enabled?: boolean };
+  sessionStatus?: { wakeRoutineId?: string };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string };
@@ -1064,7 +1064,7 @@ export function saveConfig(
   const before = configSaveListeners.size ? structuredClone(disk) : disk;
   const storedProfiles = storedBrowserProfilesSchema.safeParse(disk.browserProfiles);
   if (storedProfiles.success) disk.browserProfiles = storedProfiles.data;
-  for (const key of ["xai", "anthropic", "mistral", "cerebras", "groq", "meta", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "mcp", "threads", "context", "memory", "localVm", "features", "budgets", "billing", "decisions", "loopGuard", "onboarding", "browserEngine", "newBots", "safetyFloor"] as const) {
+  for (const key of ["xai", "anthropic", "mistral", "cerebras", "groq", "meta", "openai", "openrouter", "openaiCompat", "composio", "box", "opencodeGo", "tts", "decider", "imageGen", "live", "profile", "rooms", "mcp", "threads", "context", "memory", "localVm", "features", "budgets", "billing", "decisions", "loopGuard", "onboarding", "browserEngine", "newBots", "safetyFloor", "sessionStatus"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

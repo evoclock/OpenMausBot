@@ -270,7 +270,7 @@ class PrWordingLint(unittest.TestCase):
         self.assertIn('if [[ "$pr" == false || -z "$pr" ]]', check)
         self.assertIn('git show "$base_sha:$base/$name"', check)
         self.assertIn('git show "$base_sha:.github/pr-wording.json"', check)
-        self.assertIn('python3 "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"', check)
+        self.assertIn('"$python" "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"', check)
 
     def test_no_personal_config_is_committed(self) -> None:
         self.assertFalse((ROOT / ".github" / "pr-wording.json").exists())
