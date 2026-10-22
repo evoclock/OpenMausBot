@@ -179,9 +179,11 @@ steps:
     agents: { queue: mac-mini }
     command: ".buildkite/pr-checks.sh author"
   - label: "PR wording"
+    if: build.pull_request.id != null
     agents: { queue: mac-mini }
     command: ".buildkite/pr-checks.sh wording"
   - label: "PR review gate"
+    if: build.pull_request.id != null
     agents: { queue: mac-mini }
     command: ".buildkite/pr-checks.sh review"
   - wait:
