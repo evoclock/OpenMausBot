@@ -52,10 +52,10 @@ steps:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=4/4"
-  - label: "PR tests %n/8"
+  - label: "PR Linux tests %n/2"
     if: build.pull_request.id != null
     agents: { queue: linux-small }
-    parallelism: 8
+    parallelism: 2
     timeout_in_minutes: 30
     cache:
       name: "omb-pr-${BUILDKITE_PULL_REQUEST}-pnpm"
@@ -81,14 +81,63 @@ steps:
         fi
         sfw pnpm install --frozen-lockfile --store-dir .pnpm-store
       - |
-        report=".omb-scratch/buildkite-reports/vitest-$${BUILDKITE_PARALLEL_JOB}.json"
+        shard=$$((BUILDKITE_PARALLEL_JOB*3+1))
+        report=".omb-scratch/buildkite-reports/vitest-$$shard.json"
         status=0
-        pnpm exec vitest run --shard=$$((BUILDKITE_PARALLEL_JOB+1))/$$BUILDKITE_PARALLEL_JOB_COUNT --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
+        pnpm exec vitest run --shard=$$((shard+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
         if test -s "$$report"; then
-          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$${BUILDKITE_PARALLEL_JOB}.json"
-          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$${BUILDKITE_PARALLEL_JOB}.json"
+          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$$shard.json"
+          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$shard.json"
         fi
         exit "$$status"
+  - label: "PR Mac tests 1/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "0" }
+    command: &mac-pr-tests
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - |
+        mkdir -p .omb-scratch/buildkite-reports
+        report=".omb-scratch/buildkite-reports/vitest-$$SHARD_INDEX.json"
+        status=0
+        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
+        if test -s "$$report"; then
+          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
+          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
+        fi
+        exit "$$status"
+  - label: "PR Mac tests 3/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "2" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 4/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "3" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 6/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "5" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 7/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "6" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 8/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 90
+    env: { SHARD_INDEX: "7" }
+    command: *mac-pr-tests
   - label: "Docs"
     agents: { queue: mac-mini }
     timeout_in_minutes: 15
