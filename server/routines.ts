@@ -1583,17 +1583,19 @@ export class RoutineManager {
       candidate.target === "bot" && ["schedule", "webhook"].includes(candidate.triggerSource ?? "") &&
       ["running", "waiting"].includes(candidate.status));
     if (!run) return null;
+    this.assertWritable();
     const safeDetail = redactSecretsInText(detail).trim();
-    run.status = status === "done" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
-    run.attention = undefined;
-    run.finishedAt = this.now();
-    if (status === "done") {
-      run.output = safeDetail.slice(0, 2_000) || undefined;
-      run.error = undefined;
-    } else {
-      run.error = safeDetail.slice(0, 500) || "Coding run did not complete";
-    }
-    this.save();
+    this.commitMutation(() => {
+      run.status = status === "done" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
+      run.attention = undefined;
+      run.finishedAt = this.now();
+      if (status === "done") {
+        run.output = safeDetail.slice(0, 2_000) || undefined;
+        run.error = undefined;
+      } else {
+        run.error = safeDetail.slice(0, 500) || "Coding run did not complete";
+      }
+    });
     this.emitRun(run);
     if (run.status === "failed") this.options.onRunFailed?.(cloneRun(run), null);
     queueMicrotask(() => void this.tick());

@@ -225,6 +225,20 @@ describe("bounded scheduled overlap and run health", () => {
       .toMatchObject({ status: "completed", output: "Verified revision" });
   });
 
+  it("retries coding settlement after a failed durable write", async () => {
+    const h = harness(start);
+    h.manager.create(input());
+    h.setNow(start + 5 * 60_000); await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+    const save = vi.spyOn(h.manager as unknown as { save(): void }, "save")
+      .mockImplementationOnce(() => { throw new Error("fixture disk full"); });
+    expect(() => h.manager.settleCodingRun(run.id, "done", "Verified revision")).toThrow("fixture disk full");
+    expect(h.manager.listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("running");
+    save.mockRestore();
+    expect(h.manager.settleCodingRun(run.id, "done", "Verified revision")?.status).toBe("completed");
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)?.status).toBe("completed");
+  });
+
   it("persists failed coding settlement for a verified webhook delivery", async () => {
     const h = harness(start);
     const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",
