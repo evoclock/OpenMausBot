@@ -2,6 +2,8 @@
 # Mac-1 needs sfw, Node >=24, pnpm 10.33.0, Python 3.12, git and gh on PATH.
 env:
   PYTHONDONTWRITEBYTECODE: "1"
+  # Mac-1 already has the pinned pnpm under the Pi harness bin directory.
+  PATH: "${HOME}/.pi/pi/harness/bin:${PATH}"
 steps:
   - label: "Typecheck"
     agents: { queue: mac-mini }
