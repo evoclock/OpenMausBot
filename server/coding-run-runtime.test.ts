@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import type { WorkerHost } from "./inner-worker-route.ts";
-import type { TriggerTemplate } from "./run-triggers.ts";
+import { webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
@@ -80,10 +80,12 @@ test("verified webhook delivery runs once and survives restart replay", async ()
   const first = await openCodingRunRuntime(options);
   try {
     assert.equal((await first.webhook({ ...run, webhookId: "other" })).status, "ignored");
+    assert.equal((await first.webhook({ ...run, routineId: "other" })).status, "ignored");
     assert.equal((await first.webhook({ ...run, deliveryId: undefined })).status, "ignored");
     const accepted = await first.webhook(run);
     assert.equal(accepted.status, "accepted");
     if (!("id" in accepted)) throw new Error("missing webhook id");
+    assert.equal(accepted.id, webhookCodingRunId("hook", "delivery-1"));
     assert.equal(await settled(first, accepted.id), "done");
     assert.equal((await first.webhook(run)).status, "existing");
   } finally { await first.close(); }

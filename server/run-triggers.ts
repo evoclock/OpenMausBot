@@ -48,12 +48,17 @@ export function startScheduledCodingRun(port: RunStartPort, routine: {
   return startOnce(port, `routine:${routine.routineId}:${routine.id}:${routine.scheduledFor}`, template);
 }
 
+export function webhookCodingRunId(webhookId: string, deliveryId: string): string {
+  return triggerId(`webhook:${webhookId}:${deliveryId}`);
+}
+
 export function startWebhookCodingRun(port: RunStartPort, run: {
   id: string; routineId: string; botId: string; webhookId?: string; deliveryId?: string;
   triggerSource?: string; status: string;
 }, webhookId: string, template: TriggerTemplate) {
   if (run.triggerSource !== "webhook" || run.status !== "running" ||
-    run.webhookId !== webhookId || !run.deliveryId || run.botId !== template.botId) {
+    run.webhookId !== webhookId || run.routineId !== webhookId || !run.deliveryId ||
+    run.botId !== template.botId) {
     return Promise.resolve({ status: "ignored" as const });
   }
   return startOnce(port, `webhook:${webhookId}:${run.deliveryId}`, template);

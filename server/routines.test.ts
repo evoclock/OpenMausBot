@@ -213,8 +213,8 @@ describe("bounded scheduled overlap and run health", () => {
 
   it("persists coding settlement and ignores replay of the same terminal run", async () => {
     const h = harness(start);
-    h.manager.create(input());
-    h.setNow(start + 5 * 60_000); await h.manager.tick();
+    const routine = h.manager.create({ ...input(), schedule: { type: "cron", expression: "*/5 * * * *", timeZone: "UTC" } });
+    h.setNow(routine.nextRunAt!); await h.manager.tick();
     const run = h.manager.listRuns()[0]!;
     expect(run.status).toBe("running");
     expect(h.manager.settleCodingRun(run.id, "done", "Verified revision")).toMatchObject({
