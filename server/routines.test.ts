@@ -1579,6 +1579,7 @@ describe("RoutineManager", () => {
     const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
     expect(disk.runs.find((candidate: RoutineRun) => candidate.id === run.id).status).toBe("completed");
     expect(disk.codingSettlementReceipts).toHaveLength(1);
+    expect(disk.codingSettlementReceipts[0].status).toBe("APPLIED");
     const reopened = new RoutineManager(h.options);
     expect(reopened.settleCodingRun(run.id, terminal).status).toBe("existing");
     expect(() => reopened.settleCodingRun(run.id, { ...terminal, evidence: ["changed"] })).toThrow(/conflicting/);
@@ -1650,7 +1651,7 @@ describe("RoutineManager", () => {
     h.manager.create({ name: "Coding", prompt: "Ship safely", botId: "maus-1",
       schedule: { type: "daily", time: "09:00", weekdays: [1] } });
     const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
-    disk.codingSettlementReceipts = [{ routineRunId: "run", codingRunId: "coding", terminalHash: "bad",
+    disk.codingSettlementReceipts = [{ status: "APPLIED", routineRunId: "run", codingRunId: "coding", terminalHash: "bad",
       disposition: "completed", appliedAt: 1 }];
     writeFileSync(h.options.file!, JSON.stringify(disk));
     expect(() => new RoutineManager(h.options).create({ name: "Other", prompt: "Do something", botId: "maus-1",

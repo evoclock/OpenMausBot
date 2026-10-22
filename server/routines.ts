@@ -163,6 +163,7 @@ export interface RoutineRequestReceipt {
 }
 
 export interface CodingSettlementReceipt {
+  status: "APPLIED";
   routineRunId: string;
   codingRunId: string;
   terminalHash: string;
@@ -890,7 +891,7 @@ export class RoutineManager {
     if (!run || !["queued", "running", "waiting"].includes(run.status)) throw new Error("routine run is not open");
     const disposition = snapshot.state === "done" ? "completed" : snapshot.state === "blocked" ? "held"
       : snapshot.state === "cancelled" ? "cancelled" : "failed";
-    const receipt: CodingSettlementReceipt = { routineRunId, codingRunId, terminalHash, disposition, appliedAt: this.now() };
+    const receipt: CodingSettlementReceipt = { status: "APPLIED", routineRunId, codingRunId, terminalHash, disposition, appliedAt: this.now() };
     this.commitMutation(() => {
       run.status = disposition === "held" ? "failed" : disposition;
       run.finishedAt = this.now();

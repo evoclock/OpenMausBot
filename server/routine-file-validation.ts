@@ -20,7 +20,7 @@ export function assertRoutineFileShape(disk: {
     for (const entry of disk.codingSettlementReceipts) {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("Invalid coding settlement receipt");
       const receipt = entry as Record<string, unknown>;
-      if (typeof receipt.routineRunId !== "string" || !receipt.routineRunId ||
+      if (receipt.status !== "APPLIED" || typeof receipt.routineRunId !== "string" || !receipt.routineRunId ||
         typeof receipt.codingRunId !== "string" || !receipt.codingRunId ||
         typeof receipt.terminalHash !== "string" || !/^[a-f0-9]{64}$/.test(receipt.terminalHash) ||
         !["completed", "held", "failed", "cancelled"].includes(String(receipt.disposition)) ||
