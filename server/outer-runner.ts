@@ -174,16 +174,17 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     },
   });
   const runByTask = new Map<number, string>();
+  let sessionFailed = false;
   let sessionFailure: unknown;
   const requireHealthy = () => {
-    if (sessionFailure !== undefined) throw new Error("durable session failed; owner review required", { cause: sessionFailure });
+    if (sessionFailed) throw new Error("durable session failed; owner review required", { cause: sessionFailure });
   };
   const registry = createRegistry();
   registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
   const harness = await Harness.open(await openNodeSqliteStorage(durablePath),
     { models: createModels(), registry, settings: { restartLimit: options.restartLimit ?? 5 },
       onReport(error, info) {
-        if (info.type === "session_failed") sessionFailure = error;
+        if (info.type === "session_failed") { sessionFailed = true; sessionFailure = error; }
         if (info.type !== "task_parked" && !(info.type === "task_faulted" && info.reason === "restart_limit")) return;
         const id = runByTask.get(info.task.id);
         if (!id) return;
@@ -260,10 +261,11 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     start,
     resume() { requireHealthy(); reportPending(); harness.resume(); },
     async wait(taskId: TaskId<string>) { requireHealthy(); return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
-    get(id: string) { return store.get(id); },
-    report(id: string) { return store.report(id); },
+    get(id: string) { requireHealthy(); return store.get(id); },
+    report(id: string) { requireHealthy(); return store.report(id); },
     reportPending,
     async cancel(id: string) {
+      requireHealthy();
       const taskId = store.taskId(id);
       if (!taskId) return "not_found";
       return harness.abortTask(taskId as TaskId<string>, BACKGROUND_CONTEXT);

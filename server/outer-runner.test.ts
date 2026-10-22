@@ -339,6 +339,46 @@ test("SIGKILL after a finished step holds an unknown effect without repeating wo
   } finally { await reopened.close(); }
 }, 30_000);
 
+test("configured crash limit parks the run with owner-visible restart_limit evidence", async () => {
+  const dir = fixtureDir();
+  const first = `import { openOuterRunner } from './server/outer-runner.ts';
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { process.stdout.write('effect started\\n'); process.exit(0); }
+    }, { restartLimit: 3 });
+    await runner.start(${JSON.stringify(contract)});
+    await new Promise(() => {});`;
+  const initial = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", first],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+  assert.equal(initial.status, 0, initial.stderr);
+  assert.match(initial.stdout, /effect started/);
+  const crash = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const get = RunContractStore.prototype.get;
+    RunContractStore.prototype.get = function(id) {
+      if (id === ${JSON.stringify(contract.id)}) { process.stdout.write('phase restarted\\n'); process.exit(0); }
+      return get.call(this, id);
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { throw new Error('replayed outward effect'); }
+    }, { restartLimit: 3 });
+    runner.resume();
+    await new Promise(() => {});`;
+  for (let count = 0; count < 2; count += 1) {
+    const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", crash],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 });
+    assert.equal(child.status, 0, child.stderr);
+    assert.match(child.stdout, /phase restarted/);
+  }
+  const runner = await openOuterRunner(dir, {
+    async invoke() { throw new Error("replayed outward effect"); },
+  }, { restartLimit: 3 });
+  try {
+    runner.resume();
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.ok(runner.get(contract.id)?.evidence.some((entry) => entry.includes("restart_limit")));
+  } finally { await runner.close(); }
+}, 60_000);
+
 test("an interrupted outward effect is parked after a process crash", async () => {
   const dir = fixtureDir();
   const source = `import { openOuterRunner } from './server/outer-runner.ts';
