@@ -55,7 +55,7 @@ const reloaded = (patch: object, cfg: AppConfig = {}) =>
 
 describe("configuration boundaries", () => {
   it("requires an operator coding registration and preserves a per-bot Pi CLI instance", () => {
-    const codingRuns = { repositoryRoot: "/fixture/private", registrations: [{
+    const codingRuns = { repositoryRoot: "/fixture/private", rolesFilePath: "/fixture/private/.pi/pstack-model-roles.v1.json", registrations: [{
       routineId: "scheduled", workerBotId: "worker", reviewerBotId: "reviewer",
       developmentRole: "worker-role", reviewRole: "review-role", repository: "fixture/agents",
       ref: "main", successCriteria: ["verified result"],

@@ -1,4 +1,5 @@
 import type { RunContractInput } from "./run-contract.ts";
+import { codingPlaybookPrompt } from "./coding-playbook-prompt.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
 
 export interface WorkerRoles {
@@ -71,7 +72,7 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           return blocked("isolated workspace does not match the run contract");
         }
         const report = await host.runPlaybook(workspace, roles.development,
-          contract.successCriteria.join("\n"), requestId, signal);
+          codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0), requestId, signal);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
