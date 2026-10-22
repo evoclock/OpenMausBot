@@ -49,17 +49,30 @@ export class CodingResultDelivery {
     if (!result.runId || !result.botId || !result.threadId || !result.text.trim()) throw new Error("invalid coding result");
     this.db.prepare("INSERT OR IGNORE INTO coding_result_delivery VALUES (?, ?, ?, ?, 'pending')")
       .run(result.runId, result.botId, result.threadId, result.text);
-    const row = this.db.prepare("SELECT bot_id, thread_id, text, status FROM coding_result_delivery WHERE run_id = ?")
-      .get(result.runId) as { bot_id: string; thread_id: string; text: string; status: string };
-    if (row.bot_id !== result.botId || row.thread_id !== result.threadId || row.text !== result.text) {
-      throw new Error("coding result conflicts with recorded delivery");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT bot_id, thread_id, text, status FROM coding_result_delivery WHERE run_id = ?")
+        .get(result.runId) as { bot_id: string; thread_id: string; text: string; status: string };
+      if (row.bot_id !== result.botId || row.thread_id !== result.threadId || row.text !== result.text) {
+        throw new Error("coding result conflicts with recorded delivery");
+      }
+      if (row.status === "delivered") {
+        this.db.exec("COMMIT");
+        return "delivered";
+      }
+      if (!this.sink.contains(result.threadId, result.runId)) this.sink.post(result);
+      if (!this.sink.contains(result.threadId, result.runId)) {
+        this.db.exec("COMMIT");
+        return "pending";
+      }
+      this.db.prepare("UPDATE coding_result_delivery SET status = 'delivered' WHERE run_id = ? AND status = 'pending'")
+        .run(result.runId);
+      this.db.exec("COMMIT");
+      return "delivered";
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
-    if (row.status === "delivered") return "delivered";
-    if (!this.sink.contains(result.threadId, result.runId)) this.sink.post(result);
-    if (!this.sink.contains(result.threadId, result.runId)) return "pending";
-    this.db.prepare("UPDATE coding_result_delivery SET status = 'delivered' WHERE run_id = ? AND status = 'pending'")
-      .run(result.runId);
-    return "delivered";
   }
 
   replay(): number {
