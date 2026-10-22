@@ -71,6 +71,23 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
   } finally { await runtime.close(); }
 });
 
+test("concurrent re-fire does not start two workers for one occurrence", async () => {
+  const calls: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map([["routine", template]]), github: new Map() });
+  try {
+    const run = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
+      triggerSource: "schedule", status: "running" };
+    const results = await Promise.all([runtime.scheduled(run), runtime.scheduled(run)]);
+    const ids = results.map((result) => "id" in result ? result.id : undefined);
+    assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "existing"]);
+    assert.ok(ids[0]);
+    assert.equal(ids[0], ids[1]);
+    assert.equal(await settled(runtime, ids[0]), "done");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+  } finally { await runtime.close(); }
+});
+
 test("verified webhook delivery runs once and survives restart replay", async () => {
   const calls: string[] = [];
   const options = { dataDir: fixtureDir(), workerHost: host(calls), routines: new Map<string, TriggerTemplate>(),
