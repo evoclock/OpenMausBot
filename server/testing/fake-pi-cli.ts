@@ -30,18 +30,22 @@ if (process.env.FAKE_PI_DUMP) {
   try {
     // Read OMB_MCP_CONFIG now: the driver deletes the temp file when the turn settles.
     let mcpConfig: unknown = null;
-    if (process.env.OMB_MCP_CONFIG) {
+    const isTurnSpawn = argv[0] === "--mode" && argv.includes("rpc") && argv.includes("-e");
+    const mcpPath = process.env.OMB_MCP_CONFIG;
+    if (isTurnSpawn && mcpPath) {
       try {
-        mcpConfig = JSON.parse(readFileSync(process.env.OMB_MCP_CONFIG, "utf8"));
+        mcpConfig = JSON.parse(readFileSync(mcpPath, "utf8"));
       } catch {}
     }
     appendFileSync(
       process.env.FAKE_PI_DUMP,
       JSON.stringify({
         argv,
+        env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
         envConfigured: ["PATH", "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "BOX_TOKEN"].filter(
           (k) => process.env[k] !== undefined,
         ),
+        isTurnSpawn,
         mcpConfig,
       }) + "\n",
     );

@@ -23,6 +23,7 @@ interface McpConfig {
   toolScope?: unknown;
   scopeReadyPath?: string;
   approvalMode?: string;
+  automatedLocalComputer?: boolean;
   /** Register the ask_user tool: the driver sets it when the turn may ask. */
   askUser?: boolean;
 }
@@ -672,7 +673,8 @@ export default async function (pi: PiExtensionApi): Promise<void> {
   for (const mount of mounts) {
     if (!mount.client || !mount.def || !mount.tools) continue;
     const { serverName, def, client, tools } = mount;
-    const gated = def.scope === "local-computer" || (def.scope === "custom" && config.approvalMode !== "full");
+    const gated = (def.scope === "local-computer" && config.automatedLocalComputer !== true)
+      || (def.scope === "custom" && config.approvalMode !== "full");
     let registered = 0;
 
     for (const tool of tools) {
