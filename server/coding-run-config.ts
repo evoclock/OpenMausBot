@@ -24,6 +24,8 @@ export const codingGitDestinationSchema = z.object({
 }).strict();
 export type CodingGitDestination = z.output<typeof codingGitDestinationSchema>;
 
+export const CODING_RESTART_LIMIT_DEFAULT = 5;
+
 export const codingRunConfigSchema = z.object({
   /** Destinations and credential references are operator-owned; missing entries never grant a Git write. */
   gitDestinations: z.record(z.string().min(1), z.array(codingGitDestinationSchema).max(50)).optional(),

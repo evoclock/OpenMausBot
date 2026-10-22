@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { access } from "node:fs/promises";
 import { backup, DatabaseSync } from "node:sqlite";
 import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
 import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
 
 export type InnerLoopResult =
@@ -26,6 +27,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   contextCompactor?: IterationContextCompactor;
 } = {}) {
   const durablePath = join(dataDir, "coding-runs.sqlite");
+  const restartLimit = options.restartLimit ?? CODING_RESTART_LIMIT_DEFAULT;
   try {
     await access(durablePath);
     const backupPath = `${durablePath}.pre-1.4.0.bak`;
@@ -193,7 +195,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   const registry = createRegistry();
   registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
   const harness = await Harness.open(await openNodeSqliteStorage(durablePath),
-    { models: createModels(), registry, settings: { restartLimit: options.restartLimit ?? 5 },
+    { models: createModels(), registry, settings: { restartLimit },
       onReport(error, info) {
         if (info.type === "session_failed") { sessionFailed = true; sessionFailure = error; }
         if (info.type !== "task_parked" && !(info.type === "task_faulted" && info.reason === "restart_limit")) return;
@@ -209,7 +211,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     if (item.record.kind === "openmausbot.outer-run") {
       const id = (item.record.input as { id: string }).id;
       runByTask.set(item.record.id, id);
-      if (item.record.restarts !== undefined && item.record.restarts >= (options.restartLimit ?? 5)) {
+      if (item.record.restarts !== undefined && item.record.restarts >= restartLimit) {
         const snapshot = store.get(id);
         if (snapshot && !terminalStates.has(snapshot.state)) {
           transition(id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
