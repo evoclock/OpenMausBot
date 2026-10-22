@@ -7,8 +7,8 @@ import { requireDriverRunApi } from "./driver-run-api.ts";
 
 const require = createRequire(import.meta.url);
 
-test("installed Pi Durable 1.0.4 provides OMB's harness but not the driver-run protocol", () => {
-  assert.equal(require("@earendil-works/pi-durable/package.json").version, "1.0.4");
+test("installed Pi Durable 1.4.0 provides OMB's harness but not the driver-run protocol", () => {
+  assert.equal(require("@earendil-works/pi-durable/package.json").version, "1.4.0");
   assert.equal(typeof durable.Harness.open, "function");
   assert.equal(typeof durable.createRegistry, "function");
   assert.equal(typeof durable.defineTask, "function");

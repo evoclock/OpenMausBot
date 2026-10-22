@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
@@ -18,6 +18,22 @@ function fixtureDir() {
   mkdirSync(scratch, { recursive: true });
   return mkdtempSync(join(scratch, "outer-runner-"));
 }
+
+test("backs up the configured SQLite database before reopening, and refuses a failed backup", async () => {
+  const dir = fixtureDir();
+  const inner = { async invoke() { return { kind: "verified" as const, evidence: ["complete"], costUsd: 0 }; } };
+  const first = await openOuterRunner(dir, inner);
+  await first.close();
+  const backupPath = join(dir, "coding-runs.sqlite.pre-1.4.0.bak");
+  const second = await openOuterRunner(dir, inner);
+  try { assert.equal(existsSync(backupPath), true); }
+  finally { await second.close(); }
+  const blockedDir = fixtureDir();
+  const third = await openOuterRunner(blockedDir, inner);
+  await third.close();
+  mkdirSync(join(blockedDir, "coding-runs.sqlite.pre-1.4.0.bak"));
+  await assert.rejects(openOuterRunner(blockedDir, inner));
+});
 
 test("outer loop invokes fresh inner iterations until its verified verdict", async () => {
   const calls: string[] = [];

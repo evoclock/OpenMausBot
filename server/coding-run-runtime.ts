@@ -10,6 +10,7 @@ interface GithubRegistration {
 
 export async function openCodingRunRuntime(options: {
   dataDir: string;
+  restartLimit?: number;
   workerHost: WorkerHost;
   routines: ReadonlyMap<string, TriggerTemplate>;
   github: ReadonlyMap<string, GithubRegistration>;
@@ -17,7 +18,7 @@ export async function openCodingRunRuntime(options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
 }) {
   const runner = await openOuterRunner(options.dataDir, createWorkerRoute(options.workerHost),
-    { onTerminal: options.onTerminal });
+    { onTerminal: options.onTerminal, restartLimit: options.restartLimit });
   runner.resume();
   return {
     scheduled(run: { id: string; routineId: string; botId: string; scheduledFor: number;
