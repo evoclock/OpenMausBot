@@ -27,6 +27,24 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   second.close();
 });
 
+test("terminal routine link survives restart and can be reconciled by coding identity", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "coding-link-")), "runtime.db");
+  const first = new RunContractStore(path);
+  first.create(contract, 1);
+  first.transition(contract.id, "running", 2);
+  const terminal = first.transition(contract.id, "done", 3, ["verified"]);
+  assert.deepEqual(first.linkRoutine("routine-run", contract.id), { status: "pending" });
+  assert.equal(first.claimRoutineTerminal(contract.id, terminal)?.status, "claimed");
+  first.close();
+  const replay = new RunContractStore(path);
+  assert.deepEqual(replay.routineLink(contract.id), { routineId: "routine-run", status: "claimed", terminal });
+  assert.deepEqual(replay.linkRoutine("routine-run", contract.id), { status: "claimed" });
+  assert.throws(() => replay.linkRoutine("another-run", contract.id), /different routine/);
+  replay.close();
+});
+
 test("run contract carries an iteration ceiling; time and spend budgets remain unenforced", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);
