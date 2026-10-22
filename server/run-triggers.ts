@@ -39,6 +39,10 @@ async function startOnce(port: RunStartPort, source: string, template: TriggerTe
   return { status: "accepted" as const, id: contract.id };
 }
 
+export function scheduledCodingRunId(routine: { id: string; routineId: string; scheduledFor: number }): string {
+  return triggerId(`routine:${routine.routineId}:${routine.id}:${routine.scheduledFor}`);
+}
+
 export function startScheduledCodingRun(port: RunStartPort, routine: {
   id: string; routineId: string; botId: string; scheduledFor: number; triggerSource?: string; status: string;
 }, template: TriggerTemplate) {

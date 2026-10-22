@@ -1,6 +1,8 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
+import { openProductionCodingRuntime } from "./coding-production.ts";
+import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
   DRIVER_SCOPED_GATE_CONFIG,
@@ -9416,42 +9418,20 @@ async function interruptRoutineGroupGoal(
 }
 
 /** Cancellation flags flip synchronously; the awaited work only drains capabilities and interrupts started processes. */
-async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void> {
-  const bot = store.bot(botId);
-  if (!bot) return;
-  for (const task of store.tasks(botId)) {
-    if (task.approvalMode === "full" || task.approvalMode === "custom") {
-      store.patchTask(botId, task.threadId, { approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    }
-  }
-  const directStop = interruptAllDirectThreads(botId);
+const stopBotForEmergencyApprovalDowngrade = createEmergencyApprovalDowngrade({
+  store, stopDirect: interruptAllDirectThreads,
+  activeRoutine: (botId) => routines?.activeBotRunForBot(botId),
+  cancelRoutine: (runId) => routines!.cancelRun(runId),
+  activeGroup: activeGroupTurnForBot, cancelGroup: cancelGroupTurnOperations,
+  revoke: revokeInternalCapabilitiesForThread, cancelDispatch: cancelDirectTurnDispatch,
+  closeApprovals: closeOpenApprovals,
+  interruptGroup: (botId, threadId) => {
+    const bot = store.bot(botId);
+    return bot ? runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId) : undefined;
+  },
+});
 
-  const routineRun = routines?.activeBotRunForBot(bot.id);
-  if (routineRun) {
-    if (routineRun.threadId) revokeInternalCapabilitiesForThread(routineRun.threadId);
-    cancelDirectTurnDispatch(bot.id, routineRun.threadId);
-    await routines!.cancelRun(routineRun.id);
-    if (routineRun.threadId) closeOpenApprovals(routineRun.threadId);
-    await directStop;
-    return;
-  }
-
-  const groupTurn = activeGroupTurnForBot(bot.id);
-  if (groupTurn) {
-    revokeInternalCapabilitiesForThread(groupTurn.threadId);
-    cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-    const results = await Promise.allSettled([
-      directStop,
-      runningTurnInstance(bot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId),
-    ]);
-    closeOpenApprovals(groupTurn.threadId);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) throw failure.reason;
-    return;
-  }
-
-  await directStop;
-}
+let coding: Awaited<ReturnType<typeof openProductionCodingRuntime>> | null = null;
 
 routines = new RoutineManager({
   emit: broadcast,
@@ -9518,6 +9498,11 @@ routines = new RoutineManager({
     }
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
+    const run = routines?.runForThread(threadId);
+    if (triggerSource === "schedule" && run && coding?.registered(run.routineId)) {
+      await coding.scheduled(run, botId, threadId);
+      return;
+    }
     await startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError });
   },
   startGoal: async (groupId, threadId, prompt, coordinatorBotId, runId, _onDispatchError) => {
@@ -9559,6 +9544,19 @@ routines = new RoutineManager({
     notify(buildNotification("routine-deferred", routineSourceOwner(run)?.bot ?? bot, routineSourceThread(run) ?? bot.threadId, detail));
   },
 });
+if (cfg.codingRuns) {
+  coding = await openProductionCodingRuntime({
+    config: cfg.codingRuns, dataDir: DATA_DIR, store, routines, sourceApprovalMode,
+    driverKind(botId) {
+      const bot = store.bot(botId);
+      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
+    },
+    async startTurn(botId, text, options) {
+      await startTurn(botId, text, { ...options, automationSource: "schedule" });
+    },
+    interrupt: interruptDirectThread,
+  });
+}
 // Settle Cloud ownership before anything is served and before any routine can run.
 if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
   cloudHome = settleCloudHome({ file: join(DATA_DIR, "cloud-owner.json"), machineId: CLOUD_HOME.machineId, ownerKey: CLOUD_OWNER_KEY, nobodyKey: CLOUD_NOBODY_KEY,
@@ -17250,6 +17248,7 @@ const gracefulShutdown = createGracefulShutdown({
       webhookIngress?.server.close();
       tunnelListener?.close(); stopCloudHomeConnectedApps();
     },
+    async () => { await coding?.close(); },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {

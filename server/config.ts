@@ -8,7 +8,8 @@ import { normalizeImageGenerationUrl, type ImageGenerationConfig } from "../shar
 
 import { writeFileAtomic } from "./atomic.ts";
 import { withoutComputerEngine } from "./computer-engine-removal.ts";
-import { newBotDefaultsSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
+import { newBotDefaultsSchema, newBotsConfigSchema, newBotsPatchSchema, type NewBotDefaults } from "./new-bot-defaults.ts";
+import { codingRunConfigSchema } from "./coding-run-config.ts";
 import { replaySettings } from "./replay-settings.ts";
 import { EFFORT_LEVELS, type EffortLevel, type LiveSettings } from "../shared/wire.ts";
 import { isModelVariant, type InstanceConfigMap, type McpServerSpec, type ModelSelection } from "./contracts.ts";
@@ -307,19 +308,14 @@ const threadsConfigSchema = z.object({
   /** Days a closed or archived thread's event logs survive; absent keeps them forever. */
   eventLogRetentionDays: z.number().int().min(1).max(3650).optional(),
 }).strict();
-const newBotsConfigSchema = z.object({
-  /** Effort for a new bot whose model selection names none. */
-  effort: z.enum(EFFORT_LEVELS).optional(),
-}).strict();
-const newBotsPatchSchema = z.object({
-  effort: newBotsConfigSchema.shape.effort.nullable(),
-}).strict();
 const threadsPatchSchema = threadsConfigSchema.extend({
   maxConcurrentPerBot: threadsConfigSchema.shape.maxConcurrentPerBot.optional(),
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
 const appConfigSchema = z.object({
+  /** Operator-owned coding registrations; absent means there are no coding triggers. */
+  codingRuns: codingRunConfigSchema.optional(),
   /** Set only by the verified domain endpoint, never by a config patch. */
   customDomain: z.string().optional(),
   /** Who may sign in with an emailed code: addresses or `@domain` entries; admins get every scope, members chat only. */
@@ -460,11 +456,12 @@ const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
       .optional(),
   }).optional(),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true })
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true, codingRuns: true })
   .extend({ threads: threadsPatchSchema.optional(), newBots: newBotsPatchSchema.optional() });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig extends HelperConfig {
+  codingRuns?: z.output<typeof codingRunConfigSchema>;
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
   defaultModelSelection?: ModelSelection;
