@@ -49,7 +49,7 @@ function recorder() {
 }
 
 function snapshot(id: string, state: RunSnapshot["state"], evidence: string[] = ["evidence"]): RunSnapshot {
-  return { contract: { ...template, id }, state, iteration: 1, updatedAt: 1000, evidence };
+  return { contract: { ...template, id, maxIterations: 8, authorisedExternalWrites: [] }, state, iteration: 1, updatedAt: 1000, evidence };
 }
 
 async function settled(runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>, id: string) {

@@ -376,6 +376,59 @@ describe("Pi MCP extension registration", () => {
       expect(await f.handlers.get("tool_call")?.({ toolName: "mail_read_notes_2" })).toMatchObject({ block: true });
     } finally { await f.handlers.get("session_shutdown")?.(); }
   });
+  it("executes an authorized Full local-computer tool without a per-call prompt", async () => {
+    const receipt = join(tempDir(), "execution.txt");
+    const script = fakeMcpScript(`
+      import { createInterface } from "node:readline";
+      import { writeFileSync } from "node:fs";
+      createInterface({input:process.stdin}).on("line", line => {
+        const m = JSON.parse(line); if (m.id === undefined) return;
+        let result = {};
+        if (m.method === "tools/list") result = {tools:[{name:"screenshot",inputSchema:{type:"object"}},{name:"click",inputSchema:{type:"object"}}]};
+        if (m.method === "tools/call") { writeFileSync(process.env.RECEIPT, m.params.name); result = {content:[{type:"text",text:"captured"}]}; }
+        process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result}) + "\\n");
+      });
+    `);
+    scopeConfig({ allow: ["mcp:computer:screenshot"] }, { automatedLocalComputer: true, mcpServers: { computer: { command: process.execPath, args: [script], env: { RECEIPT: receipt }, scope: "local-computer" } } });
+    const f = scopedApi(["read", "computer_screenshot", "computer_click"]);
+    await extension(f.api);
+    try {
+      expect(f.tools.map((tool) => tool.name)).toEqual(["computer_screenshot"]);
+      expect(await f.handlers.get("tool_call")?.({ toolName: "computer_click" })).toMatchObject({ block: true });
+      const confirm = vi.fn(async () => false);
+      const result = await f.tools[0].execute("full", {}, undefined, undefined, { ui: { confirm } });
+      expect(result.content).toMatchObject([{ text: "captured" }]);
+      expect(confirm).not.toHaveBeenCalled();
+      expect(readFileSync(receipt, "utf8")).toBe("screenshot");
+    } finally { await f.handlers.get("session_shutdown")?.(); }
+  });
+
+  it("keeps Ask approval and excludes unselected local-computer tools", async () => {
+    const receipt = join(tempDir(), "execution.txt");
+    const script = fakeMcpScript(`
+      import { createInterface } from "node:readline";
+      import { writeFileSync } from "node:fs";
+      createInterface({input:process.stdin}).on("line", line => {
+        const m = JSON.parse(line); if (m.id === undefined) return;
+        let result = {};
+        if (m.method === "tools/list") result = {tools:[{name:"screenshot",inputSchema:{type:"object"}},{name:"click",inputSchema:{type:"object"}}]};
+        if (m.method === "tools/call") { writeFileSync(process.env.RECEIPT, m.params.name); result = {content:[{type:"text",text:"done"}]}; }
+        process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result}) + "\\n");
+      });
+    `);
+    scopeConfig({ allow: ["mcp:computer:screenshot"] }, { mcpServers: { computer: { command: process.execPath, args: [script], env: { RECEIPT: receipt }, scope: "local-computer" } } });
+    const f = scopedApi(["computer_screenshot", "computer_click"]);
+    await extension(f.api);
+    try {
+      expect(f.tools.map((tool) => tool.name)).toEqual(["computer_screenshot"]);
+      const confirm = vi.fn(async () => false);
+      const result = await f.tools[0].execute("ask", {}, undefined, undefined, { ui: { confirm } });
+      expect(confirm).toHaveBeenCalledWith("Allow screenshot on your computer?", "Run computer:screenshot");
+      expect(result.content).toMatchObject([{ text: "Blocked by the user." }]);
+      expect(existsSync(receipt)).toBe(false);
+    } finally { await f.handlers.get("session_shutdown")?.(); }
+  });
+
   it("registers a big URL server as three tools, asking only about the tool call_tool runs", async () => {
     const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(300) });
     try {

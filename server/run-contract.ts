@@ -11,6 +11,7 @@ export const runContractSchema = z.object({
   successCriteria: z.array(z.string().min(1)).min(1),
   repositoryClass: z.enum(["agent-private", "external"]),
   allowedEffects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])),
+  maxIterations: z.number().int().positive().default(8),
   authorisedExternalWrites: z.array(z.object({
     repository: z.string().min(1),
     effects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])).min(1),
@@ -25,6 +26,7 @@ export const runContractSchema = z.object({
   }
 });
 export type RunContract = z.infer<typeof runContractSchema>;
+export type RunContractInput = z.input<typeof runContractSchema>;
 export const runStateSchema = z.enum(["queued", "running", "waiting", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
 export const runSnapshotSchema = z.object({
@@ -93,7 +95,7 @@ export class RunContractStore {
     const row = this.db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;
     return row ? runSnapshotSchema.parse(JSON.parse(row.snapshot)) : undefined;
   }
-  create(contract: RunContract, at: number): RunSnapshot {
+  create(contract: RunContractInput, at: number): RunSnapshot {
     const checked = runContractSchema.parse(contract);
     const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0, updatedAt: at, evidence: [] });
     const inserted = this.db.prepare("INSERT OR IGNORE INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)")

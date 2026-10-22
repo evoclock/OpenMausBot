@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
-import type { RunContract } from "./run-contract.ts";
+import type { RunContractInput } from "./run-contract.ts";
 
-const contract: RunContract = {
+const contract: RunContractInput = {
   id: "44444444-4444-4444-8444-444444444444", botId: "fixture", repository: "fixture/agents", ref: "review",
   repositoryClass: "agent-private", successCriteria: ["pstack acceptance passes"],
   allowedEffects: ["edit", "commit", "push", "draft-pr"], authorisedExternalWrites: [],
