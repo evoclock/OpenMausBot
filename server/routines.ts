@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
-import { runSnapshotSchema, type RunSnapshot } from "./run-contract.ts";
+import type { RunSnapshot } from "./run-contract.ts";
+import { applyCodingSettlement, type CodingSettlementReceipt } from "./routine-settlement.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
@@ -14,7 +15,8 @@ import { normalizeCronSchedule, nextCronRuns, type RoutineCronSchedule } from ".
 import {
   isRoutineProblemRun, type RoutineContextAttachment, type RoutineIntervalWindow, type RoutineRetryCause, type RoutineRunStatus, type RoutineRunTrigger,
 } from "../shared/routines.ts";
-import { ROUTINE_PARTS, type PartPair, type RoutinePart } from "./package-parts.ts";
+import { loadInstalledPackage, type RoutinePackageStamp } from "./package-parts.ts";
+export type { RoutinePackageStamp } from "./package-parts.ts";
 import {
   composeExecutionPrompt, continuityCarry, ROUTINE_DEFERRAL_NOTICE_MS, ROUTINE_SKIPPED_WHILE_WAITING, ROUTINE_SUPERSEDED,
   routineFailure, routineHostWarning, skipNeedsNotice, supersededBy,
@@ -87,26 +89,6 @@ export interface Routine {
   updatedAt: number;
 }
 
-export interface RoutinePackageStamp {
-  installId: string;
-  key: string;
-  parts: Record<RoutinePart, PartPair>;
-}
-
-const HASH = /^[a-f0-9]{64}$/;
-function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const stamp = value as Partial<RoutinePackageStamp>;
-  if (typeof stamp.installId !== "string" || !/^[a-f0-9]{32}$/.test(stamp.installId) || typeof stamp.key !== "string" || !stamp.key || stamp.key.length > 80) return undefined;
-  const parts = stamp.parts as Record<string, Partial<PartPair>> | undefined;
-  if (!parts || typeof parts !== "object" || !ROUTINE_PARTS.every((part) => HASH.test(String(parts[part]?.r)) && HASH.test(String(parts[part]?.w)))) return undefined;
-  return {
-    installId: stamp.installId,
-    key: stamp.key,
-    parts: Object.fromEntries(ROUTINE_PARTS.map((part) => [part, { r: parts[part]!.r!, w: parts[part]!.w! }])) as Record<RoutinePart, PartPair>,
-  };
-}
-
 export interface RoutineRun {
   id: string;
   routineId: string;
@@ -159,15 +141,6 @@ export interface RoutineRequestReceipt {
   fingerprintVersion: 1;
   fingerprint: string;
   resultId: string;
-  appliedAt: number;
-}
-
-export interface CodingSettlementReceipt {
-  status: "APPLIED";
-  routineRunId: string;
-  codingRunId: string;
-  terminalHash: string;
-  disposition: "completed" | "held" | "failed" | "cancelled";
   appliedAt: number;
 }
 
@@ -876,31 +849,8 @@ export class RoutineManager {
 
   settleCodingRun(routineRunId: string, terminal: RunSnapshot): { status: "applied" | "existing"; receipt: CodingSettlementReceipt } {
     this.assertWritable();
-    const snapshot = runSnapshotSchema.parse(terminal);
-    const codingRunId = snapshot.contract.id;
-    if (!["done", "blocked", "failed", "cancelled"].includes(snapshot.state)) throw new Error("coding run is not terminal");
-    const terminalHash = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
-    const existing = this.codingSettlementReceipts.find((receipt) => receipt.routineRunId === routineRunId || receipt.codingRunId === codingRunId);
-    if (existing) {
-      if (existing.routineRunId !== routineRunId || existing.codingRunId !== codingRunId || existing.terminalHash !== terminalHash) {
-        throw new Error("conflicting coding settlement");
-      }
-      return { status: "existing", receipt: { ...existing } };
-    }
-    const run = this.runs.find((candidate) => candidate.id === routineRunId);
-    if (!run || !["queued", "running", "waiting"].includes(run.status)) throw new Error("routine run is not open");
-    const disposition = snapshot.state === "done" ? "completed" : snapshot.state === "blocked" ? "held"
-      : snapshot.state === "cancelled" ? "cancelled" : "failed";
-    const receipt: CodingSettlementReceipt = { status: "APPLIED", routineRunId, codingRunId, terminalHash, disposition, appliedAt: this.now() };
-    this.commitMutation(() => {
-      run.status = disposition === "held" ? "failed" : disposition;
-      run.finishedAt = this.now();
-      run.output = redactSecretsInText(snapshot.evidence.join("; ")).trim().slice(0, 2_000);
-      if (disposition === "held") run.error = "Coding run needs reconciliation";
-      this.codingSettlementReceipts.push(receipt);
-    });
-    this.notifyRunChanged(run);
-    return { status: "applied", receipt: { ...receipt } };
+    return applyCodingSettlement({ routineRunId, terminal, runs: this.runs, receipts: this.codingSettlementReceipts,
+      now: this.now, commit: (mutate) => this.commitMutation(mutate), notify: (run) => this.notifyRunChanged(run) });
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {

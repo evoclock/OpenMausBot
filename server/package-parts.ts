@@ -18,6 +18,26 @@ export const ROOM_PARTS = ["name", "bulletin", "members", "defaultResponder"] as
 export type RoomPart = typeof ROOM_PARTS[number];
 export const ROUTINE_PARTS = ["name", "prompt", "schedule", "target"] as const;
 export type RoutinePart = typeof ROUTINE_PARTS[number];
+
+export interface RoutinePackageStamp {
+  installId: string;
+  key: string;
+  parts: Record<RoutinePart, PartPair>;
+}
+
+const HASH = /^[a-f0-9]{64}$/;
+export function loadInstalledPackage(value: unknown): RoutinePackageStamp | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const stamp = value as Partial<RoutinePackageStamp>;
+  if (typeof stamp.installId !== "string" || !/^[a-f0-9]{32}$/.test(stamp.installId) || typeof stamp.key !== "string" || !stamp.key || stamp.key.length > 80) return undefined;
+  const parts = stamp.parts as Record<string, Partial<PartPair>> | undefined;
+  if (!parts || typeof parts !== "object" || !ROUTINE_PARTS.every((part) => HASH.test(String(parts[part]?.r)) && HASH.test(String(parts[part]?.w)))) return undefined;
+  return {
+    installId: stamp.installId,
+    key: stamp.key,
+    parts: Object.fromEntries(ROUTINE_PARTS.map((part) => [part, { r: parts[part]!.r!, w: parts[part]!.w! }])) as Record<RoutinePart, PartPair>,
+  };
+}
 export const TEAM_PARTS = ["name", "brief", "leader"] as const;
 export type TeamPart = typeof TEAM_PARTS[number];
 
