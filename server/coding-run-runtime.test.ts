@@ -51,6 +51,10 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     if (!("id" in scheduled)) throw new Error("missing scheduled id");
     assert.equal(await settled(runtime, scheduled.id), "done");
     assert.equal((await runtime.scheduled(run)).status, "existing");
+    const nextOccurrence = await runtime.scheduled({ ...run, id: "next-occurrence", scheduledFor: 200 });
+    assert.equal(nextOccurrence.status, "accepted");
+    if (!("id" in nextOccurrence)) throw new Error("missing next occurrence id");
+    assert.equal(await settled(runtime, nextOccurrence.id), "done");
 
     const raw = Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: template.repository } }));
     const input = { raw, event: "workflow_run", deliveryId: "11111111-1111-4111-8111-111111111111",
@@ -61,7 +65,58 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal(await settled(runtime, received.id), "done");
     assert.equal((await runtime.github("registration", input)).status, "existing");
     assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
+      "development-role", "review-role", "pstack-check",
       "development-role", "review-role", "pstack-check"]);
     await assert.rejects(runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
   } finally { await runtime.close(); }
+});
+
+test("verified webhook delivery runs once and survives restart replay", async () => {
+  const calls: string[] = [];
+  const options = { dataDir: fixtureDir(), workerHost: host(calls), routines: new Map<string, TriggerTemplate>(),
+    github: new Map(), webhooks: new Map([["hook", template]]) };
+  const run = { id: "webhook-run", routineId: "hook", botId: "fixture", webhookId: "hook",
+    deliveryId: "delivery-1", triggerSource: "webhook", status: "running" };
+  const first = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await first.webhook({ ...run, webhookId: "other" })).status, "ignored");
+    assert.equal((await first.webhook({ ...run, deliveryId: undefined })).status, "ignored");
+    const accepted = await first.webhook(run);
+    assert.equal(accepted.status, "accepted");
+    if (!("id" in accepted)) throw new Error("missing webhook id");
+    assert.equal(await settled(first, accepted.id), "done");
+    assert.equal((await first.webhook(run)).status, "existing");
+  } finally { await first.close(); }
+  const replay = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await replay.webhook(run)).status, "existing");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+  } finally { await replay.close(); }
+});
+
+test("restart replay retains both trigger identities without starting another worker", async () => {
+  const calls: string[] = [];
+  const dataDir = fixtureDir();
+  const options = { dataDir, workerHost: host(calls), routines: new Map([["routine", template]]),
+    github: new Map([["registration", { secret: "fixture-secret", template }]]) };
+  const occurrence = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
+    triggerSource: "schedule", status: "running" };
+  const raw = Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: template.repository } }));
+  const event = { raw, event: "workflow_run", deliveryId: "11111111-1111-4111-8111-111111111111",
+    signature: `sha256=${createHmac("sha256", "fixture-secret").update(raw).digest("hex")}` };
+  const first = await openCodingRunRuntime(options);
+  try {
+    const schedule = await first.scheduled(occurrence);
+    const webhook = await first.github("registration", event);
+    if (!("id" in schedule) || !("id" in webhook)) throw new Error("missing trigger id");
+    assert.equal(await settled(first, schedule.id), "done");
+    assert.equal(await settled(first, webhook.id), "done");
+  } finally { await first.close(); }
+  const replay = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await replay.scheduled(occurrence)).status, "existing");
+    assert.equal((await replay.github("registration", event)).status, "existing");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
+      "development-role", "review-role", "pstack-check"]);
+  } finally { await replay.close(); }
 });
