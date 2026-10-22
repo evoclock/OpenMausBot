@@ -1,4 +1,4 @@
-# Host-only checks. Platform-specific Windows builds and release publishing remain in GitHub Actions.
+# Host-only checks. Release publishing remains in GitHub Actions.
 # Mac-1 needs sfw, Node >=24, pnpm 10.33.0, Python 3.12, git and gh on PATH.
 env:
   PYTHONDONTWRITEBYTECODE: "1"
@@ -7,12 +7,14 @@ env:
 steps:
   - label: "Typecheck"
     agents: { queue: mac-mini }
+    timeout_in_minutes: 20
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm typecheck"
   - label: "Lint and policy tests"
     agents: { queue: mac-mini }
+    timeout_in_minutes: 20
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -23,7 +25,7 @@ steps:
   - label: "Tests 1/4"
     if: build.pull_request.id == null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -31,7 +33,7 @@ steps:
   - label: "Tests 2/4"
     if: build.pull_request.id == null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -39,7 +41,7 @@ steps:
   - label: "Tests 3/4"
     if: build.pull_request.id == null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -47,53 +49,15 @@ steps:
   - label: "Tests 4/4"
     if: build.pull_request.id == null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run --shard=4/4"
-  - label: "PR Linux tests %n/2"
-    if: build.pull_request.id != null
-    agents: { queue: linux-small }
-    parallelism: 2
-    timeout_in_minutes: 30
-    cache:
-      name: "omb-pr-${BUILDKITE_PULL_REQUEST}-pnpm"
-      paths:
-        - .pnpm-store
-        - .omb-scratch/hosted-tools
-    command:
-      - &hosted-bootstrap |
-        mkdir -p .omb-scratch/hosted-tools .omb-scratch/buildkite-reports
-        if ! test -x .omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin/node; then
-          curl -fsSL https://nodejs.org/dist/v24.9.0/node-v24.9.0-linux-x64.tar.xz -o .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz
-          printf '%s  %s\n' f52ec50e959d72d5c680d9731420b2661cd2a8070e94c7369b6ddfcd8b7278be .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz | sha256sum -c -
-          tar -xJf .omb-scratch/hosted-tools/node-v24.9.0-linux-x64.tar.xz -C .omb-scratch/hosted-tools
-        fi
-        if ! printf '%s  %s\n' cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670 .omb-scratch/hosted-tools/sfw | sha256sum -c --status; then
-          curl -fsSL https://github.com/SocketDev/sfw-free/releases/download/v1.15.4/sfw-free-linux-x86_64 -o .omb-scratch/hosted-tools/sfw
-        fi
-        printf '%s  %s\n' cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670 .omb-scratch/hosted-tools/sfw | sha256sum -c -
-        chmod +x .omb-scratch/hosted-tools/sfw
-        export PATH="$$PWD/.omb-scratch/hosted-tools/node-v24.9.0-linux-x64/bin:$$PWD/.omb-scratch/hosted-tools/pnpm/node_modules/.bin:$$PWD/.omb-scratch/hosted-tools:$$PATH"
-        if ! test "$$(pnpm --version 2>/dev/null)" = 10.33.0; then
-          sfw npm install --prefix "$$PWD/.omb-scratch/hosted-tools/pnpm" pnpm@10.33.0
-        fi
-        sfw pnpm install --frozen-lockfile --store-dir .pnpm-store
-      - |
-        shard=$$((BUILDKITE_PARALLEL_JOB*3+1))
-        report=".omb-scratch/buildkite-reports/vitest-$$shard.json"
-        status=0
-        pnpm exec vitest run --shard=$$((shard+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
-        if test -s "$$report"; then
-          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$$shard.json"
-          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$shard.json"
-        fi
-        exit "$$status"
   - label: "PR Mac tests 1/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "0" }
     command: &mac-pr-tests
       - ".buildkite/host.sh"
@@ -108,34 +72,46 @@ steps:
           buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
         fi
         exit "$$status"
+  - label: "PR Mac tests 2/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "1" }
+    command: *mac-pr-tests
   - label: "PR Mac tests 3/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "2" }
     command: *mac-pr-tests
   - label: "PR Mac tests 4/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "3" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 5/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "4" }
     command: *mac-pr-tests
   - label: "PR Mac tests 6/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "5" }
     command: *mac-pr-tests
   - label: "PR Mac tests 7/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "6" }
     command: *mac-pr-tests
   - label: "PR Mac tests 8/8"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
-    timeout_in_minutes: 90
+    timeout_in_minutes: 30
     env: { SHARD_INDEX: "7" }
     command: *mac-pr-tests
   - label: "Docs"
@@ -149,8 +125,8 @@ steps:
       - "pnpm docs:build"
   - label: "Reviewed browser cross-compile"
     if: build.pull_request.id != null
-    agents: { queue: linux-small }
-    timeout_in_minutes: 45
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 5
     command:
       - |
         git fetch --quiet origin "$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"
@@ -158,18 +134,12 @@ steps:
           echo 'Browser vendor sources unchanged; candidate build is not needed'
           exit 0
         fi
-      - *hosted-bootstrap
-      - |
-        rustup toolchain install 1.97.1 --profile minimal --target x86_64-pc-windows-gnu
-        sudo apt-get update
-        sudo apt-get install -y mingw-w64
-        sfw npm install --prefix "$$PWD/.omb-scratch/vendor-tools" pnpm@11.1.3
-        export PATH="$$PWD/.omb-scratch/vendor-tools/node_modules/.bin:$$PATH"
-        RUSTUP_TOOLCHAIN=1.97.1 node scripts/build-windows-browser-vendor.mjs --output "$$PWD/.omb-scratch/browser-vendor"
-        buildkite-agent artifact upload '.omb-scratch/browser-vendor/**/*'
+        echo 'Reviewed browser cross-compile requires a Linux toolchain; mac-mini cannot build this candidate' >&2
+        exit 1
   - label: "Dependencies"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
+    timeout_in_minutes: 15
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -177,20 +147,24 @@ steps:
   - label: "Author check"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
+    timeout_in_minutes: 5
     command: ".buildkite/pr-checks.sh author"
   - label: "PR wording"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
+    timeout_in_minutes: 5
     command: ".buildkite/pr-checks.sh wording"
   - label: "PR review gate"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
+    timeout_in_minutes: 10
     command: ".buildkite/pr-checks.sh review"
   - wait:
       continue_on_failure: true
   - label: "Slowest 20 tests"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }
+    timeout_in_minutes: 5
     command:
       - ".buildkite/host.sh"
       - "mkdir -p .omb-scratch/shard-durations"
