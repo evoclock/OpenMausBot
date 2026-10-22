@@ -16,6 +16,15 @@ export const codingGitGroupSchema = z.object({
 }).strict();
 export type CodingGitGroup = z.output<typeof codingGitGroupSchema>;
 
+export const codingGitAppInstallationSchema = z.object({
+  appId: z.number().int().positive(),
+  installationId: z.number().int().positive(),
+  privateKeyPath: z.string().startsWith("/").min(2),
+  repositories: z.array(z.string().regex(/^evoclock\/[A-Za-z0-9][A-Za-z0-9._-]*$/)).min(1),
+  visibility: z.enum(["public", "private"]).optional(),
+}).strict();
+export type CodingGitAppInstallation = z.output<typeof codingGitAppInstallationSchema>;
+
 export const codingGitDestinationSchema = z.object({
   repository: z.string().regex(/^evoclock\/[A-Za-z0-9][A-Za-z0-9._-]*$/),
   branchPrefix: z.string().regex(/^[a-z0-9][a-z0-9._/-]*\/$/),
@@ -28,6 +37,8 @@ export const codingRunConfigSchema = z.object({
   /** Destinations and credential references are operator-owned; missing entries never grant a Git write. */
   gitDestinations: z.record(z.string().min(1), z.array(codingGitDestinationSchema).max(50)).optional(),
   gitCredentialGroups: z.record(reference, codingGitGroupSchema).optional(),
+  /** Named installation settings; only an absolute key path, never key material, belongs in config. */
+  gitAppInstallations: z.record(reference, codingGitAppInstallationSchema).optional(),
   repositoryRoot: z.string().min(1),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({

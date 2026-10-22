@@ -40,3 +40,24 @@ fail-closed limitation, not an implicit permission for an agent to use another
 shell or a claim of operating-system containment against untrusted extensions.
 The local bare-repository test exercises the checked host port without a real
 credential or remote forge.
+
+### Read-only host inspection and installation grants
+
+`GitHostInspector` exposes branch refs, matching PRs and comments containing an
+exact idempotency marker. A complete empty read returns `absent`; authentication
+failures, rate limits, malformed responses and unfinished pagination return
+`inconclusive`. The GitHub implementation makes GET requests only and takes its
+access token from the trusted host on each call. It is not enabled by default.
+
+An explicit `github-app` destination reference can select
+`codingRuns.gitAppInstallations[reference]`. Each entry declares the app and
+installation IDs, an absolute private-key path, exact repositories and optional
+visibility. The provider reads that path at action time, mints a repository-
+scoped installation token, and verifies write permission and visibility without
+caching the token. Missing paths, invalid keys and missing repository coverage
+refuse. `server/testing/github-app-installation.example.json` contains
+placeholders, not usable credentials. Tests generate a disposable signing key
+and simulate GitHub responses; no live App or production Git transport is
+connected. Host push and PR actions still refuse until a trusted host port is
+configured. Commit authorship and merge limits remain enforced by the existing
+Git policy for every credential choice.
