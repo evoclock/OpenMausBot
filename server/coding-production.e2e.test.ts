@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { RunContractStore } from "./run-contract.ts";
@@ -47,14 +48,28 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json") },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const reservePort = async () => {
+    const listener = createServer();
+    await new Promise<void>((resolve, reject) => listener.once("error", reject).listen(0, "127.0.0.1", resolve));
+    const address = listener.address();
+    if (!address || typeof address === "string") throw new Error("fixture port was not assigned");
+    return { port: address.port, release: () => new Promise<void>((resolve) => listener.close(() => resolve())) };
+  };
+  const mainPort = await reservePort();
+  const webhookPort = await reservePort();
+  const port = mainPort.port;
   const base = `http://127.0.0.1:${port}`;
   const env = { HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port),
-    OMB_WEBHOOK_PORT: String(port + 1), OMB_STATIC_DIR: join(home, "static"),
+    OMB_WEBHOOK_PORT: String(webhookPort.port), OMB_STATIC_DIR: join(home, "static"),
     PATH: `${bin}:${process.env.PATH ?? ""}` };
   let child: ChildProcess | undefined;
   let stderr = "";
+  let reserved = true;
   const start = async () => {
+    if (reserved) {
+      await Promise.all([mainPort.release(), webhookPort.release()]);
+      reserved = false;
+    }
     child = spawn(process.execPath, ["--experimental-strip-types", join(serverDir, "index.ts")], {
       cwd: root, env, stdio: ["ignore", "pipe", "pipe"],
     });
@@ -81,9 +96,23 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
     expect(response.status, `${method} ${path}: ${JSON.stringify(value)}`).toBeLessThan(300);
     return value;
   };
-  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, git, start, stop, kill, until, api,
+  return { home, dataDir, repository, leased, state, calls, dump, configFile, config, port,
+    webhookPort: webhookPort.port, git, start, stop, kill, until, api,
     logs: () => stderr };
 }
+
+test("parallel composed fixtures bind distinct OS-assigned listener ports", async () => {
+  const [first, second] = await Promise.all([fixture("happy"), fixture("happy")]);
+  try {
+    expect(new Set([first.port, first.webhookPort, second.port, second.webhookPort]).size).toBe(4);
+    await Promise.all([first.start(), second.start()]);
+    const [left, right] = await Promise.all([first.api("GET", "/api/health"), second.api("GET", "/api/health")]);
+    expect(left.pid).not.toBe(right.pid);
+  } finally {
+    await Promise.all([first.stop(), second.stop()]);
+    await Promise.all([removeTempDir(first.home), removeTempDir(second.home)]);
+  }
+}, 90_000);
 
 test.each([
   { mode: "coding" as const, expected: "done", released: false },
@@ -338,7 +367,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     })).routine;
     await f.stop();
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
-      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
+      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1, maxIterations: 3 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
         successCriteria: ["coding-fixture-result.txt exists"],
@@ -358,6 +387,8 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const activeRun = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     const before = store.get(scheduledCodingRunId(activeRun));
     expect(before?.state).toBe("running");
+    expect(before?.contract.maxIterations).toBe(3);
+    expect(before?.contract.limits?.maxWallTimeMs).toBe(120_000);
     const prepared = store.step(before!.contract.id, before!.iteration);
     expect(prepared?.status).toBe("prepared");
     const storeTaskId = store.taskId(before!.contract.id);
@@ -388,15 +419,39 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const ownerReports = messages.filter((message) => message.turnId?.startsWith("coding-result:"));
     expect(ownerReports).toHaveLength(1);
     expect(ownerReports[0].text).toContain("Coding run blocked:");
+    const settlement = (JSON.parse(readFileSync(routinesFile, "utf8")).codingSettlementReceipts as Array<{
+      routineRunId: string; codingRunId: string; status: string; disposition: string;
+    }>).filter((entry) => entry.routineRunId === run.id);
+    expect(settlement).toMatchObject([{ codingRunId: before!.contract.id, status: "APPLIED", disposition: "held" }]);
     f.git(f.leased, "push", join(f.home, "destination.git"), `HEAD:refs/heads/draft/drill-${before!.contract.id}`);
     expect(f.git(f.repository, "--git-dir", join(f.home, "destination.git"), "rev-parse",
       `refs/heads/draft/drill-${before!.contract.id}`)).toBe(review.revision);
+    const auditConfigFile = join(f.home, "audit-config.json");
+    const baseRevision = f.git(f.leased, "rev-parse", "main");
+    const auditConfig = { destination: "fixture/agents", host: "fixture",
+      credentialReference: "fixture-reference", worktree: f.leased, model: "fixture/model", thinking: "low",
+      botConfig: { originBotId: owner.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        modelSelection: { instanceId: "pi", model: "fixture/model" }, maxIterations: 3,
+        limits: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, baseRevision,
+      expectedRevisions: [review.revision] };
+    writeFileSync(auditConfigFile, JSON.stringify(auditConfig));
+    const audit = JSON.parse(execFileSync(process.execPath,
+      [join(root, "scripts", "drill-coding-run.mjs"), "--audit-sandbox", auditConfigFile],
+      { cwd: root, encoding: "utf8" })) as { verifiedRevisions: string[]; mergeCommits: number };
+    expect(audit.verifiedRevisions).toEqual([review.revision]);
+    expect(audit.mergeCommits).toBe(0);
+    writeFileSync(auditConfigFile, JSON.stringify({ ...auditConfig, expectedRevisions: [baseRevision] }));
+    expect(() => execFileSync(process.execPath,
+      [join(root, "scripts", "drill-coding-run.mjs"), "--audit-sandbox", auditConfigFile],
+      { cwd: root, encoding: "utf8", stdio: "pipe" })).toThrow();
     const authors = f.git(f.leased, "log", "--format=%an <%ae>|%cn <%ce>|%P", "main..HEAD");
     expect(authors).toMatch(/^evoclock <52983349\+evoclock@users\.noreply\.github\.com>\|evoclock <52983349\+evoclock@users\.noreply\.github\.com>\|[0-9a-f]{40}$/);
     const result = { schema: "omb-drill-v1", outcome: "blocked", routineId: routine.id,
       runId: before!.contract.id, taskId: storeTaskId, revision: review.revision,
+      configuredCeilings: { maxIterations: before!.contract.maxIterations,
+        maxWallTimeMs: before!.contract.limits?.maxWallTimeMs, maxSpendUsd: before!.contract.limits?.maxSpendUsd },
       before: { state: before!.state, iteration: before!.iteration, receipt: prepared },
-      after: { state: after?.state, iteration: after?.iteration, receipt },
+      after: { state: after?.state, iteration: after?.iteration, receipt, settlementReceipt: settlement[0] },
       effects: { workerCommits: 1, reviewerTurns: 1, repeatedTurns: 0, ownerReports: ownerReports.length,
         pushedRef: `refs/heads/draft/drill-${before!.contract.id}`, mergeCommits: 0, squash: false },
       verification: { entry: "blocked routine and exactly one owner report", attribution: authors,

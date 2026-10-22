@@ -24,24 +24,31 @@ if (mode === "--fixture" && process.argv.length === 3) {
   const file = process.argv[3];
   if (!file || !existsSync(file)) throw new Error("Set a named drill config path; destination, host and credential reference are required");
   const config = JSON.parse(readFileSync(file, "utf8"));
-  if (!config.destination || !config.confirmedDestination || !config.host || !config.credentialReference ||
+  if (!config.destination || !config.host || !config.credentialReference ||
     !config.worktree || !config.model || !config.thinking || !config.botConfig?.limits ||
     !config.botConfig?.originBotId || !config.botConfig?.workerBotId || !config.botConfig?.reviewerBotId ||
     !config.botConfig?.modelSelection?.instanceId || config.botConfig.modelSelection.model !== config.model ||
     !Number.isSafeInteger(config.botConfig.maxIterations) || config.botConfig.maxIterations <= 0 ||
     !Number.isSafeInteger(config.botConfig.limits.maxWallTimeMs) || config.botConfig.limits.maxWallTimeMs <= 0 ||
     !Number.isFinite(config.botConfig.limits.maxSpendUsd) || config.botConfig.limits.maxSpendUsd <= 0 ||
-    !config.expectedRevisions?.length) {
+    !/^[0-9a-f]{40}$/.test(config.baseRevision ?? "") || !config.expectedRevisions?.length) {
     throw new Error("Refusing incomplete or unconfirmed sandbox drill configuration");
   }
   if (mode === "--live") throw new Error("Live drill is owner-held until this PR merges green; no sandbox was created or contacted");
-  if (config.host !== "mac-mini" || config.destination !== config.confirmedDestination)
-    throw new Error("Host or destination does not match the confirmed sandbox");
+  const localFixture = config.host === "fixture" && config.destination === "fixture/agents" &&
+    resolve(config.worktree).startsWith(join(root, "node_modules", ".cache") + "/");
+  if (!localFixture && (config.host !== "mac-mini" || config.destination !== "evoclock/omb-drill-sandbox"))
+    throw new Error("Host or destination does not match the selected sandbox");
   const git = (...args) => execFileSync("git", args, { cwd: config.worktree, encoding: "utf8", timeout: 10_000 }).trim();
   const origin = git("remote", "get-url", "origin");
   if (origin !== `git@github.com:${config.destination}.git` && origin !== `https://github.com/${config.destination}.git`)
     throw new Error("Sandbox worktree origin does not match the confirmed destination");
   const head = git("rev-parse", "HEAD");
+  git("merge-base", "--is-ancestor", config.baseRevision, head);
+  const actualRevisions = git("rev-list", `${config.baseRevision}..${head}`).split("\n");
+  if (actualRevisions.length !== config.expectedRevisions.length ||
+    actualRevisions.some((revision) => !config.expectedRevisions.includes(revision)))
+    throw new Error("Sandbox history differs from exact reviewed revisions; squash or extra commit");
   for (const revision of config.expectedRevisions) {
     if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Invalid expected revision");
     git("merge-base", "--is-ancestor", revision, head);

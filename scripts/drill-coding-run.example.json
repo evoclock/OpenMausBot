@@ -1,7 +1,5 @@
 {
-  "destination": "",
-  "confirmedDestination": "",
-  "creationStep": "After Julen confirms the exact name, create a throwaway private GitHub repository; do not create it during harness review.",
+  "destination": "evoclock/omb-drill-sandbox",
   "host": "mac-mini",
   "credentialReference": "",
   "worktree": "",
@@ -15,6 +13,7 @@
     "maxIterations": null,
     "limits": { "maxWallTimeMs": null, "maxSpendUsd": null, "allowedFallbackModels": [], "allowedFallbackDataRoutes": [] }
   },
+  "baseRevision": "",
   "expectedRevisions": [],
   "attribution": { "author": "evoclock", "noreplyEmail": "52983349+evoclock@users.noreply.github.com", "allowSquash": false }
 }
