@@ -211,6 +211,32 @@ describe("bounded scheduled overlap and run health", () => {
     eventId: "done", provider: "fake", threadId, createdAt: new Date().toISOString(), type: "turn.completed", ok,
   });
 
+  it("persists coding settlement and ignores replay of the same terminal run", async () => {
+    const h = harness(start);
+    h.manager.create(input());
+    h.setNow(start + 5 * 60_000); await h.manager.tick();
+    const run = h.manager.listRuns()[0]!;
+    expect(run.status).toBe("running");
+    expect(h.manager.settleCodingRun(run.id, "done", "Verified revision")).toMatchObject({
+      status: "completed", output: "Verified revision",
+    });
+    expect(h.manager.settleCodingRun(run.id, "blocked", "late failure")).toBeNull();
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "completed", output: "Verified revision" });
+  });
+
+  it("persists failed coding settlement for a verified webhook delivery", async () => {
+    const h = harness(start);
+    const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",
+      botId: "maus-1", runOn: "maus", deliveryId: "delivery-1", receivedAt: start });
+    await h.manager.tick();
+    expect(h.manager.settleCodingRun(run.id, "blocked", "No verified result")).toMatchObject({
+      status: "failed", error: "No verified result",
+    });
+    expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
+      .toMatchObject({ status: "failed", error: "No verified result" });
+  });
+
   it.each<RoutineSchedule>([
     input().schedule,
     { type: "cron", expression: "*/5 * * * *", timeZone: "UTC" },

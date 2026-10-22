@@ -1578,6 +1578,28 @@ export class RoutineManager {
     return cloneRun(run);
   }
 
+  settleCodingRun(runId: string, status: "done" | "blocked" | "failed" | "cancelled", detail: string): RoutineRun | null {
+    const run = this.runs.find((candidate) => candidate.id === runId &&
+      candidate.target === "bot" && ["schedule", "webhook"].includes(candidate.triggerSource ?? "") &&
+      ["running", "waiting"].includes(candidate.status));
+    if (!run) return null;
+    const safeDetail = redactSecretsInText(detail).trim();
+    run.status = status === "done" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
+    run.attention = undefined;
+    run.finishedAt = this.now();
+    if (status === "done") {
+      run.output = safeDetail.slice(0, 2_000) || undefined;
+      run.error = undefined;
+    } else {
+      run.error = safeDetail.slice(0, 500) || "Coding run did not complete";
+    }
+    this.save();
+    this.emitRun(run);
+    if (run.status === "failed") this.options.onRunFailed?.(cloneRun(run), null);
+    queueMicrotask(() => void this.tick());
+    return cloneRun(run);
+  }
+
   failThread(threadId: string, message: string, facts: RoutineFailureFacts = {}) {
     const run = this.runs.find((r) => r.threadId === threadId && ["running", "waiting"].includes(r.status));
     if (run) this.settleFailure(run, message, facts);
