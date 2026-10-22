@@ -18,6 +18,7 @@ import {
   fetchPiModels,
   parsePiCatalog,
   PiDriver,
+  piEnvironment,
   PiRpcChunks,
   piLineReader,
   preferPiInjectRows,
@@ -28,6 +29,14 @@ import {
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "testing", "fake-pi-cli.ts");
 const MODELS_LINE =
   '{"type":"response","command":"get_available_models","success":true,"data":{"models":[{"provider":"ollama-cloud","id":"glm-5.2","name":"glm-5.2"},{"provider":"openai","id":"gpt-4o","name":"GPT-4o"}]}}';
+
+describe("Pi environment", () => {
+  it("strips only inherited OMB_MCP_CONFIG while preserving other OMB settings", () => {
+    const env = piEnvironment({ OMB_MCP_CONFIG: "/host/config.json", OMB_TEST_MARKER: "preserved", PATH: "/bin" });
+    expect(env.OMB_MCP_CONFIG).toBeUndefined();
+    expect(env.OMB_TEST_MARKER).toBe("preserved");
+  });
+});
 
 describe("parsePiCatalog", () => {
   it("turns a get_available_models response into custom composite-id options", () => {
@@ -371,8 +380,9 @@ describe("PiDriver turns (fake CLI)", () => {
     await create(undefined, { FAKE_PI_DUMP: dump });
     await expect(instance.adapter.sendTurn({ threadId: "missing-enforcement", text: "Must not reach a provider", toolScope: { allow: [] } })).rejects.toThrow(/tool selection.*enforcement/i);
     const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(rows.some((row) => row.argv?.includes("-e"))).toBe(true);
-    expect(rows.find((row) => row.argv?.includes("-e"))?.mcpConfig?.toolScope).toEqual({ allow: [] });
+    const turnSpawn = rows.find((row) => row.isTurnSpawn);
+    expect(turnSpawn?.argv).toContain("-e");
+    expect(turnSpawn?.mcpConfig?.toolScope).toEqual({ allow: [] });
     expect(rows.some((row) => row.prompt !== undefined)).toBe(false);
   });
   afterEach(async () => {
@@ -790,8 +800,8 @@ describe("PiDriver turns (fake CLI)", () => {
     await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
     await expect(instance.adapter.sendTurn({ threadId: "t-ask-user-scoped", text: "hi", toolScope: { allow: ["native:read"] } })).rejects.toThrow(/enforcement/i);
     const rows = readFileSync(dump, "utf8").trim().split("\n")
-      .map((line) => JSON.parse(line) as { argv?: string[]; mcpConfig?: { askUser?: boolean; mcpServers?: object } | null })
-      .filter((row) => row.argv?.includes("-e"));
+      .map((line) => JSON.parse(line) as { argv?: string[]; isTurnSpawn?: boolean; mcpConfig?: { askUser?: boolean; mcpServers?: object } | null })
+      .filter((row) => row.isTurnSpawn);
     expect(rows.map((row) => row.mcpConfig?.askUser)).toEqual([true, false]);
     expect(rows[0].mcpConfig?.mcpServers).toEqual({});
     await removeTempDir(dir);
@@ -800,29 +810,45 @@ describe("PiDriver turns (fake CLI)", () => {
   it("mounts integrations as stdio MCP servers and loads the pi-mcp-extension", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omb-pi-mcp-dump-"));
     const dump = join(dir, "dump.jsonl");
-    await create(undefined, { FAKE_PI_DUMP: dump });
-    const { turnId } = await instance.adapter.sendTurn({
-      threadId: "t-mcp",
-      text: "hi",
-      integrations: {
-        composio: { command: "node", args: ["connector-proxy.js"], env: { COMPOSIO_KEY: "ck" } },
-      },
-    });
-    await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+    const savedMarker = process.env.OMB_TEST_MARKER;
+    const savedMcpConfig = process.env.OMB_MCP_CONFIG;
+    process.env.OMB_TEST_MARKER = "preserved";
+    process.env.OMB_MCP_CONFIG = join(dir, "ambient-mcp.json");
+    writeFileSync(process.env.OMB_MCP_CONFIG, JSON.stringify({ mcpServers: { hostile: { command: "never" } } }));
+    try {
+      await create(undefined, { FAKE_PI_DUMP: dump });
+      const { turnId } = await instance.adapter.sendTurn({
+        threadId: "t-mcp",
+        text: "hi",
+        integrations: {
+          composio: { command: "node", args: ["connector-proxy.js"], env: { COMPOSIO_KEY: "ck" } },
+        },
+      });
+      await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
 
-    const rows = readFileSync(dump, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as { argv: string[]; mcpConfig?: { mcpServers?: Record<string, any> } | null });
-    const mcpRow = rows.find((r) => r.mcpConfig != null);
-    expect(mcpRow).toBeTruthy();
+      const rows = readFileSync(dump, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { argv: string[]; isTurnSpawn?: boolean; env?: Record<string, string>; mcpConfig?: { mcpServers?: Record<string, any> } | null })
+        .filter((row) => row.isTurnSpawn);
+      const mcpRow = rows.find((r) => r.mcpConfig != null);
+      expect(mcpRow).toBeTruthy();
 
-    const extIndex = mcpRow!.argv.indexOf("-e");
-    expect(extIndex).toBeGreaterThanOrEqual(0);
-    expect(mcpRow!.argv[extIndex + 1]).toContain("pi-mcp-extension");
-
-    const servers = mcpRow!.mcpConfig!.mcpServers!;
-    expect(servers.composio).toMatchObject({ command: "node", args: ["connector-proxy.js"], env: { COMPOSIO_KEY: "ck" } });
+      const servers = mcpRow!.mcpConfig!.mcpServers!;
+      expect(servers.composio).toMatchObject({
+        command: "node",
+        args: [expect.stringContaining("connector-proxy.js")],
+        env: { COMPOSIO_KEY: "ck" },
+      });
+      expect(mcpRow!.argv).toContain("-e");
+      expect(mcpRow!.env?.OMB_MCP_CONFIG).toMatch(/\/omb-pi-mcp-.+\/mcp\.json$/);
+      expect(mcpRow!.env?.OMB_TEST_MARKER).toBe("preserved");
+    } finally {
+      if (savedMarker === undefined) delete process.env.OMB_TEST_MARKER;
+      else process.env.OMB_TEST_MARKER = savedMarker;
+      if (savedMcpConfig === undefined) delete process.env.OMB_MCP_CONFIG;
+      else process.env.OMB_MCP_CONFIG = savedMcpConfig;
+    }
   });
 
   it("rides the toolUse auto-continue and only settles on the final end_turn", async () => {
@@ -886,23 +912,47 @@ describe("PiDriver turns (fake CLI)", () => {
     expect(recorder.events.some((e) => e.type === "request.resolved")).toBe(true);
   });
 
-  it("per-bot Ask restores host approval on a legacy full-auto instance", async () => {
-    await create("permission", {}, true);
+  it("allows only explicit per-bot Full local-computer access, not legacy instance full-auto", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-pi-full-computer-"));
+    const dump = join(dir, "rpc.jsonl");
+    await create(undefined, { FAKE_PI_DUMP: dump }, true);
     expect(instance.adapter.capabilities.localComputerMcp).toBe(true);
     const localComputer = {
-      command: "/cua-driver",
+      command: "/fixture/cua-driver",
       args: ["mcp"],
       env: {},
       platform: "linux" as const,
       scope: "local-computer" as const,
     };
 
-    await expect(instance.adapter.sendTurn({
-      threadId: "t-pi-legacy-full-auto",
+    await instance.adapter.sendTurn({
+      threadId: "t-pi-legacy-full-auto-computer",
       text: "go",
       integrations: { localComputer },
-    })).rejects.toThrow(/interactive approval broker/);
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+    const legacyRows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(legacyRows.filter((row) => row.isTurnSpawn).map((row) => row.mcpConfig?.automatedLocalComputer)).toEqual([false]);
+    await instance.adapter.sendTurn({
+      threadId: "t-pi-full-computer",
+      text: "go",
+      approvalMode: "full",
+      integrations: { localComputer },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+    const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(rows.filter((row) => row.isTurnSpawn && row.mcpConfig?.automatedLocalComputer !== undefined).map((row) => row.mcpConfig.automatedLocalComputer)).toEqual([false, true]);
+  });
 
+  it("per-bot Ask retains host approval on a legacy full-auto instance", async () => {
+    await create("permission", {}, true);
+    const localComputer = {
+      command: "/fixture/cua-driver",
+      args: ["mcp"],
+      env: {},
+      platform: "linux" as const,
+      scope: "local-computer" as const,
+    };
     await instance.adapter.sendTurn({
       threadId: "t-pi-ask-override",
       text: "go",
