@@ -275,6 +275,9 @@ desktop routing, cancellation, and computer authority cleanup.
 
 ## Evidence
 
+The [coding-run crash drill](coding-drill.md) exercises a SIGKILL during an
+isolated worker/reviewer journey and records the fail-closed result.
+
 The [persistence responsiveness benchmark](persistence-performance.md) measures
 synthetic message/log bursts and history scans, with isolated chat, visibility
 and packaged-worker checks. It is not a production capacity qualification.
