@@ -10,8 +10,9 @@ describe('Dockerfile remains available without an active image publisher', () =>
   });
 
   it('never exposes a registry publisher through the active workflows', () => {
-    const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
-    const release = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-    expect(ci + release).not.toMatch(/docker\/build-push-action|npm publish|docker push|ghcr\.io/);
+    const ci = readFileSync(new URL('../.buildkite/pipeline.yml', import.meta.url), 'utf8');
+    const workflows = ['ci-stop-closed.yml', 'deps.yml', 'docs.yml', 'release.yml']
+      .map((name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8')).join('\n');
+    expect(ci + workflows).not.toMatch(/docker\/build-push-action|npm publish|docker push|ghcr\.io/);
   });
 });

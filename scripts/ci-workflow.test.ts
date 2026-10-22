@@ -3,33 +3,30 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 const workflow = (name: string) => parse(readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
-const ci = workflow('ci.yml');
+const ci = parse(readFileSync(new URL('../.buildkite/pipeline.yml', import.meta.url), 'utf8'));
 
 // The CI contract intentionally replaces the upstream release/deploy jobs.
 describe('repository CI and release boundaries', () => {
-  it('runs independent, read-only typecheck, lint, and test jobs on PRs and main', () => {
-    expect(ci.on).toEqual({ pull_request: null, push: { branches: ['main'] } });
-    expect(ci.permissions).toEqual({ contents: 'read' });
-    expect(Object.keys(ci.jobs)).toEqual(['typecheck', 'lint', 'test-shard', 'test']);
-    expect(ci.jobs['test-shard'].strategy).toEqual({ 'fail-fast': false, matrix: { shard: [1, 2, 3, 4] } });
-    expect(ci.jobs.test.needs).toEqual(['test-shard']);
-    expect(ci.jobs.test.if).toBe('always()');
-    expect(ci.jobs.test.steps[0].env.SHARD_RESULT).toBe('${{ needs.test-shard.result }}');
-    expect(ci.jobs.test.steps[0].run).toBe('test "$SHARD_RESULT" = success');
-    for (const [name, command] of [['typecheck', 'pnpm typecheck'], ['lint', 'pnpm lint'], ['test-shard', 'pnpm exec vitest run --shard=${{ matrix.shard }}/4']]) {
-      const steps = ci.jobs[name].steps;
-      expect(steps.some((step: { run?: string }) => step.run === 'pnpm install --frozen-lockfile')).toBe(true);
-      expect(steps.some((step: { run?: string }) => step.run === command)).toBe(true);
-      expect(steps.some((step: { uses?: string }) => step.uses?.startsWith('pnpm/action-setup@'))).toBe(true);
-      expect(steps.some((step: { uses?: string; with?: { cache?: string } }) => step.uses?.startsWith('actions/setup-node@') && step.with?.cache === 'pnpm')).toBe(true);
-    }
+  it('runs typecheck, lint, and every test shard on the Mac for PRs and main', () => {
+    const steps = ci.steps.filter((step: { label?: string }) => step.label);
+    expect(steps.every((step: { agents?: { queue?: string }; timeout_in_minutes?: number }) =>
+      step.agents?.queue === 'mac-mini' && step.timeout_in_minutes! > 0)).toBe(true);
+    expect(steps.find((step: { label: string }) => step.label === 'Typecheck').command).toContain('pnpm typecheck');
+    expect(steps.find((step: { label: string }) => step.label === 'Lint and policy tests').command).toContain('pnpm lint');
+    const main = steps.filter((step: { label: string }) => /^Tests [1-4]\/4$/.test(step.label));
+    expect(main.map((step: { command: string[] }) => step.command.at(-1))).toEqual([1, 2, 3, 4].map((shard) => `pnpm exec vitest run --shard=${shard}/4`));
+    expect(main.every((step: { if: string }) => step.if === 'build.pull_request.id == null')).toBe(true);
+    const pr = steps.filter((step: { label: string }) => /^PR Mac tests [1-8]\/8$/.test(step.label));
+    expect(pr.map((step: { env: { SHARD_INDEX: string } }) => Number(step.env.SHARD_INDEX))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(pr.every((step: { if: string; command: string[] }) => step.if === 'build.pull_request.id != null'
+      && step.command.some((command) => command.includes('pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8')))).toBe(true);
   });
 
-  it('keeps the closed-PR stop in the same group without cancelling main', () => {
+  it('keeps the closed-PR housekeeping separate from Buildkite', () => {
     const stop = workflow('ci-stop-closed.yml');
+    expect(stop.on.pull_request.types).toEqual(['closed']);
     expect(stop.concurrency.group).toBe('ci-pr-${{ github.event.pull_request.number }}');
-    expect(ci.concurrency.group).toContain("format('pr-{0}', github.event.pull_request.number)");
-    expect(ci.concurrency['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}");
+    expect(ci.steps.some((step: { label?: string }) => step.label === 'PR review gate')).toBe(true);
   });
 
   it('publishes only unsigned GitHub release installers from v* tags', () => {

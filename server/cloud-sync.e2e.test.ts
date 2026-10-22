@@ -69,7 +69,17 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
   writeFileSync(join(home, "web", "index.html"), "<!doctype html><title>OpenMausBot</title>");
   const port = await freePortBlock([0, 1]);
   base = `http://127.0.0.1:${port}`;
-  const offlinePrelude = `data:text/javascript,${encodeURIComponent('globalThis.fetch = async () => new Response("offline fixture", { status: 503 });')}`;
+  const offlinePrelude = `data:text/javascript,${encodeURIComponent(`
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    const realStatfs = fs.statfsSync;
+    fs.statfsSync = (path, ...args) => {
+      const stats = realStatfs(path, ...args);
+      return path === process.env.OMB_SYNC_ROOT ? { ...stats, bavail: Math.max(stats.bavail, Math.ceil(stats.blocks * 0.5)) } : stats;
+    };
+    syncBuiltinESMExports();
+    globalThis.fetch = async () => new Response("offline fixture", { status: 503 });
+  `)}`;
   child = spawn(process.execPath, ["--import", offlinePrelude, join(SERVER_DIR, "index.ts")], {
     cwd: join(SERVER_DIR, ".."),
     env: {
