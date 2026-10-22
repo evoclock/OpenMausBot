@@ -54,6 +54,21 @@ const reloaded = (patch: object, cfg: AppConfig = {}) =>
   changedInstanceIds(engineLaunches(instanceConfigs(cfg), {}), engineLaunches(instanceConfigs({ ...cfg, ...patch } as AppConfig), {}));
 
 describe("configuration boundaries", () => {
+  it("requires an operator coding registration and preserves a per-bot Pi CLI instance", () => {
+    const codingRuns = { repositoryRoot: "/fixture/private", registrations: [{
+      routineId: "scheduled", workerBotId: "worker", reviewerBotId: "reviewer",
+      developmentRole: "worker-role", reviewRole: "review-role", repository: "fixture/agents",
+      ref: "main", successCriteria: ["verified result"],
+    }] };
+    expect(parseStoredConfig({}).codingRuns).toBeUndefined();
+    expect(parseStoredConfig({ codingRuns }).codingRuns).toEqual(codingRuns);
+    expect(parseConfigPatch({ codingRuns })).not.toHaveProperty("codingRuns");
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, registrations: [] } })).toThrow();
+    const configured = parseStoredConfig({ instances: {
+      "coding-pi": { driver: "piAgent", config: { cli: "/fixture/fake-pi" } },
+    } });
+    expect(instanceConfigs(configured)["coding-pi"]?.config).toEqual({ cli: "/fixture/fake-pi" });
+  });
   it("requires an explicit backup to opt into automatic recovery without reloading engines", () => {
     expect(parseStoredConfig({}).automaticRecovery).toBeUndefined();
     expect(parseConfigPatch({ automaticRecovery: { enabled: false } })).toEqual({ automaticRecovery: { enabled: false } });

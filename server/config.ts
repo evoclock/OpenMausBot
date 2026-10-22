@@ -319,7 +319,19 @@ const threadsPatchSchema = threadsConfigSchema.extend({
   eventLogMaxBytes: threadsConfigSchema.shape.eventLogMaxBytes.nullable(),
   eventLogRetentionDays: threadsConfigSchema.shape.eventLogRetentionDays.nullable(),
 });
+const codingRunConfigSchema = z.object({
+  repositoryRoot: z.string().min(1),
+  registrations: z.array(z.object({
+    routineId: z.string().min(1), workerBotId: z.string().min(1), reviewerBotId: z.string().min(1),
+    developmentRole: z.string().min(1), reviewRole: z.string().min(1),
+    repository: z.string().min(1), ref: z.string().min(1),
+    successCriteria: z.array(z.string().min(1)).min(1),
+  }).strict()).min(1).max(20),
+}).strict();
+
 const appConfigSchema = z.object({
+  /** Operator-owned coding registrations; absent means there are no coding triggers. */
+  codingRuns: codingRunConfigSchema.optional(),
   /** Set only by the verified domain endpoint, never by a config patch. */
   customDomain: z.string().optional(),
   /** Who may sign in with an emailed code: addresses or `@domain` entries; admins get every scope, members chat only. */
@@ -460,11 +472,12 @@ const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
       .optional(),
   }).optional(),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true })
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, mcpServers: true, cliStartup: true, customDomain: true, codingRuns: true })
   .extend({ threads: threadsPatchSchema.optional(), newBots: newBotsPatchSchema.optional() });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig extends HelperConfig {
+  codingRuns?: z.output<typeof codingRunConfigSchema>;
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
   /** Preferred selection for newly created bots; existing bots keep theirs. */

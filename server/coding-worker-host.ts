@@ -21,6 +21,7 @@ export function createCodingWorkerHost(options: {
   verify: (workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal) => Promise<string[] | null>;
 }): WorkerHost {
   const requests = new Map<string, { botId: string; repository: string }>();
+  const leases = new Map<string, string>();
   return {
     async roles(repository) {
       const config = options.roles.get(repository);
@@ -34,6 +35,7 @@ export function createCodingWorkerHost(options: {
         throw new Error("workspace does not match coding contract");
       }
       requests.set(requestId, { botId: contract.botId, repository: contract.repository });
+      leases.set(workspace.leaseId, requestId);
       return workspace;
     },
     async release(leaseId, reason) { await options.workspace.release(leaseId, reason); },
@@ -51,8 +53,11 @@ export function createCodingWorkerHost(options: {
       if (!config || config.independentReview !== role || !config.reviewerBotId) {
         throw new Error("independent reviewer is not configured");
       }
+      const requestId = leases.get(workspace.leaseId);
+      if (!requestId) throw new Error("review has no originating coding request");
       const result = await options.turn.run({ botId: config.reviewerBotId, workspace, role,
-        prompt: `Review revision ${revision}. Report whether it meets the stated goal.`, requestId: `review:${revision}`, signal });
+        prompt: `Review revision ${revision}. Report whether it meets the stated goal.`,
+        requestId: `review:${requestId}:${revision}`, signal });
       return { revision: result.revision, evidence: result.evidence,
         accepted: result.accepted === true && result.revision === revision && result.evidence.length > 0 };
     },
