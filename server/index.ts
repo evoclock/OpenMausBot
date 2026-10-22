@@ -441,7 +441,7 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
-import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
+import { addHeldSecretScrubber, redactSecretsInText, redactToolResult } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
@@ -5995,7 +5995,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const key = `${threadId}:${turnId}:${toolUseId}`;
   if (!commandReceipt("hook.ingest", key)) {
     const dir = join(TOOL_RESULTS_DIR, threadId.replace(/[^\w.-]/g, "_"));
-    const redacted = redactSecretsInText(text);
+    const redacted = redactToolResult(text, row.tool.input ?? row.tool.name);
     const fullResult = spillToolResult(dir, key, redacted, TOOL_RESULT_SPILL_MAX);
     store.patchMessage(threadId, row.id, { tool: { ...row.tool, fullResult } }, { kind: "hook.ingest", key });
   }
