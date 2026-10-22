@@ -199,31 +199,51 @@ describe("the Data routes", () => {
     expect((await call("POST", "/api/bots/bot-1/data/run", { sql: "SELECT 1", live: true })).status).toBe(400);
   });
 
-  it("cancels superseded native queries and disconnected edits while preserving the last committed result", async () => {
+  const slowSql = "SELECT count(*) AS n FROM range(100000000) x, range(100000000) y";
+
+  it("cancels a superseded native query and preserves the last committed result", async () => {
     const dir = mkdtempSync(join(tmpdir(), "omb-data-live-native-"));
     dirs.push(dir);
     const engine = createDataEngine({ dataDir: dir, botFolder: (id) => join(dir, id) });
     try {
       const database = await engine.forBot("bot-1");
-      const { call, sheets, base } = await serve({ engine });
+      const { call, sheets } = await serve({ engine });
       const initial = await call("POST", "/api/bots/bot-1/data/run", { sql: "SELECT 1 AS n" });
       expect(initial.status).toBe(200);
-      let started = deferred();
+      const started = deferred();
       const materialise = database.materialise.bind(database);
       database.materialise = (sql, name, options) => {
         if (sql.includes("100000000")) started.resolve();
         return materialise(sql, name, options);
       };
-      const slowSql = "SELECT count(*) AS n FROM range(100000000) x, range(100000000) y";
       const older = call("POST", "/api/bots/bot-1/data/run", { cardId: "c_1", sql: slowSql, live: true });
       await started.promise;
       const latest = await call("POST", "/api/bots/bot-1/data/run", { cardId: "c_1", sql: "SELECT 9 AS n", live: true });
       expect(latest.status).toBe(200);
       expect((await older).body.error.code).toBe("cancelled");
       expect((await call("POST", "/api/bots/bot-1/data/page", { cardId: "c_1", offset: 0, limit: 10 })).body.rows).toEqual([[9]]);
-      const good = sheets.for("bot-1").card("c_1");
+      expect(sheets.for("bot-1").card("c_1")?.status).toBe("ready");
+    } finally {
+      await engine.closeAll();
+    }
+  }, 15_000);
 
-      started = deferred();
+  it("cancels a disconnected native edit without changing the committed result", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-data-live-native-"));
+    dirs.push(dir);
+    const engine = createDataEngine({ dataDir: dir, botFolder: (id) => join(dir, id) });
+    try {
+      const database = await engine.forBot("bot-1");
+      const { call, sheets, base } = await serve({ engine });
+      const initial = await call("POST", "/api/bots/bot-1/data/run", { sql: "SELECT 9 AS n" });
+      expect(initial.status).toBe(200);
+      const good = sheets.for("bot-1").card("c_1");
+      const started = deferred();
+      const materialise = database.materialise.bind(database);
+      database.materialise = (sql, name, options) => {
+        if (sql.includes("100000000")) started.resolve();
+        return materialise(sql, name, options);
+      };
       const abort = new AbortController();
       const disconnected = fetch(`${base}/api/bots/bot-1/data/run`, {
         method: "POST", headers: { "content-type": "application/json" }, signal: abort.signal,
@@ -232,7 +252,6 @@ describe("the Data routes", () => {
       await started.promise;
       abort.abort();
       expect(await disconnected).toBeInstanceOf(Error);
-      // The queued health query can finish only after the abandoned native query is interrupted.
       await database.run("SELECT 1", { connection: "panel", timeoutMs: 1_000 });
       expect(sheets.for("bot-1").card("c_1")).toBe(good);
       await expect.poll(async () => (await database.run("SELECT table_name FROM information_schema.tables WHERE table_schema = 'omb_results'", { connection: "bot" })).rows).toEqual([[good!.result]]);
