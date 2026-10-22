@@ -45,6 +45,30 @@ test("terminal routine link survives restart and can be reconciled by coding ide
   replay.close();
 });
 
+test("owner private-merge reason is attached to a verified run and survives restart", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "merge-reason-")), "runtime.db");
+  let store = new RunContractStore(path);
+  store.create(contract, 1);
+  assert.throws(() => store.recordOwnerMerge(contract.id, contract.repository,
+    "This unblocks further development", "merge"), /verified run/);
+  store.transition(contract.id, "running", 2);
+  store.transition(contract.id, "done", 3, ["verified"]);
+  assert.throws(() => store.recordOwnerMerge(contract.id, "wrong/repo",
+    "This unblocks further development", "merge"), /verified run/);
+  store.recordOwnerMerge(contract.id, contract.repository, "This unblocks further development", "merge");
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.deepEqual(store.ownerMergeReason(contract.id), {
+      repository: contract.repository, reason: "This unblocks further development", method: "merge",
+    });
+    assert.throws(() => store.recordOwnerMerge(contract.id, contract.repository,
+      "A different reason unblocks development", "rebase"), /reason changed/);
+  } finally { store.close(); }
+});
+
 test("run contract preserves the iteration ceiling and parses legacy records for fail-closed recovery", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);

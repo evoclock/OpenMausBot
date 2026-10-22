@@ -1,7 +1,7 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
-import { openProductionCodingRuntime } from "./coding-production.ts";
+import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -8296,7 +8296,7 @@ async function startTurn(
   }
   const policyRefusal = policyModelRefusal(instance);
   if (policyRefusal) throw Object.assign(new Error(policyRefusal), { status: 409, code: "managed_policy" });
-  const toolScope = toolScopeForTurn(bot.id);
+  const toolScope = codingTurnToolScope(cfg.codingRuns, bot.id, toolScopeForTurn(bot.id));
   guestDrivenTurns.delete(threadId);
   const guestConfined = cloudGuestDriven(threadId) || cloudGuestDrivenHandoff(opts?.coordination?.id);
   if (guestConfined && instance.adapter.capabilities.guestTurns !== "confined") {

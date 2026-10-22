@@ -85,6 +85,7 @@ export class RunContractStore {
     )`);
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_reports (run_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_tasks (run_id TEXT PRIMARY KEY, task_id INTEGER NOT NULL UNIQUE)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_merge_reasons (run_id TEXT PRIMARY KEY, repository TEXT NOT NULL, reason TEXT NOT NULL, method TEXT NOT NULL CHECK (method IN ('merge', 'rebase')))");
   }
   close(): void { this.db.close(); }
   /** A claim is not an applied settlement receipt. Once claimed, an uncertain external effect must be held. */
@@ -125,6 +126,23 @@ export class RunContractStore {
     if (!this.get(id) || !Number.isSafeInteger(taskId) || taskId <= 0) throw new Error("invalid run task identity");
     this.db.prepare("INSERT OR IGNORE INTO coding_run_tasks VALUES (?, ?)").run(id, taskId);
     if (this.taskId(id) !== taskId) throw new Error("run task identity changed");
+  }
+  recordOwnerMerge(id: string, repository: string, reason: string, method: "merge" | "rebase"): void {
+    const run = this.get(id);
+    if (run?.state !== "done" || run.contract.repository !== repository ||
+      reason.trim().length < 16 || !/\bunblock(?:s|ed|ing)?\b/i.test(reason) ||
+      (method !== "merge" && method !== "rebase")) throw new Error("owner merge reason does not match a verified run");
+    this.db.prepare("INSERT OR IGNORE INTO coding_run_merge_reasons VALUES (?, ?, ?, ?)")
+      .run(id, repository, reason, method);
+    const recorded = this.ownerMergeReason(id);
+    if (recorded?.repository !== repository || recorded.reason !== reason || recorded.method !== method) {
+      throw new Error("owner merge reason changed");
+    }
+  }
+  ownerMergeReason(id: string): { repository: string; reason: string; method: "merge" | "rebase" } | undefined {
+    const row = this.db.prepare("SELECT repository, reason, method FROM coding_run_merge_reasons WHERE run_id = ?")
+      .get(id) as { repository: string; reason: string; method: "merge" | "rebase" } | undefined;
+    return row ? { repository: row.repository, reason: row.reason, method: row.method } : undefined;
   }
   get(id: string): RunSnapshot | undefined {
     const row = this.db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;
