@@ -10,8 +10,36 @@ export function isSecretName(name: string): boolean {
 }
 
 import { mask, redactSecretsInText } from "../shared/redact.ts";
+import type { WireMessage } from "../shared/wire.ts";
 
 export { addHeldSecretScrubber, HELD_SECRET_MASK, mask, redactSecretsInText, scrubHeldSecrets } from "../shared/redact.ts";
+
+const SENSITIVE_FILE = new RegExp(String.raw`(?:^|[/\\\s"'=])(?:\.env(?:\.[\w.-]+)?|\.ssh[/\\](?:id_[\w.-]+|config)|\.aws[/\\]credentials|\.npmrc|\.netrc|[\w.-]+\.keychain(?:-db)?|service[-_]account[\w.-]*\.json)(?=$|[/\\\s"':,;])`, "i");
+const RESULT_KEY_VALUE = /\b((?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|auth[_-]?token|access[_-]?key|private[_-]?key)s?)(["']?\s*[=:]\s*)(["']?)([A-Za-z0-9._~+/=-]+)\3/gi;
+const SENSITIVE_INPUT = "«redacted sensitive file input»";
+const SENSITIVE_RESULT = "«redacted sensitive file result»";
+
+export function redactToolInput(text: string): string {
+  return SENSITIVE_FILE.test(text) ? SENSITIVE_INPUT : redactSecretsInText(text);
+}
+
+export function redactToolResult(text: string, input = ""): string {
+  if (input === SENSITIVE_INPUT || SENSITIVE_FILE.test(input) || SENSITIVE_FILE.test(text)) return SENSITIVE_RESULT;
+  return redactSecretsInText(text).replace(RESULT_KEY_VALUE,
+    (_whole, key: string, separator: string, quote: string, value: string) => `${key}${separator}${quote}${mask(value)}${quote}`);
+}
+
+export function redactToolFields(tool: NonNullable<WireMessage["tool"]>): NonNullable<WireMessage["tool"]> {
+  const input = tool.input ?? tool.name;
+  return {
+    ...tool,
+    name: redactToolInput(tool.name),
+    ...(tool.input === undefined ? {} : { input: redactToolInput(tool.input) }),
+    ...(tool.summary === undefined ? {} : { summary: redactToolResult(tool.summary, input) }),
+    ...(tool.output === undefined ? {} : { output: redactToolResult(tool.output, input) }),
+    ...(tool.spoken === undefined ? {} : { spoken: redactToolInput(tool.spoken) }),
+  };
+}
 
 export function redactSecrets(input: unknown, depth = 0): unknown {
   if (typeof input === "string") return redactSecretsInText(input);
