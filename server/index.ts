@@ -9498,16 +9498,27 @@ let codingDelivery: CodingResultDelivery | null = null;
 let codingWorkspace: CodingTreehouseWorkspace | null = null;
 let codingRunStore: RunContractStore | null = null;
 
-function deliverCodingTerminal(snapshot: RunSnapshot): void {
+function deliverCodingTerminal(snapshot: RunSnapshot): boolean {
   const linked = codingRunStore?.routineLink(snapshot.contract.id);
   const origin = codingOrigins.get(snapshot.contract.id);
   const routineRunId = linked?.routineId ?? origin?.runId;
   const run = routineRunId ? routines?.listRuns().find((candidate) => candidate.id === routineRunId) : undefined;
-  if (!run?.threadId || !codingDelivery) return;
+  if (!run?.threadId || !codingDelivery) return false;
   codingRunStore?.linkRoutine(run.id, snapshot.contract.id);
   const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
-  codingDelivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-    threadId: run.threadId, text: `Coding run ${snapshot.state}: ${evidence || "No result was reported."}` });
+  const text = `Coding run ${snapshot.state}: ${evidence || "No result was reported."}`;
+  if (codingDelivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
+    threadId: run.threadId, text }) !== "delivered") return false;
+  const event = { eventId: `coding-result:${snapshot.contract.id}`, provider: "coding",
+    threadId: run.threadId, createdAt: new Date().toISOString() };
+  if (snapshot.state === "done") {
+    routines?.handleRuntimeEvent({ ...event, type: "item.completed", itemType: "assistant_text", text });
+  } else {
+    routines?.handleRuntimeEvent({ ...event, type: "runtime.error", message: text });
+  }
+  routines?.handleRuntimeEvent({ ...event, type: "turn.completed", ok: snapshot.state === "done",
+    stopReason: snapshot.state === "done" ? "end_turn" : snapshot.state });
+  return true;
 }
 
 routines = new RoutineManager({
@@ -9582,6 +9593,7 @@ routines = new RoutineManager({
       const result = await codingRuntime.scheduled(run);
       if ("id" in result && result.id && codingRunStore) {
         codingRunStore.linkRoutine(run.id, result.id);
+        await codingRuntime.reportPending();
         const current = codingRuntime.get(result.id);
         if (current && ["done", "blocked", "failed", "cancelled"].includes(current.state)) deliverCodingTerminal(current);
       }
@@ -9675,6 +9687,12 @@ if (cfg.codingRuns) {
   });
   codingRuntime = await openCodingRunRuntime({ dataDir: codingDir, workerHost: host,
     routines: codingRegistrations, github: new Map(), onTerminal: deliverCodingTerminal });
+  for (const run of routines.listRuns()) {
+    if (run.triggerSource !== "schedule" || !run.threadId || !codingRegistrations.has(run.routineId)) continue;
+    const id = scheduledCodingRunId(run);
+    if (codingRuntime.get(id)) codingRunStore.linkRoutine(run.id, id);
+  }
+  await codingRuntime.reportPending();
 }
 // Settle Cloud ownership before anything is served and before any routine can run.
 if (CLOUD_HOME && CLOUD_OWNER_KEY && cloudRoutineAuthors) {
