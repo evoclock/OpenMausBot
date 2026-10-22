@@ -38,7 +38,7 @@ test("worker route launches the existing fake process with the scoped approval m
       const text = seen.findLast((event) => event.type === "item.completed" && event.threadId === threadId &&
         event.itemType === "assistant_text");
       if (!text || text.type !== "item.completed" || text.itemType !== "assistant_text") throw new Error("fake process produced no text");
-      return { revision: "fixture-revision", evidence: [text.text], accepted: true };
+      return { revision: "fixture-revision", evidence: [text.text], accepted: true, costUsd: 0 };
     } },
     async verify() { return ["fixture verification"]; },
   });
@@ -90,12 +90,13 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
         throw new Error("fixture worker returned no text");
       }
       workerTurns.push(botId);
-      return { revision: "fixture-revision", evidence: [answer.text], accepted: true };
+      return { revision: "fixture-revision", evidence: [answer.text], accepted: true, costUsd: 0 };
     } },
     async verify() { return ["fixture verification"]; },
   });
   const template: TriggerTemplate = { botId: "origin", repository: workspace.repository, ref: workspace.branch,
-    repositoryClass: "agent-private", successCriteria: ["respond"], allowedEffects: ["edit"], authorisedExternalWrites: [] };
+    repositoryClass: "agent-private", successCriteria: ["respond"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+    limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 } };
   const runtime = await openCodingRunRuntime({ dataDir, workerHost: host,
     routines: new Map([["routine", template]]), webhooks: new Map([["hook", template]]), github: new Map() });
   try {

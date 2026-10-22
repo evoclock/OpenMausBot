@@ -5,6 +5,7 @@ export interface CodingTurnResult {
   revision: string;
   evidence: string[];
   accepted?: boolean;
+  costUsd: number | null;
 }
 
 export interface CodingTurnPort {
@@ -46,7 +47,8 @@ export function createCodingWorkerHost(options: {
         throw new Error("coding worker role is not configured for this run");
       }
       const result = await options.turn.run({ botId: config.developmentBotId, workspace, role, prompt: goal, requestId, signal });
-      return { revision: result.revision, evidence: result.evidence, progress: Boolean(result.revision && result.evidence.length) };
+      return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
+        progress: Boolean(result.revision && result.evidence.length) };
     },
     async review(workspace, role, revision, signal) {
       const config = options.roles.get(workspace.repository);
@@ -58,7 +60,7 @@ export function createCodingWorkerHost(options: {
       const result = await options.turn.run({ botId: config.reviewerBotId, workspace, role,
         prompt: `Review revision ${revision}. Report whether it meets the stated goal.`,
         requestId: `review:${requestId}:${revision}`, signal });
-      return { revision: result.revision, evidence: result.evidence,
+      return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         accepted: result.accepted === true && result.revision === revision && result.evidence.length > 0 };
     },
     verifyWithPstack: options.verify,

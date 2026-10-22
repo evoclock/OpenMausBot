@@ -10,6 +10,7 @@ import { webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
   successCriteria: ["pstack verifies the goal"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+  limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
 
 function fixtureDir() {
@@ -24,8 +25,8 @@ function host(calls: string[]): WorkerHost {
     async acquire(contract) { return { repository: contract.repository, directory: "isolated",
       branch: "review", base: "base", leaseId: "lease" }; },
     async release() { calls.push("release"); },
-    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true }; },
-    async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"] }; },
+    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true, costUsd: 0 }; },
+    async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
   };
 }
