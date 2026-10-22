@@ -638,7 +638,6 @@ import { createUsageRoutes } from "./routes/usage.ts";
 import { createBotMessageRoutes } from "./routes/bot-messages.ts";
 import { createThreadRoutes } from "./routes/threads.ts";
 import { withScopeHint } from "./connector-scope-hint.ts";
-
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
 const WEBHOOK_PUBLIC_URL = process.env.OMB_WEBHOOK_PUBLIC_URL || undefined;
@@ -655,7 +654,6 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
   ".woff2": "font/woff2",
 };
-
 ensureDirs();
 // Acquire before any durable identity, sessions, config or Store state is loaded.
 const dataDirLease = acquireDataDirLeaseForProcess(DATA_DIR);
@@ -734,7 +732,6 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
 const sessionStatusFeed = new SessionStatusFeed(join(DATA_DIR, "session-status.sqlite"));
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
-// Every saved login value is scrubbed from whatever a bot or a transcript can read.
 const logins = new LoginStore({ dataDir: DATA_DIR });
 const highlevel = createHighLevelService({ dataDir: DATA_DIR });
 const heldSecrets = new HeldSecrets(logins);
@@ -13654,13 +13651,8 @@ ROUTES.push(createStatusRoutes({
   browserEngineInstall: { get: () => browserEngineInstall, set: (install) => { browserEngineInstall = install; } },
   browserEngineInstallError: { set: (error) => { browserEngineInstallError = error; } },
 }));
-ROUTES.push(createSessionStatusRoutes({
-  feed: sessionStatusFeed,
-  // A change starts the checkpoint routine early; a quiet heartbeat starts nothing.
-  wake: () => { const routineId = cfg.sessionStatus?.wakeRoutineId; if (routineId) routines?.runNow(routineId); },
-  broadcast: (payload) => broadcast(payload, { adminOnly: true }),
-}));
-
+ROUTES.push(createSessionStatusRoutes({ feed: sessionStatusFeed,
+  wake: () => { const id = cfg.sessionStatus?.wakeRoutineId; if (id) routines?.runNow(id); }, broadcast: (payload) => broadcast(payload, { adminOnly: true }) }));
 ROUTES.push(desktopViewer.route);
 ROUTES.push(createBrowserViewerRoutes({
   upgrades, viewers: browserLive, dataDir: DATA_DIR,
@@ -17073,7 +17065,6 @@ upgrades.attach(server, handleRequest);
 
 calendarCalls.start();
 
-// Resolve the edition before accepting requests so /api/edition is never a guess.
 console.log(describeEdition(await loadEnterpriseLayer()));
 const startupLicenseWarning = licenseWarning(editionStatus());
 if (startupLicenseWarning) console.warn(startupLicenseWarning);
@@ -17275,7 +17266,6 @@ const gracefulShutdown = createGracefulShutdown({
     () => bus.flush(),
     () => closeMessageSearch(),
   ],
-  // Release only after the concurrent cleanup jobs settle, right before exit, so no new server overlaps a still-mutating old one.
   exit: (code) => {
     let finished = false;
     const finish = (exitCode: number) => {

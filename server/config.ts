@@ -441,7 +441,6 @@ const appConfigSchema = z.object({
   decisions: z.object({ retentionDays: z.number().int().min(1).max(3650).optional() }).strict().optional(),
   loopGuard: loopGuardConfigSchema.optional(),
   safetyFloor: z.object({ enabled: z.boolean().optional() }).strict().optional(), // off by default: safetyFloorEnabled in server/safety-floor-gate.ts
-  /** The routine started early when a live session reports a change; unset means the checkpoint reads records on its own schedule. */
   sessionStatus: z.object({ wakeRoutineId: z.string().trim().max(64).regex(/^[\w-]+$/).optional() }).strict().optional(),
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
@@ -454,7 +453,6 @@ const appConfigSchema = z.object({
 });
 const storedAppConfigSchema = appConfigSchema.extend(helperStoredShape).extend({
   browserProfiles: storedBrowserProfilesSchema.optional(),
-  /** Loose like mcpServers: a bad provider key is dropped later, never the whole file. */
   opencodeGo: z.object({
     apiKey: optionalText,
     providerKeys: z.record(z.string(), z.unknown()).catch({})
@@ -469,7 +467,6 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 export interface AppConfig extends HelperConfig {
   customDomain?: string;
   signIn?: { admins?: string[]; members?: string[] };
-  /** Preferred selection for newly created bots; existing bots keep theirs. */
   defaultModelSelection?: ModelSelection;
   /** Off by default; one backup attempt only before any work starts. */
   automaticRecovery?: { enabled: boolean; backup?: ModelSelection };
@@ -497,7 +494,6 @@ export interface AppConfig extends HelperConfig {
   decisions?: { retentionDays?: number };
   loopGuard?: LoopGuardConfig;
   safetyFloor?: { enabled?: boolean };
-  /** Optional wake target for the live-session status feed; see docs/session-status-feed.md. */
   sessionStatus?: { wakeRoutineId?: string };
   billing?: { currency?: string; prices?: Record<string, { inputPerMillion: number; outputPerMillion: number; cachedInputPerMillion?: number }> };
   openaiCompat?: { key?: string; url?: string; model?: string; provider?: string };
