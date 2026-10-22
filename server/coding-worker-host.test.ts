@@ -35,6 +35,7 @@ test("missing or invalid role maps block before workspace acquisition", async ()
     turn: { async run() { throw new Error("should not dispatch"); } },
     async verify() { return null; },
   };
+  assert.equal(await createCodingWorkerHost(base).roles("fixture/agents"), null);
   const missing = createCodingWorkerHost({ ...base, rolesFilePath: join(roleDir, "absent-roles.json") });
   assert.equal(await missing.roles("fixture/agents"), null);
   const invalid = join(roleDir, "invalid-coding-roles.json");

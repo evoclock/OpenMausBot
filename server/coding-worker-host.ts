@@ -17,7 +17,7 @@ export interface CodingTurnPort {
 }
 
 export function createCodingWorkerHost(options: {
-  rolesFilePath: string;
+  rolesFilePath?: string;
   roles: ReadonlyMap<string, WorkerRoles & { developmentBotId: string; reviewerBotId: string }>;
   workspace: { acquire(contract: RunContractInput, requestId: string): Promise<IsolatedWorkspace>;
     release(leaseId: string, reason: string): Promise<void> };
