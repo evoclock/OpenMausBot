@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import type { RuntimeEvent } from "./contracts.ts";
+import { runSnapshotSchema, type RunSnapshot } from "./run-contract.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
@@ -161,6 +162,14 @@ export interface RoutineRequestReceipt {
   appliedAt: number;
 }
 
+export interface CodingSettlementReceipt {
+  routineRunId: string;
+  codingRunId: string;
+  terminalHash: string;
+  disposition: "completed" | "held" | "failed" | "cancelled";
+  appliedAt: number;
+}
+
 export interface RoutineRequestCommit {
   requestId: string;
   messageId: string;
@@ -199,6 +208,7 @@ interface RoutineFile {
   runs: RoutineRun[];
   routineRequestReceipts?: RoutineRequestReceipt[];
   webhookRunReceipts?: WebhookRunReceipt[];
+  codingSettlementReceipts?: CodingSettlementReceipt[];
   startupLaunchId?: string;
   ownerNotices?: RoutineOwnerNotice[];
 }
@@ -681,6 +691,7 @@ export class RoutineManager {
   private closing = false;
   private ownerNotices: RoutineOwnerNotice[] = [];
   private readonly failureFacts = new Map<string, RoutineFailureFacts>();
+  private codingSettlementReceipts: CodingSettlementReceipt[] = [];
   /** Saves are refused while set, so an empty state never overwrites an unreadable file. */
   private unreadable = false;
   private frozenPending = false;
@@ -761,6 +772,8 @@ export class RoutineManager {
             return parsed.success ? [parsed.data] : [];
           })
         : [];
+      this.codingSettlementReceipts = Array.isArray(disk.codingSettlementReceipts)
+        ? disk.codingSettlementReceipts : [];
       this.frozenPending = disk.frozenResultsCleared !== true;
       this.ownerNotices = loadOwnerNotices(disk.ownerNotices);
       if (typeof disk.startupLaunchId === "string") this.startupLaunchId = disk.startupLaunchId;
@@ -779,6 +792,7 @@ export class RoutineManager {
       this.runs = [];
       this.routineRequestReceipts = [];
       this.webhookRunReceipts = [];
+      this.codingSettlementReceipts = [];
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.unreadable = true;
         // JSON.parse errors can echo a fragment of the input, so they never reach the log.
@@ -857,6 +871,35 @@ export class RoutineManager {
       .filter((at): at is number => at != null && at <= now + horizonMs)
       .sort((a, b) => a - b)[0];
     return due === undefined ? { hold: false } : { hold: true, reason: "due", at: due };
+  }
+
+  settleCodingRun(routineRunId: string, terminal: RunSnapshot): { status: "applied" | "existing"; receipt: CodingSettlementReceipt } {
+    this.assertWritable();
+    const snapshot = runSnapshotSchema.parse(terminal);
+    const codingRunId = snapshot.contract.id;
+    if (!["done", "blocked", "failed", "cancelled"].includes(snapshot.state)) throw new Error("coding run is not terminal");
+    const terminalHash = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+    const existing = this.codingSettlementReceipts.find((receipt) => receipt.routineRunId === routineRunId || receipt.codingRunId === codingRunId);
+    if (existing) {
+      if (existing.routineRunId !== routineRunId || existing.codingRunId !== codingRunId || existing.terminalHash !== terminalHash) {
+        throw new Error("conflicting coding settlement");
+      }
+      return { status: "existing", receipt: { ...existing } };
+    }
+    const run = this.runs.find((candidate) => candidate.id === routineRunId);
+    if (!run || !["queued", "running", "waiting"].includes(run.status)) throw new Error("routine run is not open");
+    const disposition = snapshot.state === "done" ? "completed" : snapshot.state === "blocked" ? "held"
+      : snapshot.state === "cancelled" ? "cancelled" : "failed";
+    const receipt: CodingSettlementReceipt = { routineRunId, codingRunId, terminalHash, disposition, appliedAt: this.now() };
+    this.commitMutation(() => {
+      run.status = disposition === "held" ? "failed" : disposition;
+      run.finishedAt = this.now();
+      run.output = snapshot.evidence.join("; ");
+      if (disposition === "held") run.error = "Coding run needs reconciliation";
+      this.codingSettlementReceipts.push(receipt);
+    });
+    this.notifyRunChanged(run);
+    return { status: "applied", receipt: { ...receipt } };
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {
@@ -1822,6 +1865,7 @@ export class RoutineManager {
       routines: this.routines.map(cloneRoutine),
       runs: this.runs.map(cloneRun),
       receipts: this.routineRequestReceipts.map((receipt) => ({ ...receipt })),
+      codingReceipts: this.codingSettlementReceipts.map((receipt) => ({ ...receipt })),
     };
     try {
       mutate();
@@ -1831,6 +1875,7 @@ export class RoutineManager {
       this.routines = before.routines;
       this.runs = before.runs;
       this.routineRequestReceipts = before.receipts;
+      this.codingSettlementReceipts = before.codingReceipts;
       try {
         rollback?.();
       } catch (cleanupError) {
@@ -1858,6 +1903,7 @@ export class RoutineManager {
       ...(this.frozenPending ? {} : { frozenResultsCleared: true }),
       routines: [...this.routines, ...this.unloadedRoutines], runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts, webhookRunReceipts: this.webhookRunReceipts,
+      codingSettlementReceipts: this.codingSettlementReceipts,
       ...(this.startupLaunchId === undefined ? {} : { startupLaunchId: this.startupLaunchId }),
       ...(this.ownerNotices.length ? { ownerNotices: this.ownerNotices } : {}),
     } satisfies RoutineFile, null, 2)); } catch (error) {
