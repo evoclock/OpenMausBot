@@ -9,6 +9,7 @@ import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run
 import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
 import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 
 export type InnerLoopResult =
   | { kind: "progress"; evidence: string[]; costUsd?: number | null }
@@ -17,7 +18,7 @@ export type InnerLoopResult =
 
 export interface InnerLoop {
   invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal,
-    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
+    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; history?: IterationEntry[]; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
 }
 
 const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
@@ -164,7 +165,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         try {
           const result = await inner.invoke(current.contract, current.iteration, requestId,
             AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd,
-            { iteration: current.iteration, previous, compactor: options.contextCompactor });
+            { iteration: current.iteration, previous, history: ledger.entries(task.input.id),
+              compactor: options.contextCompactor ?? createIterationContextCompactor() });
           const at = Math.max(Date.now(), current.updatedAt + 1);
           const costUsd = result.costUsd ?? null;
           const reasons = [

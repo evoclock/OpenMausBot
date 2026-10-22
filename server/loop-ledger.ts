@@ -10,9 +10,8 @@ export interface IterationEntry {
   finishedAt?: number;
 }
 
-/** A future context compactor can replace presentation, but not the durable receipts. */
 export interface IterationContextCompactor {
-  compact(entry: IterationEntry): string;
+  compact(entries: readonly IterationEntry[]): string;
 }
 
 const MAX_ENTRIES = 32;
