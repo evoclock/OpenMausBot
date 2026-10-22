@@ -262,19 +262,15 @@ class PrWordingLint(unittest.TestCase):
         self.assertNotRegex(result.stdout, r"--(?:path|paths|glob|files?|dir)\b")
 
     def test_workflow_runs_only_on_pull_requests(self) -> None:
-        text = (ROOT / ".github" / "workflows" / "pr-wording.yml").read_text(encoding="utf-8")
-        on_block = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
-        triggers = [line.strip().rstrip(":") for line in on_block.splitlines() if line.startswith("  ") and not line.startswith("   ")]
-        self.assertEqual(triggers, ["pull_request"])
-        self.assertIn("contents: read", text)
-        self.assertIn(".github/tools/pr-wording/pr_wording_lint.py", text)
-        # Trusted code only: the lint runs from the base commit, never the PR head.
-        self.assertIn("github.event.pull_request.base.sha", text)
-        self.assertNotRegex(text, r"head\.(?:sha|ref)")
-        # The lint gets only the event payload and the optional repo config.
-        self.assertIn('ARGS=(--event "$GITHUB_EVENT_PATH")', text)
-        self.assertIn("--config .github/pr-wording.json", text)
-        self.assertEqual(text.count('python3 "$LINT"'), 1)
+        pipeline = (ROOT / ".buildkite" / "pipeline.yml").read_text(encoding="utf-8")
+        wording = pipeline.split('  - label: "PR wording"\n', 1)[1].split('  - label: "PR review gate"\n', 1)[0]
+        self.assertIn("if: build.pull_request.id != null", wording)
+        self.assertIn('command: ".buildkite/pr-checks.sh wording"', wording)
+        check = (ROOT / ".buildkite" / "pr-checks.sh").read_text(encoding="utf-8")
+        self.assertIn('if [[ "$pr" == false || -z "$pr" ]]', check)
+        self.assertIn('git show "$base_sha:$base/$name"', check)
+        self.assertIn('git show "$base_sha:.github/pr-wording.json"', check)
+        self.assertIn('python3 "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"', check)
 
     def test_no_personal_config_is_committed(self) -> None:
         self.assertFalse((ROOT / ".github" / "pr-wording.json").exists())

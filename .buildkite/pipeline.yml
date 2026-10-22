@@ -1,0 +1,172 @@
+# Host-only checks. Release publishing remains in GitHub Actions.
+# Mac-1 needs sfw, Node >=24, pnpm 10.33.0, Python 3.12, git and gh on PATH.
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  # Mac-1 already has the pinned pnpm under the Pi harness bin directory.
+  PATH: "${HOME}/.pi/pi/harness/bin:${PATH}"
+steps:
+  - label: "Typecheck"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 20
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm typecheck"
+  - label: "Lint and policy tests"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 20
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm lint"
+      - ".buildkite/public-scan.sh"
+      - "node --test .github/tools/*.test.mjs electron/shared-computer-access.node-test.mjs"
+      - "python3 -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
+  - label: "Tests 1/4"
+    if: build.pull_request.id == null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=1/4"
+  - label: "Tests 2/4"
+    if: build.pull_request.id == null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=2/4"
+  - label: "Tests 3/4"
+    if: build.pull_request.id == null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=3/4"
+  - label: "Tests 4/4"
+    if: build.pull_request.id == null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run --shard=4/4"
+  - label: "PR Mac tests 1/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "0" }
+    command: &mac-pr-tests
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - |
+        mkdir -p .omb-scratch/buildkite-reports
+        report=".omb-scratch/buildkite-reports/vitest-$$SHARD_INDEX.json"
+        status=0
+        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
+        if test -s "$$report"; then
+          node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
+          buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
+        fi
+        exit "$$status"
+  - label: "PR Mac tests 2/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "1" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 3/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "2" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 4/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "3" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 5/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "4" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 6/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "5" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 7/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "6" }
+    command: *mac-pr-tests
+  - label: "PR Mac tests 8/8"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 30
+    env: { SHARD_INDEX: "7" }
+    command: *mac-pr-tests
+  - label: "Docs"
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 15
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm --filter @openmausbot/docs types:check"
+      - "pnpm --filter @openmausbot/docs lint"
+      - "pnpm docs:build"
+  - label: "Reviewed browser cross-compile"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 5
+    command:
+      - |
+        git fetch --quiet origin "$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"
+        if ! git diff --name-only "origin/$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD | grep -Eq '^(scripts/build-windows-browser-vendor\.mjs|scripts/build-windows-browser-vendor\.test\.mjs|scripts/smoke-browser-bundle\.mjs|third_party/browser/agent-browser-windows-stdio\.patch)$$'; then
+          echo 'Browser vendor sources unchanged; candidate build is not needed'
+          exit 0
+        fi
+        echo 'Reviewed browser cross-compile requires a Linux toolchain; mac-mini cannot build this candidate' >&2
+        exit 1
+  - label: "Dependencies"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 15
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - ".buildkite/pr-checks.sh dependencies"
+  - label: "Author check"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 5
+    command: ".buildkite/pr-checks.sh author"
+  - label: "PR wording"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 5
+    command: ".buildkite/pr-checks.sh wording"
+  - label: "PR review gate"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 10
+    command: ".buildkite/pr-checks.sh review"
+  - wait:
+      continue_on_failure: true
+  - label: "Slowest 20 tests"
+    if: build.pull_request.id != null
+    agents: { queue: mac-mini }
+    timeout_in_minutes: 5
+    command:
+      - ".buildkite/host.sh"
+      - "mkdir -p .omb-scratch/shard-durations"
+      - 'buildkite-agent artifact download ".omb-scratch/buildkite-reports/durations-*.json" .omb-scratch/shard-durations'
+      - 'node scripts/testing/update-shard-weights.mjs --slowest .omb-scratch/shard-durations/.omb-scratch/buildkite-reports/durations-*.json | buildkite-agent annotate --context vitest-slowest-20 --style info'
