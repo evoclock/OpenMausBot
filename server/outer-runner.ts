@@ -165,7 +165,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           const result = await inner.invoke(current.contract, current.iteration, requestId,
             AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd,
             { iteration: current.iteration, previous, compactor: options.contextCompactor });
-          const at = Math.max(Date.now(), current.updatedAt + 1);
+          const at = Math.max(Date.now(), current.updatedAt + 1,
+            deadline.signal.aborted ? current.startedAt! + current.contract.limits!.maxWallTimeMs : 0);
           const costUsd = result.costUsd ?? null;
           const reasons = [
             Math.max(current.elapsedMs, at - current.startedAt!) >= current.contract.limits!.maxWallTimeMs
@@ -194,7 +195,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         } catch (error) {
           const latest = store.get(task.input.id);
           if (latest?.state === "running") {
-            transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1),
+            transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1,
+              deadline.signal.aborted ? current.startedAt! + current.contract.limits!.maxWallTimeMs : 0),
               [deadline.signal.aborted ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)`
                 : error instanceof Error ? error.message : "inner loop failed"]);
           }
