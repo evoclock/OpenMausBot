@@ -152,13 +152,14 @@ steps:
     agents: { queue: linux-small }
     timeout_in_minutes: 45
     command:
-      - *hosted-bootstrap
       - |
         git fetch --quiet origin "$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"
         if ! git diff --name-only "origin/$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD | grep -Eq '^(scripts/build-windows-browser-vendor\.mjs|scripts/build-windows-browser-vendor\.test\.mjs|scripts/smoke-browser-bundle\.mjs|third_party/browser/agent-browser-windows-stdio\.patch)$$'; then
           echo 'Browser vendor sources unchanged; candidate build is not needed'
           exit 0
         fi
+      - *hosted-bootstrap
+      - |
         rustup toolchain install 1.97.1 --profile minimal --target x86_64-pc-windows-gnu
         sudo apt-get update
         sudo apt-get install -y mingw-w64
