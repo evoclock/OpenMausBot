@@ -45,7 +45,7 @@ test("terminal routine link survives restart and can be reconciled by coding ide
   replay.close();
 });
 
-test("run contract carries an iteration ceiling; time and spend budgets remain unenforced", () => {
+test("run contract preserves the iteration ceiling and parses legacy records for fail-closed recovery", () => {
   const store = new RunContractStore(":memory:");
   const queued = store.create(contract, 1);
   assert.equal(queued.contract.maxIterations, 8);
@@ -83,6 +83,35 @@ test("prepared effects and finished results survive reopen with stable request i
     assert.throws(() => store.bindTask(contract.id, 43), /identity changed/);
     assert.equal(store.taskId(contract.id), 42);
   } finally { store.close(); }
+});
+
+test("wall-clock and spend counters survive restart before the next iteration", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "run-counters-")), "runtime.db");
+  const limits = { maxWallTimeMs: 100, maxSpendUsd: 1 };
+  const first = new RunContractStore(path);
+  first.create({ ...contract, limits }, 10);
+  first.beginIteration(contract.id, 0, `${contract.id}:1`, 20);
+  first.finishIteration(contract.id, 1, `${contract.id}:1`, "waiting", 40, ["step one"], 0.4);
+  first.close();
+  const resumed = new RunContractStore(path);
+  try {
+    const persisted = resumed.get(contract.id)!;
+    assert.equal(persisted.startedAt, 10);
+    assert.equal(persisted.elapsedMs, 30);
+    assert.equal(persisted.spentUsd, 0.4);
+    assert.equal(persisted.spendUncertain, false);
+    assert.deepEqual(persisted.contract.limits, { ...limits, allowedFallbackModels: [], allowedFallbackDataRoutes: [] });
+    resumed.beginIteration(contract.id, 1, `${contract.id}:2`, 50);
+    const terminal = resumed.finishIteration(contract.id, 2, `${contract.id}:2`, "blocked", 60,
+      ["spend ceiling reached"], 0.6);
+    assert.equal(terminal.spentUsd, 1);
+    assert.equal(terminal.elapsedMs, 50);
+    assert.equal(resumed.report(contract.id)?.snapshot.spentUsd, 1);
+  } finally { resumed.close(); }
+  assert.throws(() => runContractSchema.parse({ ...contract, limits: { maxWallTimeMs: 0, maxSpendUsd: 1 } }), /maxWallTimeMs/);
+  assert.throws(() => runContractSchema.parse({ ...contract, limits: { maxWallTimeMs: 10, maxSpendUsd: -1 } }), /maxSpendUsd/);
 });
 
 test("external writes need exact per-run authorisation; critical effects cannot enter the contract", () => {

@@ -9,6 +9,7 @@ import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
+import { flushUsageLedger, readUsage } from "./usage-ledger.ts";
 import type { RoutineManager, RoutineRun } from "./routines.ts";
 import type { Store } from "./store.ts";
 import type { WebhookManager } from "./webhooks.ts";
@@ -22,7 +23,7 @@ export async function openProductionCodingRuntime(options: {
   sourceApprovalMode: (botId: string, threadId: string) => ApprovalMode;
   driverKind: (botId: string) => string | undefined;
   startTurn: (botId: string, text: string, input: { threadId: string; requestId: string;
-    triggerSource: "schedule" | "webhook";
+    triggerSource: "schedule" | "webhook"; allowedFallbackModels: Array<{ instanceId: string; model: string }>;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
 }) {
@@ -59,10 +60,13 @@ export async function openProductionCodingRuntime(options: {
     if (Boolean(routine) === Boolean(hook) || hook?.delivery === "post") {
       throw new Error("coding trigger registration requires one applied schedule or run webhook");
     }
+    const botId = (routine ?? hook)!.botId;
+    const limits = config.bots?.[botId];
     const template: TriggerTemplate = {
-      botId: (routine ?? hook)!.botId,
+      botId,
       repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
       successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
+      ...(limits ? { limits } : {}),
     };
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
   }
@@ -87,10 +91,23 @@ export async function openProductionCodingRuntime(options: {
       return run.triggerSource === "webhook" ? "ask" : options.sourceApprovalMode(origin.botId, origin.threadId);
     },
     driverKind: options.driverKind,
+    async costForThread(botId, threadId, since) {
+      if (!Number.isSafeInteger(since) || since <= 0) return null;
+      await flushUsageLedger(dataDir);
+      const rows = readUsage(dataDir, { from: new Date(since), to: new Date() })
+        .filter((row) => row.botId === botId && row.threadId === threadId);
+      const turns = store.tasks(botId).find((task) => task.threadId === threadId)?.usage?.turns;
+      if (!rows.length || !turns || rows.length !== turns || rows.some((row) =>
+        row.costUsd === null || !Number.isFinite(row.costUsd) || row.costUsd < 0)) return null;
+      return rows.reduce((sum, row) => sum + row.costUsd!, 0);
+    },
     async startTurn(botId, text, input) {
       const origin = originForRequest(input.requestId);
       const run = origin && routines.runForThread(origin.threadId);
-      await options.startTurn(botId, text, { ...input,
+      const request = input.requestId.startsWith("review:") ? input.requestId.slice(7) : input.requestId;
+      const allowedFallbackModels = origin ? runStore.get(request.slice(0, 36))
+        ?.contract.limits?.allowedFallbackModels ?? [] : [];
+      await options.startTurn(botId, text, { ...input, allowedFallbackModels,
         triggerSource: run?.triggerSource === "webhook" ? "webhook" : "schedule" });
     },
     interrupt: options.interrupt,

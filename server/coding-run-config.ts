@@ -1,7 +1,10 @@
 import { z } from "zod";
+import { codingRunLimitsSchema } from "./run-contract.ts";
 
 export const codingRunConfigSchema = z.object({
   repositoryRoot: z.string().min(1),
+  /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
+  bots: z.record(z.string().min(1), codingRunLimitsSchema).optional(),
   registrations: z.array(z.object({
     routineId: z.string().min(1), workerBotId: z.string().min(1), reviewerBotId: z.string().min(1),
     developmentRole: z.string().min(1), reviewRole: z.string().min(1),

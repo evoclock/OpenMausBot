@@ -12,6 +12,7 @@ interface CodingStartTurnOptions {
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   driverKind: (botId: string) => string | undefined;
+  costForThread: (botId: string, threadId: string, since: number) => Promise<number | null>;
 }
 
 function revision(directory: string): string {
@@ -56,7 +57,8 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
         if (!answer?.text || answer.turnSucceeded === false) throw new Error("coding turn produced no completed answer");
         const after = revision(workspace.directory);
         return { revision: after === before && role !== "review" ? "" : after,
-          evidence: [answer.text], accepted: role === "review" && answer.text.includes(`ACCEPT ${after}`) };
+          evidence: [answer.text], accepted: role === "review" && answer.text.includes(`ACCEPT ${after}`),
+          costUsd: await options.costForThread(botId, task.threadId, task.createdAt) };
       } finally {
         signal.removeEventListener("abort", abort);
       }

@@ -37,7 +37,7 @@ async function fixture(mode: "coding" | "happy" | "permission") {
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump },
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
   const port = 20000 + Math.floor(Math.random() * 20000);
@@ -90,14 +90,15 @@ test.each([
     const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
     await f.api("PATCH", `/api/bots/${origin.id}`, { approvalMode: "ask" });
     for (const bot of [worker, reviewer]) {
-      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi", model: "ollama-cloud/glm-5.2" } });
+      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
     }
     const routine = (await f.api("POST", "/api/routines", {
       name: "Scheduled coding fixture", prompt: "Complete fixture coding task", botId: origin.id,
       schedule: { type: "once", at: Date.now() + 3_600_000 },
     })).routine;
     await f.stop();
-    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, registrations: [{
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+      bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
       routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
       developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
       successCriteria: ["coding-fixture-result.txt exists"],
@@ -209,6 +210,101 @@ test.each([
         mode, routineId: routine.id, run, workerTask, reviewTask, ownerMessages, workerMessages,
         turns: turns.filter((turn) => turn.isTurnSpawn).map((turn) => ({ cwd: turn.cwd, argv: turn.argv })), operations, leased: f.leased,
         revision: f.git(f.leased, "rev-parse", "HEAD"), stderr: f.logs().slice(-3000),
+      }, null, 2));
+    }
+  } catch (error) { console.error(f.logs().slice(-8000)); throw error; }
+  finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
+test("composed server refuses unconfigured coding ceilings without a worker turn", async () => {
+  const f = await fixture("happy");
+  try {
+    await f.start();
+    const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Coding worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
+    const routine = (await f.api("POST", "/api/routines", {
+      name: "Unconfigured ceiling fixture", prompt: "Complete fixture coding task", botId: origin.id,
+      schedule: { type: "once", at: Date.now() + 3_600_000 },
+    })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+      registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"] }] } }));
+    const routinesFile = join(f.dataDir, "routines.json");
+    const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
+    const due = Date.now() - 1000;
+    const scheduled = saved.routines.find((entry: { id: string }) => entry.id === routine.id);
+    scheduled.schedule.at = due;
+    scheduled.nextRunAt = due;
+    writeFileSync(routinesFile, JSON.stringify(saved));
+    await f.start();
+    await f.until(async () => {
+      const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
+      return runs.some((run) => run.routineId === routine.id && run.status === "failed");
+    }, "unconfigured terminal report");
+    const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const messages = (await f.api("GET", `/api/threads/${run.threadId}/messages?limit=100`)).messages as Array<{
+      turnId?: string; text?: string;
+    }>;
+    expect(messages.find((message) => message.turnId?.startsWith("coding-result:"))?.text)
+      .toContain("configure this bot's wall-clock and spend ceilings");
+    const bots = (await f.api("GET", "/api/bots")).bots;
+    for (const id of [worker.id, reviewer.id]) {
+      expect(bots.find((bot: { id: string }) => bot.id === id).tasks
+        .some((task: { title: string }) => task.title.startsWith("Coding "))).toBe(false);
+    }
+  } catch (error) { console.error(f.logs().slice(-8000)); throw error; }
+  finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
+test("composed server interrupts an active coding turn at its wall-clock ceiling", async () => {
+  const f = await fixture("permission");
+  try {
+    await f.start();
+    const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Coding worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
+    await f.api("PATCH", `/api/bots/${worker.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
+    await f.api("PATCH", `/api/bots/${reviewer.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
+    const routine = (await f.api("POST", "/api/routines", {
+      name: "Deadline fixture", prompt: "Complete fixture coding task", botId: origin.id,
+      schedule: { type: "once", at: Date.now() + 3_600_000 },
+    })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+      bots: { [origin.id]: { maxWallTimeMs: 5_000, maxSpendUsd: 1 } }, registrations: [{
+        routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "development", reviewRole: "review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"],
+      }] } }));
+    const routinesFile = join(f.dataDir, "routines.json");
+    const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
+    const due = Date.now() - 1000;
+    const scheduled = saved.routines.find((entry: { id: string }) => entry.id === routine.id);
+    scheduled.schedule.at = due;
+    scheduled.nextRunAt = due;
+    writeFileSync(routinesFile, JSON.stringify(saved));
+    await f.start();
+    await f.until(async () => {
+      const bot = (await f.api("GET", "/api/bots")).bots.find((entry: { id: string }) => entry.id === worker.id);
+      return Boolean(bot?.tasks.some((task: { title: string }) => task.title.startsWith("Coding ")));
+    }, "active worker turn");
+    await f.until(async () => {
+      const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
+      return runs.some((run) => run.routineId === routine.id && run.status === "failed");
+    }, "wall-clock terminal report");
+    const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const messages = (await f.api("GET", `/api/threads/${run.threadId}/messages?limit=100`)).messages as Array<{
+      turnId?: string; text?: string;
+    }>;
+    const report = messages.find((message) => message.turnId?.startsWith("coding-result:"));
+    expect(report?.text).toContain("wall-clock ceiling reached");
+    expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(false);
+    if (process.env.OMB_PARITY_PROOF_DIR) {
+      writeFileSync(join(process.env.OMB_PARITY_PROOF_DIR, "run-limits-composed-ceiling.json"), JSON.stringify({
+        result: run.status, report: report?.text, elapsedCeilingMs: 5_000,
       }, null, 2));
     }
   } catch (error) { console.error(f.logs().slice(-8000)); throw error; }

@@ -17,7 +17,7 @@ test("normal turn callback gets the originating approval mode and persisted outp
     bot: () => ({ id: "worker" }),
     tasks: () => tasks,
     createTask(_botId: string, title: string) {
-      const task = { title, threadId: "thread-1", cwd };
+      const task = { title, threadId: "thread-1", cwd, createdAt: 1 };
       tasks.push(task);
       return task;
     },
@@ -25,6 +25,7 @@ test("normal turn callback gets the originating approval mode and persisted outp
     messagesFor: () => messages,
   } as unknown as Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor">;
   const port = createCodingStartTurnPort({ store, approvalMode: () => "ask", driverKind: () => "piAgent",
+    costForThread: async () => 0,
     async startTurn(_botId, _text, { requestId, onTurnSettled }) {
       assert.equal(requestId, "review:1");
       assert.deepEqual(pinned, { cwd, approvalMode: "ask" });
@@ -35,7 +36,7 @@ test("normal turn callback gets the originating approval mode and persisted outp
   });
   const signal = new AbortController().signal;
   const result = await port.run({ botId: "worker", workspace, role: "review", prompt: "Review", requestId: "review:1", signal });
-  assert.deepEqual(result, { revision, evidence: [`ACCEPT ${revision}`], accepted: true });
+  assert.deepEqual(result, { revision, evidence: [`ACCEPT ${revision}`], accepted: true, costUsd: 0 });
   await assert.rejects(port.run({ botId: "worker", workspace, role: "review", prompt: "Review", requestId: "review:1", signal }),
     /already completed/);
 });

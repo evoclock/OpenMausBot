@@ -3,6 +3,13 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 
+export const codingRunLimitsSchema = z.object({
+  maxWallTimeMs: z.number().int().positive().max(2_147_483_647),
+  maxSpendUsd: z.number().finite().positive(),
+  allowedFallbackModels: z.array(z.object({ instanceId: z.string().min(1), model: z.string().min(1) }).strict()).default([]),
+  allowedFallbackDataRoutes: z.array(z.string().min(1)).default([]),
+}).strict();
+
 export const runContractSchema = z.object({
   id: z.string().uuid(),
   botId: z.string().min(1),
@@ -12,6 +19,7 @@ export const runContractSchema = z.object({
   repositoryClass: z.enum(["agent-private", "external"]),
   allowedEffects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])),
   maxIterations: z.number().int().positive().default(8),
+  limits: codingRunLimitsSchema.optional(),
   authorisedExternalWrites: z.array(z.object({
     repository: z.string().min(1),
     effects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])).min(1),
@@ -34,6 +42,10 @@ export const runSnapshotSchema = z.object({
   state: runStateSchema,
   iteration: z.number().int().nonnegative(),
   updatedAt: z.number().int().positive(),
+  startedAt: z.number().int().positive().optional(),
+  elapsedMs: z.number().int().nonnegative().default(0),
+  spentUsd: z.number().finite().nonnegative().default(0),
+  spendUncertain: z.boolean().default(false),
   evidence: z.array(z.string()),
 }).strict();
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
@@ -53,7 +65,9 @@ export function advanceRun(current: RunSnapshot, next: RunState, at: number, evi
   if (!Number.isSafeInteger(at) || at <= snapshot.updatedAt) throw new Error("run time must advance");
   if (next === "done" && !evidence.some((item) => item.trim())) throw new Error("completion requires verification evidence");
   const iteration = snapshot.iteration + (next === "running" ? 1 : 0);
-  return runSnapshotSchema.parse({ ...snapshot, state: next, iteration, updatedAt: at, evidence: [...snapshot.evidence, ...evidence] });
+  return runSnapshotSchema.parse({ ...snapshot, state: next, iteration, updatedAt: at,
+    elapsedMs: snapshot.startedAt ? Math.max(snapshot.elapsedMs, at - snapshot.startedAt) : snapshot.elapsedMs,
+    evidence: [...snapshot.evidence, ...evidence] });
 }
 
 export class RunContractStore {
@@ -118,7 +132,8 @@ export class RunContractStore {
   }
   create(contract: RunContractInput, at: number): RunSnapshot {
     const checked = runContractSchema.parse(contract);
-    const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0, updatedAt: at, evidence: [] });
+    const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0,
+      updatedAt: at, startedAt: at, evidence: [] });
     const inserted = this.db.prepare("INSERT OR IGNORE INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)")
       .run(checked.id, checked.botId, JSON.stringify(snapshot));
     if (inserted.changes) return snapshot;
@@ -161,14 +176,17 @@ export class RunContractStore {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   finishIteration(id: string, sequence: number, requestId: string, nextState: RunState,
-    at: number, evidence: string[]): RunSnapshot {
+    at: number, evidence: string[], costUsd: number | null = null): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const current = this.get(id);
       const step = this.step(id, sequence);
       if (!current || current.state !== "running" || current.iteration !== sequence ||
         step?.status !== "prepared" || step.requestId !== requestId) throw new Error("iteration receipt does not match running attempt");
-      const next = advanceRun(current, nextState, at, evidence);
+      if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd < 0)) throw new Error("invalid run spend");
+      const advanced = advanceRun(current, nextState, at, evidence);
+      const next = runSnapshotSchema.parse({ ...advanced, spentUsd: current.spentUsd + (costUsd ?? 0),
+        spendUncertain: current.spendUncertain || costUsd === null });
       this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
         .run(JSON.stringify(next), id);
       this.db.prepare("UPDATE coding_run_steps SET status = 'finished', result = ? WHERE run_id = ? AND sequence = ?")
@@ -185,7 +203,10 @@ export class RunContractStore {
     try {
       const row = this.db.prepare("SELECT version, snapshot FROM coding_runs WHERE id = ?").get(id) as { version: number; snapshot: string } | undefined;
       if (!row) throw new Error("run not found");
-      const snapshot = advanceRun(runSnapshotSchema.parse(JSON.parse(row.snapshot)), next, at, evidence);
+      const current = runSnapshotSchema.parse(JSON.parse(row.snapshot));
+      const advanced = advanceRun(current, next, at, evidence);
+      const snapshot = next === "blocked" && current.state === "running"
+        ? runSnapshotSchema.parse({ ...advanced, spendUncertain: true }) : advanced;
       this.db.prepare("UPDATE coding_runs SET version = ?, snapshot = ? WHERE id = ? AND version = ?")
         .run(row.version + 1, JSON.stringify(snapshot), id, row.version);
       if (["done", "failed", "cancelled", "blocked"].includes(snapshot.state)) {

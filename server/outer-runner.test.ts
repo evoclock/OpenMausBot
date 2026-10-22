@@ -10,6 +10,7 @@ const contract: RunContractInput = {
   id: "33333333-3333-4333-8333-333333333333", botId: "fixture", repository: "fixture/agents", ref: "review",
   successCriteria: ["pstack verifies completion"], repositoryClass: "agent-private",
   allowedEffects: ["edit"], authorisedExternalWrites: [],
+  limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
 
 function fixtureDir() {
@@ -23,8 +24,8 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   const runner = await openOuterRunner(fixtureDir(), {
     async invoke(_contract, iteration, requestId) {
       calls.push(requestId);
-      return iteration === 1 ? { kind: "progress", evidence: ["changes persisted"] }
-        : { kind: "verified", evidence: ["pstack completion verdict"] };
+      return iteration === 1 ? { kind: "progress", evidence: ["changes persisted"], costUsd: 0 }
+        : { kind: "verified", evidence: ["pstack completion verdict"], costUsd: 0 };
     },
   });
   try {
@@ -39,7 +40,7 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
 
 test("repeated start returns the same durable task identity", async () => {
   const runner = await openOuterRunner(fixtureDir(), {
-    async invoke() { return { kind: "verified", evidence: ["complete"] }; },
+    async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; },
   });
   try {
     const [first, concurrent] = await Promise.all([runner.start(contract), runner.start(contract)]);
@@ -71,7 +72,7 @@ test("outer loop parks the run as blocked at the contract iteration ceiling", as
   const runner = await openOuterRunner(fixtureDir(), {
     async invoke(_contract, _iteration, requestId) {
       calls.push(requestId);
-      return { kind: "progress", evidence: ["changes persisted"] };
+      return { kind: "progress", evidence: ["changes persisted"], costUsd: 0 };
     },
   });
   try {
@@ -90,7 +91,7 @@ test("outer loop parks the run as blocked at the contract iteration ceiling", as
 test("report delivery retries after the originating link becomes available", async () => {
   let linked = false;
   const seen: string[] = [];
-  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return { kind: "verified", evidence: ["complete"] }; } },
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; } },
     { onTerminal: (snapshot) => { if (!linked) return false; seen.push(snapshot.contract.id); return true; } });
   try {
     await runner.wait(await runner.start(contract));
@@ -104,7 +105,7 @@ test("report delivery retries after the originating link becomes available", asy
 
 test("unacknowledged terminal report remains pending until a later restart", async () => {
   const dir = fixtureDir();
-  const first = await openOuterRunner(dir, { async invoke() { return { kind: "verified", evidence: ["complete"] }; } },
+  const first = await openOuterRunner(dir, { async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; } },
     { onTerminal: () => false });
   try {
     await first.wait(await first.start(contract));
@@ -130,7 +131,7 @@ test("terminal report receipt replays after a crash before delivery", async () =
       process.exit(0);
     };
     const runner = await openOuterRunner(${JSON.stringify(dir)}, {
-      async invoke() { return { kind: 'verified', evidence: ['completed'] }; }
+      async invoke() { return { kind: 'verified', evidence: ['completed'], costUsd: 0 }; }
     });
     await runner.start(${JSON.stringify(contract)});
     setInterval(() => {}, 1000);`;
@@ -173,7 +174,7 @@ test("a queued contract survives a crash before the task commit and starts on re
   const reopened = await openOuterRunner(dir, {
     async invoke(_contract, _iteration, requestId) {
       calls.push(requestId);
-      return { kind: "verified", evidence: ["verified after retry"] };
+      return { kind: "verified", evidence: ["verified after retry"], costUsd: 0 };
     },
   });
   try {
@@ -231,13 +232,13 @@ test("a finished effect without its task checkpoint resumes at the next step", a
   const source = `import { openOuterRunner } from './server/outer-runner.ts';
     import { RunContractStore } from './server/run-contract.ts';
     const original = RunContractStore.prototype.finishIteration;
-    RunContractStore.prototype.finishIteration = function(id, sequence, requestId, state, at, evidence) {
-      const result = original.call(this, id, sequence, requestId, state, at, evidence);
+    RunContractStore.prototype.finishIteration = function(id, sequence, requestId, state, at, evidence, costUsd) {
+      const result = original.call(this, id, sequence, requestId, state, at, evidence, costUsd);
       if (state === 'waiting') { process.stdout.write('result stored\\n'); process.exit(0); }
       return result;
     };
     const runner = await openOuterRunner(${JSON.stringify(dir)}, {
-      async invoke() { return { kind: 'progress', evidence: ['step one finished'] }; }
+      async invoke() { return { kind: 'progress', evidence: ['step one finished'], costUsd: 0 }; }
     });
     await runner.start(${JSON.stringify(contract)});
     await new Promise(() => {});`;
@@ -247,7 +248,7 @@ test("a finished effect without its task checkpoint resumes at the next step", a
   assert.match(child.stdout, /result stored/);
   const calls: number[] = [];
   const reopened = await openOuterRunner(dir, {
-    async invoke(_contract, iteration) { calls.push(iteration); return { kind: "verified", evidence: ["verified next step"] }; },
+    async invoke(_contract, iteration) { calls.push(iteration); return { kind: "verified", evidence: ["verified next step"], costUsd: 0 }; },
   });
   try {
     reopened.resume();
@@ -267,7 +268,7 @@ test("SIGKILL after a finished step holds an unknown effect without repeating wo
     const runner = await openOuterRunner(${JSON.stringify(dir)}, {
       async invoke(_contract, iteration, requestId) {
         appendFileSync(${JSON.stringify(transcript)}, requestId + '\\n');
-        if (iteration === 1) return { kind: 'progress', evidence: ['first step completed'] };
+        if (iteration === 1) return { kind: 'progress', evidence: ['first step completed'], costUsd: 0 };
         process.stdout.write('second effect started\\n');
         return new Promise(() => {});
       }
@@ -344,4 +345,87 @@ test("an interrupted outward effect is parked after a process crash", async () =
     assert.equal(reopened.get(contract.id)?.state, "blocked");
     assert.equal(replayed, false);
   } finally { await reopened.close(); }
+});
+
+test("unconfigured unattended run stops with a terminal owner report before invoking work", async () => {
+  let calls = 0;
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { calls += 1; throw new Error("started"); } });
+  try {
+    await runner.wait(await runner.start({ ...contract, limits: undefined }));
+    assert.equal(calls, 0);
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.match(runner.report(contract.id)?.snapshot.evidence.join(" ") ?? "", /configure this bot's wall-clock and spend ceilings/);
+  } finally { await runner.close(); }
+});
+
+test("wall-clock ceiling interrupts an active local run and reports the terminal result", async () => {
+  let calls = 0;
+  const runner = await openOuterRunner(fixtureDir(), { async invoke(_contract, _iteration, _requestId, signal) {
+    calls += 1;
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { kind: "blocked" as const, evidence: ["work interrupted"], costUsd: 0 };
+  } });
+  try {
+    await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 350, maxSpendUsd: 1 } }));
+    const snapshot = runner.get(contract.id)!;
+    assert.equal(calls, 1);
+    assert.equal(snapshot.state, "blocked");
+    assert.ok(snapshot.elapsedMs >= 350);
+    assert.ok(snapshot.evidence.some((line) => line.includes("wall-clock ceiling reached")));
+    assert.equal(runner.report(contract.id)?.snapshot.state, "blocked");
+    if (process.env.OMB_PARITY_PROOF_DIR) {
+      mkdirSync(process.env.OMB_PARITY_PROOF_DIR, { recursive: true });
+      appendFileSync(join(process.env.OMB_PARITY_PROOF_DIR, "run-limits-local-ceiling.log"),
+        `worker interrupted; state=${snapshot.state}; elapsedMs=${snapshot.elapsedMs}; ` +
+        `spentUsd=${snapshot.spentUsd}; report=${snapshot.evidence.at(-1)}\n`);
+    }
+  } finally { await runner.close(); }
+});
+
+test("spend ceiling carries through iterations and stops before another invocation", async () => {
+  const calls: number[] = [];
+  const runner = await openOuterRunner(fixtureDir(), { async invoke(_contract, iteration) {
+    calls.push(iteration);
+    return { kind: "progress" as const, evidence: ["work"], costUsd: 0.5 };
+  } });
+  try {
+    await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 } }));
+    assert.deepEqual(calls, [1, 2]);
+    assert.equal(runner.get(contract.id)?.spentUsd, 1);
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.ok(runner.get(contract.id)?.evidence.some((line) => line.includes("spend ceiling reached")));
+  } finally { await runner.close(); }
+});
+
+test("unknown spend stops without continuing and survives reopen", async () => {
+  const dir = fixtureDir();
+  const runner = await openOuterRunner(dir, { async invoke() {
+    return { kind: "progress", evidence: ["usage could not be priced"] };
+  } });
+  try {
+    await runner.wait(await runner.start(contract));
+    assert.equal(runner.get(contract.id)?.spendUncertain, true);
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+  } finally { await runner.close(); }
+  const reopened = new RunContractStore(join(dir, "runtime.db"));
+  try { assert.equal(reopened.get(contract.id)?.spendUncertain, true); }
+  finally { reopened.close(); }
+});
+
+test("a queued run past its persisted deadline blocks on restart without an invocation", async () => {
+  const dir = fixtureDir();
+  const store = new RunContractStore(join(dir, "runtime.db"));
+  store.create({ ...contract, limits: { maxWallTimeMs: 50, maxSpendUsd: 1 } }, Date.now() - 1_000);
+  store.close();
+  let calls = 0;
+  const runner = await openOuterRunner(dir, { async invoke() { calls += 1; throw new Error("late work"); } });
+  try {
+    await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 50, maxSpendUsd: 1 } }));
+    assert.equal(calls, 0);
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.ok(runner.get(contract.id)?.evidence.some((line) => line.includes("wall-clock ceiling reached")));
+    await runner.start({ ...contract, limits: { maxWallTimeMs: 50, maxSpendUsd: 1 } });
+    assert.equal(calls, 0);
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+  } finally { await runner.close(); }
 });

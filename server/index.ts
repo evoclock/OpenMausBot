@@ -227,7 +227,7 @@ import {
   newId,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
-import { recoveryCapabilityError } from "./automatic-recovery.ts";
+import { allowedCodingRecovery, codingRecoveryAllowlist, recoveryCapabilityError } from "./automatic-recovery.ts";
 import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
@@ -8222,6 +8222,7 @@ async function startTurn(
     compactOnly?: boolean;
     automaticRecoveryAttempted?: boolean;
     automaticRecoveryIndex?: number;
+    codingFallbackModels?: Array<{ instanceId: string; model: string }>;
     onTurnSettled?: () => void;
     coordination?: { id: string; resumed: boolean; settle: (outcome: HostTurnResult) => void };
   },
@@ -8282,6 +8283,7 @@ async function startTurn(
   else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) clearUnattended(threadId);
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
+  const codingFallbackModels = codingRecoveryAllowlist(task.title, opts?.codingFallbackModels);
   if (hostedModels && !hostedModels.allows(bot.modelSelection)) throw Object.assign(new Error(hostedModels.error()), { status: 409 });
   const plan = turnSurfacePlan(bot, opts?.runOn, threadId);
   const instance = registry.get(bot.modelSelection.instanceId);
@@ -9074,7 +9076,7 @@ async function startTurn(
       const dispatch = await guardTurnDispatch(shareNote.after(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
-        startupRecovery: cfg.automaticRecovery?.enabled === true &&
+        startupRecovery: !codingFallbackModels && cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
@@ -9200,7 +9202,8 @@ async function startTurn(
         : [];
       const nextIndex = backups.findIndex((candidate, index) => index >= (opts?.automaticRecoveryIndex ?? 0) &&
         registry.get(candidate.instanceId)?.enabled &&
-        (candidate.instanceId !== instanceId || candidate.model !== model));
+        (candidate.instanceId !== instanceId || candidate.model !== model) &&
+        allowedCodingRecovery(candidate, codingFallbackModels));
       const backup = backups[nextIndex];
       if (mayRecover && backup && current && (!opts?.cardContinuation || opts.coordination) &&
           !directRequestOwners.get(threadId)?.stopped && !hasQueuedSteeredMessages(bot.id, threadId) &&
@@ -10184,17 +10187,13 @@ if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
     sourceApprovalMode,
-    driverKind(botId) {
-      const bot = store.bot(botId);
-      return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined;
-    },
-    async startTurn(botId, text, { triggerSource, ...options }) {
-      await startTurn(botId, text, { ...options, automationSource: triggerSource });
+    driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
+    async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {
+      await startTurn(botId, text, { ...options, automationSource: triggerSource, codingFallbackModels: allowedFallbackModels });
     },
     interrupt: interruptDirectThread,
   });
 }
-
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
