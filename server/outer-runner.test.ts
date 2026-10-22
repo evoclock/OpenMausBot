@@ -40,6 +40,35 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   } finally { await runner.close(); }
 });
 
+test("ledger persists bounded entries across restart and carries only the preceding verdict", async () => {
+  const dir = fixtureDir();
+  const contexts: Array<{ iteration: number; previous?: { evidence: string[]; verdict: string } }> = [];
+  const inner = { async invoke(_contract: RunContractInput, iteration: number, _requestId: string,
+    _signal: AbortSignal, _budget?: number, context?: { iteration: number; previous?: { evidence: string[]; verdict: string } }) {
+    contexts.push(context!);
+    return iteration < 34 ? { kind: "progress" as const, evidence: [`proof ${iteration}`], costUsd: 0 }
+      : { kind: "verified" as const, evidence: ["done"], costUsd: 0 };
+  } };
+  const first = await openOuterRunner(dir, inner);
+  try {
+    await first.wait(await first.start({ ...contract, maxIterations: 34 }));
+    assert.equal(contexts[0]?.iteration, 1);
+    assert.equal(contexts[0]?.previous, undefined);
+    assert.equal(contexts[1]?.previous?.verdict, "waiting");
+    assert.deepEqual(contexts[1]?.previous?.evidence, ["proof 1"]);
+    assert.equal(first.ledger(contract.id).length, 32);
+    assert.deepEqual(first.ledger(contract.id).map((entry) => entry.iteration),
+      Array.from({ length: 32 }, (_, index) => index + 3));
+  } finally { await first.close(); }
+  const reopened = await openOuterRunner(dir, inner);
+  try {
+    assert.equal(reopened.ledger(contract.id).length, 32);
+    assert.equal(reopened.ledger(contract.id).at(-1)?.verdict, "done");
+    await reopened.wait(await reopened.start({ ...contract, maxIterations: 34 }));
+    assert.equal(contexts.length, 34);
+  } finally { await reopened.close(); }
+});
+
 test("repeated start returns the same durable task identity", async () => {
   const runner = await openOuterRunner(fixtureDir(), {
     async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; },

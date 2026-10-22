@@ -835,6 +835,7 @@ it("gives a replacement session the full assignment when a result returns after 
 }), hostTimeout(90_000));
 
 it("gives a replacement session an earlier round's result that its rebuild could not replay, and credits it only with that rebuild", () => fixture(async (f) => {
+  await f.api("/api/config", { context: { rebuildBytes: 1_024 } }, "PATCH");
   await warmUp(f, "Warm up.");
   const chat = 21;
   f.plan[f.lead.id] = { turns: [{ reply: "ROUND_ONE_RESULT_TOKEN" }, { reply: "ROUND_TWO_RESULT", gateFile: f.gate("r2") }] };

@@ -3,7 +3,12 @@
 Long direct conversations can summarize older exchanges before the next turn.
 The full transcript, its branches and attachments are retained. The new session
 gets a bounded summary plus recent exchanges; later turns resume that session.
-A visible, expandable note explains what was summarized, even with tool chips off.
+The rebuilt replay is sized for the selected model's context window, not a fixed
+40-message slice: it uses at most one estimated byte per context token (up to
+1 MB), reserving the rest for instructions, tools, the next turn and output.
+`context.rebuildBytes` can lower that ceiling, but cannot exceed the model's
+budget. Native session resumes still use their own context. A visible,
+expandable note explains what was summarized, even with tool chips off.
 
 ## Exercise the real path
 
@@ -214,12 +219,14 @@ temporary home. No live account, computer or user workspace is touched.
 ## Tool history in a rebuilt session
 
 A session rebuilt from the inline replay (an engine switched in mid-thread, a
-rewind, a session the provider lost, a compaction) is sent what was said. With
-`context.replayToolHistory: true` in config.json, or `OMB_REPLAY_TOOL_HISTORY=1`
-in the server's environment (`0` forces it off), that replay also names each
-earlier tool call on one line, between the two messages it ran between, as
-`[ran: Bash: pnpm test — failed]` or `[ran: Read: server/config.ts — ok]`. It is
-off by default, and off the replay is byte-for-byte what it was.
+rewind, a session the provider lost, a compaction) is sent what was said and
+up to 20 bounded tool-call lines placed between the messages they ran between,
+such as `[ran: Bash: pnpm test — failed]` or
+`[ran: Read: server/config.ts — ok]`. The replay reserves up to 3 KB, or an
+eighth of a small model's replay budget, for this work. Raw tool results are
+never included. Set `context.replayToolHistory: false` in config.json or
+`OMB_REPLAY_TOOL_HISTORY=0` in the server's environment to turn these lines
+off; `1` forces them on. An explicit opt-out retains text-only replay.
 
 ```sh
 pnpm exec vitest run server/replay-tool-history.e2e.test.ts
@@ -227,9 +234,9 @@ pnpm exec vitest run server/context-rebuild.test.ts server/replay-settings.test.
 ```
 
 The fixture's engine runs a command and reads a file each turn. The test rewinds
-with `control-omb edit` and reads the prompt the engine received: no such line
-while the setting is off, both lines in order once it is on (the command, and
-the file read), and the plain message for every turn that resumes its session.
+with `control-omb edit` and reads the prompt the engine received: both lines
+in order by default (the command and the file read), no lines after opting
+out, and the plain message for every turn that resumes its session.
 It then switches the bot to the fixture's Codex and reads what that engine was
 sent: the lines for each of Claude's turns. Its evidence is
 `<server-log>.replay-tools.json`.
