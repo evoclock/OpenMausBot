@@ -29,6 +29,7 @@ export const codingRunConfigSchema = z.object({
   gitDestinations: z.record(z.string().min(1), z.array(codingGitDestinationSchema).max(50)).optional(),
   gitCredentialGroups: z.record(reference, codingGitGroupSchema).optional(),
   repositoryRoot: z.string().min(1),
+  rolesFilePath: z.string().min(1).optional(),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({
     maxIterations: z.number().int().positive().optional(),
