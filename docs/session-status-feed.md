@@ -44,8 +44,12 @@ Only four changes create a wake:
 
 Everything else is a quiet heartbeat: the record updates and nothing wakes.
 The first report for a session is context, not news, so it creates no wake.
-A wake stays pending until it is acknowledged; a repeat of the same change
-while it is pending does not create another. Acknowledging is idempotent.
+A wake stays pending until it is acknowledged. A changed decision creates a
+new wake even if an earlier decision is pending, so acknowledging the earlier
+one cannot erase the new request. Repeated reports with the same decision do
+not create wakes. Other changes of the same kind remain coalesced while pending.
+The checkpoint reads the newest session record before acting. Acknowledging
+is idempotent.
 
 ## Routes
 

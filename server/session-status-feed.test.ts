@@ -75,6 +75,22 @@ test("a decision wakes once, stays pending, and only a new decision wakes again"
   feed.close();
 });
 
+test("acknowledging an earlier decision does not erase a changed pending decision", () => {
+  const { feed } = feedAt();
+  feed.record(report());
+  const first = feed.record(report({ reportId: "lease-1:2", sequence: 2,
+    needsDecision: true, decision: "use branch A?" }));
+  const second = feed.record(report({ reportId: "lease-1:3", sequence: 3,
+    needsDecision: true, decision: "use branch B?" }));
+  assert.deepEqual(second.changes, ["decision"]);
+  assert.equal(second.wakes.length, 1);
+  assert.notEqual(second.wakes[0]!.id, first.wakes[0]!.id);
+  assert.equal(feed.acknowledge([first.wakes[0]!.id]), 1);
+  assert.deepEqual(feed.pendingWakes().map((wake) => wake.id), [second.wakes[0]!.id]);
+  assert.match(feed.pendingWakes()[0]!.detail, /branch B/);
+  feed.close();
+});
+
 test("a terminal state wakes once and a pull request wakes once", () => {
   const { feed, clock } = feedAt();
   feed.record(report());
