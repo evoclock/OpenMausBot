@@ -547,6 +547,7 @@ import {
 } from "./request-auth.ts";
 import { cookieMaxAgeSeconds, formatPairingCode, SessionRegistry, type Scope, type SessionRecord } from "./sessions.ts";
 import { ThreadStarters } from "./thread-starters.ts";
+import { SessionStatusFeed } from "./session-status-feed.ts";
 import {
   appendAdminAction,
   botAuditSnapshot,
@@ -629,6 +630,7 @@ import { createMcpServerRoutes } from "./routes/mcp-servers.ts";
 import { createSetupImportRoutes } from "./routes/setup-import.ts";
 import { createComputerRoutes } from "./routes/computers.ts";
 import { createStatusRoutes } from "./routes/status.ts";
+import { createSessionStatusRoutes } from "./routes/session-status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createNotificationRoutes } from "./routes/notifications.ts";
@@ -730,6 +732,7 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
   console.warn("cloud home: its secrets came in this process's environment, which anything running as the same user can read in /proc; start it with cloud-home-start");
 }
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
+const sessionStatusFeed = new SessionStatusFeed(join(DATA_DIR, "session-status.sqlite"));
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
 // Every saved login value is scrubbed from whatever a bot or a transcript can read.
 const logins = new LoginStore({ dataDir: DATA_DIR });
@@ -13651,6 +13654,12 @@ ROUTES.push(createStatusRoutes({
   browserEngineInstall: { get: () => browserEngineInstall, set: (install) => { browserEngineInstall = install; } },
   browserEngineInstallError: { set: (error) => { browserEngineInstallError = error; } },
 }));
+ROUTES.push(createSessionStatusRoutes({
+  feed: sessionStatusFeed,
+  // A change starts the checkpoint routine early; a quiet heartbeat starts nothing.
+  wake: () => { const routineId = cfg.sessionStatus?.wakeRoutineId; if (routineId) routines?.runNow(routineId); },
+  broadcast: (payload) => broadcast(payload, { adminOnly: true }),
+}));
 
 ROUTES.push(desktopViewer.route);
 ROUTES.push(createBrowserViewerRoutes({
@@ -17242,6 +17251,7 @@ const gracefulShutdown = createGracefulShutdown({
       vps.closeAllVpsDesktopTunnels();
       watchdog.stop();
       routines?.close();
+      sessionStatusFeed.close();
       calendarCalls?.stop();
       memoryUpkeep.stop();
       cacheKeepWarm.dispose();
