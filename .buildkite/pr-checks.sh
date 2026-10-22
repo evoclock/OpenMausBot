@@ -8,8 +8,12 @@ if [[ "$pr" == false || -z "$pr" ]]; then
 fi
 [[ "$pr" =~ ^[0-9]+$ ]] || { echo 'Invalid PR number' >&2; exit 1; }
 if [[ -z "${GH_TOKEN:-}" ]]; then
-  echo "NOTICE: GH_TOKEN is unset; skipping $mode"
-  exit 0
+  GH_TOKEN="$(buildkite-agent secret get GH_TOKEN)" || {
+    echo "ERROR: Buildkite GH_TOKEN is unavailable for $mode" >&2
+    exit 1
+  }
+  [[ -n "$GH_TOKEN" ]] || { echo 'ERROR: Buildkite GH_TOKEN is empty' >&2; exit 1; }
+  export GH_TOKEN
 fi
 repo=evoclock/OpenMausBot
 scratch="$PWD/.omb-scratch/buildkite/${BUILDKITE_BUILD_ID:-local}-${mode}"
