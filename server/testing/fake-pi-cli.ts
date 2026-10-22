@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // Fake of the pi coding agent's `--mode rpc --no-session` stdio surface for pi.ts tests. Env knobs:
 //   FAKE_PI_MODE  happy (default) | tooluse | permission | interleave | question-select | question-input
-//     | turn-error | no-models | exit-early | compaction | compaction-recovery
+//     | turn-error | coding | no-models | exit-early | compaction | compaction-recovery
 //     | compaction-recovery-upstream | prompt-reject | omp-chunk
 //   FAKE_PI_MODELS  provider/model pairs (default "ollama-cloud/glm-5.2,openai/gpt-4o")
 //   FAKE_PI_DUMP  path to append {argv, env} JSON to
 //   FAKE_PI_STEER_REFUSE  answer a steer with an explicit success:false
 //   FAKE_PI_STEER_OUT_OF_ORDER  hold the first steer until a second arrives, then refuse the first and accept the second
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_PI_MODE ?? "happy";
 const modelPairs = (process.env.FAKE_PI_MODELS ?? "ollama-cloud/glm-5.2,openai/gpt-4o")
@@ -41,6 +42,7 @@ if (process.env.FAKE_PI_DUMP) {
       process.env.FAKE_PI_DUMP,
       JSON.stringify({
         argv,
+        cwd: process.cwd(),
         env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
         envConfigured: ["PATH", "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "BOX_TOKEN"].filter(
           (k) => process.env[k] !== undefined,
@@ -89,11 +91,11 @@ let sessionCounter = 0;
 let currentSessionFile: string | null = null;
 const heldSteerFrames: any[] = [];
 
-const streamTurn = () => {
+const streamTurn = (text?: string) => {
   send({ type: "agent_start" });
   send({ type: "turn_start" });
   send({ type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
-  for (const delta of ["Hello", " from", " pi"]) {
+  for (const delta of text ? [text] : ["Hello", " from", " pi"]) {
     send({ type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta } });
   }
   send({ type: "turn_end", message: { stopReason: "end_turn", usage: { input: 12, output: 3 } }, usage: { input: 12, output: 3 } });
@@ -225,7 +227,13 @@ const streamInterleaveTurn = () => {
   send({ type: "agent_end" });
 };
 
-const finishPermissionTurn = () => {
+const finishPermissionTurn = (denied = false) => {
+  if (denied) {
+    send({ type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Permission denied" } });
+    send({ type: "turn_end", message: { stopReason: "end_turn", usage: { input: 8, output: 1 } }, usage: { input: 8, output: 1 } });
+    send({ type: "agent_end" });
+    return;
+  }
   send({ type: "tool_execution_start", toolCallId: "call_1", toolName: "bash", args: { command: "echo hi" } });
   send({ type: "tool_execution_end", toolCallId: "call_1", toolName: "bash", isError: false });
   send({ type: "message_update", usage: { input: 0, output: 0 }, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "ok" } });
@@ -338,6 +346,18 @@ function handle(cmd: any) {
       else if (mode === "question-input") streamQuestionInputTurn();
       else if (mode === "interleave") streamInterleaveTurn();
       else if (mode === "turn-error") streamErrorTurn();
+      else if (mode === "coding") {
+        const git = (...args: string[]) => execFileSync("git", args, { cwd: process.cwd(), encoding: "utf8" }).trim();
+        if (String(cmd.message).includes("Review revision ")) {
+          streamTurn(`ACCEPT ${git("rev-parse", "HEAD")}`);
+        } else {
+          writeFileSync("coding-fixture-result.txt", "fixture work completed\n");
+          git("add", "coding-fixture-result.txt");
+          git("-c", "user.name=evoclock", "-c", "user.email=evoclock@users.noreply.github.com",
+            "commit", "-m", "Complete fixture coding task");
+          streamTurn("Coding fixture committed");
+        }
+      }
       else if (mode === "compaction") streamCompactionTurn();
       else if (mode === "compaction-recovery") streamCompactionRecoveryTurn();
       else if (mode === "compaction-recovery-upstream") streamCompactionRecoveryUpstreamTurn();
@@ -376,7 +396,7 @@ function handle(cmd: any) {
           appendFileSync(process.env.FAKE_PI_DUMP, JSON.stringify({ uiResponse: cmd }) + "\n");
         } catch {}
       }
-      if (cmd.id === "ask-1") finishPermissionTurn();
+      if (cmd.id === "ask-1") finishPermissionTurn(cmd.cancelled === true || cmd.value === "Deny");
       else if (cmd.id === "ask-select" || cmd.id === "ask-input") finishPermissionTurn();
       return;
     case "abort":

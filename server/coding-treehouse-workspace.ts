@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RunContractInput } from "./run-contract.ts";
@@ -17,6 +18,7 @@ export class CodingTreehouseWorkspace {
   private readonly db: DatabaseSync;
   private readonly root: string;
   constructor(options: { repository: string; root: string; dataDir: string; executable?: string;
+    gitExecutable?: string; salvageDir?: string;
     verifyRepository?: (repository: string, root: string) => boolean;
     verifySlot?: (path: string) => boolean;
     readRevision?: (path: string, ref: string) => string;
@@ -24,17 +26,19 @@ export class CodingTreehouseWorkspace {
     this.repository = options.repository;
     this.root = realpathSync(options.root);
     this.executable = options.executable ?? "treehouse";
+    this.gitExecutable = options.gitExecutable ?? "git";
+    this.salvageDir = options.salvageDir ?? join(homedir(), ".treehouse-salvage", "openai-work");
     this.verifySlot = options.verifySlot ?? ((path) => this.gitCommonDir(path) === this.gitCommonDir(this.root));
-    this.readRevision = options.readRevision ?? ((path, ref) => execFileSync("git", ["rev-parse", ref],
+    this.readRevision = options.readRevision ?? ((path, ref) => execFileSync(this.gitExecutable, ["rev-parse", ref],
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim());
-    this.readStatus = options.readStatus ?? ((path) => execFileSync("git", ["status", "--porcelain", "--untracked-files=all"],
+    this.readStatus = options.readStatus ?? ((path) => execFileSync(this.gitExecutable, ["status", "--porcelain", "--untracked-files=all"],
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim());
     this.verifyRepository = options.verifyRepository ?? ((repository, root) => {
       const result = JSON.parse(execFileSync("gh", ["repo", "view", repository,
         "--json", "nameWithOwner,isPrivate,viewerPermission"],
       { cwd: root, encoding: "utf8", timeout: 15_000 })) as {
         nameWithOwner?: string; isPrivate?: boolean; viewerPermission?: string };
-      const origin = execFileSync("git", ["remote", "get-url", "origin"],
+      const origin = execFileSync(this.gitExecutable, ["remote", "get-url", "origin"],
         { cwd: root, encoding: "utf8", timeout: 10_000 }).trim();
       return result.nameWithOwner === repository && result.isPrivate === true &&
         ["ADMIN", "MAINTAIN", "WRITE"].includes(result.viewerPermission ?? "") &&
@@ -48,6 +52,8 @@ export class CodingTreehouseWorkspace {
   }
   private readonly repository: string;
   private readonly executable: string;
+  private readonly gitExecutable: string;
+  private readonly salvageDir: string;
   private readonly verifyRepository: (repository: string, root: string) => boolean;
   private readonly verifySlot: (path: string) => boolean;
   private readonly readRevision: (path: string, ref: string) => string;
@@ -106,18 +112,51 @@ export class CodingTreehouseWorkspace {
     }
   }
   private gitCommonDir(path: string): string {
-    const output = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    const output = execFileSync(this.gitExecutable, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim();
     return realpathSync(resolve(path, output));
   }
-  async release(leaseId: string, reason: string): Promise<void> {
-    const row = this.db.prepare("SELECT path, base_sha FROM coding_workspaces WHERE lease_id = ?")
-      .get(leaseId) as { path: string | null; base_sha: string | null } | undefined;
+  async release(leaseId: string): Promise<void> {
     const slot = this.slots().find((candidate) => candidate.lease_id === leaseId && candidate.status === "leased");
-    if (!row?.path || !row.base_sha || slot?.path !== row.path) throw new Error("workspace lease cannot be verified for release");
-    if (reason !== "owner-confirmed integration" || this.readStatus(row.path)) {
-      throw new Error("workspace needs owner-confirmed reconciliation; lease retained");
+    if (!slot || !slot.lease_holder?.startsWith("omb-coding-") || !this.verifySlot(slot.path)) {
+      throw new Error("workspace lease cannot be verified for release");
     }
-    this.call("return", row.path, "--if-lease-id", leaseId);
+    const recorded = this.db.prepare("SELECT request_id, contract, base_sha FROM coding_workspaces WHERE path = ? AND lease_id = ?")
+      .get(slot.path, leaseId) as { request_id: string; contract: string; base_sha: string | null } | undefined;
+    if (!recorded?.base_sha || slot.lease_holder !== `omb-coding-${createHash("sha256").update(recorded.request_id).digest("hex").slice(0, 24)}`) {
+      throw new Error("workspace lease does not belong to this request");
+    }
+    const git = (...args: string[]) => execFileSync(this.gitExecutable, args, { cwd: slot.path, encoding: "utf8", timeout: 30_000 }).trim();
+    const currentBranch = git("rev-parse", "--abbrev-ref", "HEAD");
+    const suffix = createHash("sha256").update(leaseId).digest("hex").slice(0, 12);
+    const ref = (JSON.parse(recorded.contract) as RunContractInput).ref;
+    const salvage = `openai-work/${ref.replace(/[^a-zA-Z0-9._-]/g, "-")}-${suffix}`;
+    const dirty = Boolean(git("status", "--porcelain", "--untracked-files=all"));
+    const pushed = ["@{upstream}", "origin/main"].some((ref) => {
+      try { git("merge-base", "--is-ancestor", "HEAD", ref); return true; } catch { return false; }
+    });
+    let activeBranch = currentBranch;
+    if (dirty || !pushed) {
+      if (!currentBranch.startsWith("openai-work/")) {
+        git("switch", "-c", salvage);
+        activeBranch = salvage;
+      }
+      if (dirty) {
+        git("add", "-A");
+        git("-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com",
+          "commit", "-m", `Salvage coding workspace ${recorded.request_id}`);
+      }
+    }
+    if (activeBranch.startsWith("openai-work/")) {
+      const dir = this.salvageDir;
+      const bundle = join(dir, `${activeBranch.slice("openai-work/".length)}.bundle`);
+      mkdirSync(dir, { recursive: true });
+      git("bundle", "create", bundle, activeBranch);
+      git("bundle", "verify", bundle);
+      appendFileSync(join(dir, "INDEX.md"), `- ${activeBranch} | ${bundle} | ${slot.path}\n`);
+    }
+    if (git("status", "--porcelain", "--untracked-files=all")) throw new Error("workspace changed during reconciliation");
+    this.call("return", slot.path, "--if-lease-id", leaseId, "--if-lease-holder", slot.lease_holder);
+    this.db.prepare("DELETE FROM coding_workspaces WHERE path = ? AND lease_id = ?").run(slot.path, leaseId);
   }
 }

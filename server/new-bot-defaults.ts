@@ -5,6 +5,13 @@ import { isModelVariant } from "./contracts.ts";
 import { normalizeCronSchedule } from "../shared/routine-schedule.ts";
 import { parseToolScope, type ToolScope } from "../shared/tool-scope.ts";
 
+export const newBotsConfigSchema = z.object({
+  effort: z.enum(EFFORT_LEVELS).optional(),
+}).strict();
+export const newBotsPatchSchema = z.object({
+  effort: newBotsConfigSchema.shape.effort.nullable(),
+}).strict();
+
 const strings = (max: number, length: number) => z.array(z.string().max(length)).max(max);
 const clock = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
 const weekdays = z.array(z.number().int().min(0).max(6)).min(1).max(7);
