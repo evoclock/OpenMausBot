@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
-import type { RunContract } from "./run-contract.ts";
+import type { RunContractInput } from "./run-contract.ts";
 
-const contract: RunContract = {
+const contract: RunContractInput = {
   id: "33333333-3333-4333-8333-333333333333", botId: "fixture", repository: "fixture/agents", ref: "review",
   successCriteria: ["pstack verifies completion"], repositoryClass: "agent-private",
   allowedEffects: ["edit"], authorisedExternalWrites: [],
@@ -34,6 +34,27 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
     assert.deepEqual(calls, [`${contract.id}:1`, `${contract.id}:2`]);
     assert.equal(runner.get(contract.id)?.state, "done");
     assert.equal(runner.get(contract.id)?.iteration, 2);
+  } finally { await runner.close(); }
+});
+
+test("outer loop parks the run as blocked at the contract iteration ceiling", async () => {
+  const calls: string[] = [];
+  const runner = await openOuterRunner(fixtureDir(), {
+    async invoke(_contract, _iteration, requestId) {
+      calls.push(requestId);
+      return { kind: "progress", evidence: ["changes persisted"] };
+    },
+  });
+  try {
+    const id = await runner.start({ ...contract, maxIterations: 2 });
+    const result = await runner.wait(id);
+    assert.equal(result.state.outcome.status, "completed");
+    assert.equal(result.state.outcome.result, "blocked");
+    assert.equal(calls.length, 2);
+    const final = runner.get(contract.id);
+    assert.equal(final?.state, "blocked");
+    assert.equal(final?.iteration, 2);
+    assert.ok(final?.evidence.some((item) => item.includes("iteration ceiling reached (2)")));
   } finally { await runner.close(); }
 });
 

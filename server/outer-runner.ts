@@ -3,7 +3,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { join } from "node:path";
-import { RunContractStore, type RunContract } from "./run-contract.ts";
+import { RunContractStore, type RunContractInput } from "./run-contract.ts";
 
 export type InnerLoopResult =
   | { kind: "progress"; evidence: string[] }
@@ -11,7 +11,7 @@ export type InnerLoopResult =
   | { kind: "blocked"; evidence: string[] };
 
 export interface InnerLoop {
-  invoke(contract: RunContract, iteration: number, requestId: string, signal: AbortSignal): Promise<InnerLoopResult>;
+  invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal): Promise<InnerLoopResult>;
 }
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop) {
@@ -46,6 +46,12 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop) {
             `${current.contract.id}:${current.iteration}`, runtime.signal);
           const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
             : result.kind === "progress" ? "waiting" : "blocked";
+          if (state === "waiting" && current.iteration >= current.contract.maxIterations) {
+            store.transition(task.input.id, "blocked", Math.max(Date.now(), current.updatedAt + 1),
+              [...result.evidence, `iteration ceiling reached (${current.contract.maxIterations})`]);
+            await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+            return;
+          }
           store.transition(task.input.id, state, Math.max(Date.now(), current.updatedAt + 1), result.evidence);
           if (state === "waiting") {
             await runtime.commit(() => ({ status: "running", checkpoint: {
@@ -78,7 +84,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop) {
   const harness = await Harness.open(await openNodeSqliteStorage(join(dataDir, "coding-runs.sqlite")),
     { models: createModels(), registry }, BACKGROUND_CONTEXT);
   return {
-    async start(contract: RunContract) {
+    async start(contract: RunContractInput) {
       const snapshot = store.create(contract, Date.now());
       const root = await harness.root(BACKGROUND_CONTEXT);
       const id = await root.commit((tx) => tx.createTask(Task, { id: snapshot.contract.id },
