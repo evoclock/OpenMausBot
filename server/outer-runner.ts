@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { access } from "node:fs/promises";
 import { backup, DatabaseSync } from "node:sqlite";
 import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
 
 export type InnerLoopResult =
   | { kind: "progress"; evidence: string[]; costUsd?: number | null }
@@ -14,7 +15,7 @@ export type InnerLoopResult =
 
 export interface InnerLoop {
   invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal,
-    remainingUsd?: number): Promise<InnerLoopResult>;
+    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
 }
 
 const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
@@ -22,6 +23,7 @@ const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
   restartLimit?: number;
+  contextCompactor?: IterationContextCompactor;
 } = {}) {
   const durablePath = join(dataDir, "coding-runs.sqlite");
   try {
@@ -48,6 +50,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
   }
   const store = new RunContractStore(join(dataDir, "runtime.db"));
+  const ledger = openLoopLedger(join(dataDir, "runtime.db"));
   const reportPending = () => {
     if (!options.onTerminal) return;
     for (const snapshot of store.pendingReports()) {
@@ -107,6 +110,13 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
           return;
         }
+        const previous = ledger.previous(task.input.id, snapshot.iteration + 1);
+        if (snapshot.iteration > 0 && !previous) {
+          transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["previous iteration receipt is missing; owner review required"]);
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+          return;
+        }
         const requestId = `${snapshot.contract.id}:${snapshot.iteration + 1}`;
         const current = store.beginIteration(task.input.id, snapshot.iteration, requestId,
           Math.max(Date.now(), snapshot.updatedAt + 1));
@@ -123,7 +133,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         const timer = setTimeout(() => deadline.abort(), remaining);
         try {
           const result = await inner.invoke(current.contract, current.iteration, requestId,
-            AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd);
+            AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd,
+            { iteration: current.iteration, previous, compactor: options.contextCompactor });
           const at = Math.max(Date.now(), current.updatedAt + 1);
           const costUsd = result.costUsd ?? null;
           const reasons = [
@@ -263,6 +274,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     async wait(taskId: TaskId<string>) { requireHealthy(); return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
     get(id: string) { requireHealthy(); return store.get(id); },
     report(id: string) { requireHealthy(); return store.report(id); },
+    ledger(id: string) { requireHealthy(); return ledger.entries(id); },
     reportPending,
     async cancel(id: string) {
       requireHealthy();
@@ -270,6 +282,6 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
       if (!taskId) return "not_found";
       return harness.abortTask(taskId as TaskId<string>, BACKGROUND_CONTEXT);
     },
-    async close() { await harness.close(BACKGROUND_CONTEXT); store.close(); },
+    async close() { await harness.close(BACKGROUND_CONTEXT); ledger.close(); store.close(); },
   };
 }

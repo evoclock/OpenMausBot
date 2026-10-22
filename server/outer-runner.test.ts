@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
 import { RunContractStore, type RunContractInput } from "./run-contract.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 const contract: RunContractInput = {
   id: "33333333-3333-4333-8333-333333333333", botId: "fixture", repository: "fixture/agents", ref: "review",
@@ -52,6 +56,35 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
     assert.equal(runner.get(contract.id)?.state, "done");
     assert.equal(runner.get(contract.id)?.iteration, 2);
   } finally { await runner.close(); }
+});
+
+test("ledger persists bounded entries across restart and carries only the preceding verdict", async () => {
+  const dir = fixtureDir();
+  const contexts: Array<{ iteration: number; previous?: { evidence: string[]; verdict: string } }> = [];
+  const inner = { async invoke(_contract: RunContractInput, iteration: number, _requestId: string,
+    _signal: AbortSignal, _budget?: number, context?: { iteration: number; previous?: { evidence: string[]; verdict: string } }) {
+    contexts.push(context!);
+    return iteration < 34 ? { kind: "progress" as const, evidence: [`proof ${iteration}`], costUsd: 0 }
+      : { kind: "verified" as const, evidence: ["done"], costUsd: 0 };
+  } };
+  const first = await openOuterRunner(dir, inner);
+  try {
+    await first.wait(await first.start({ ...contract, maxIterations: 34 }));
+    assert.equal(contexts[0]?.iteration, 1);
+    assert.equal(contexts[0]?.previous, undefined);
+    assert.equal(contexts[1]?.previous?.verdict, "waiting");
+    assert.deepEqual(contexts[1]?.previous?.evidence, ["proof 1"]);
+    assert.equal(first.ledger(contract.id).length, 32);
+    assert.deepEqual(first.ledger(contract.id).map((entry) => entry.iteration),
+      Array.from({ length: 32 }, (_, index) => index + 3));
+  } finally { await first.close(); }
+  const reopened = await openOuterRunner(dir, inner);
+  try {
+    assert.equal(reopened.ledger(contract.id).length, 32);
+    assert.equal(reopened.ledger(contract.id).at(-1)?.verdict, "done");
+    await reopened.wait(await reopened.start({ ...contract, maxIterations: 34 }));
+    assert.equal(contexts.length, 34);
+  } finally { await reopened.close(); }
 });
 
 test("repeated start returns the same durable task identity", async () => {
@@ -377,6 +410,32 @@ test("configured crash limit parks the run with owner-visible restart_limit evid
     assert.equal(runner.get(contract.id)?.state, "blocked");
     assert.ok(runner.get(contract.id)?.evidence.some((entry) => entry.includes("restart_limit")));
   } finally { await runner.close(); }
+  const store = new RunContractStore(join(dir, "runtime.db"));
+  const id = store.taskId(contract.id) as TaskId<string>;
+  store.close();
+  let retried = 0;
+  const Task = defineTask<{ id: string }, { phase: "iterate"; sequence: number }, string>({
+    name: "openmausbot.outer-run", version: 1,
+    initial: () => ({ phase: "iterate", sequence: 0 }),
+    phases: { iterate: async (_task, runtime, context) => {
+      retried += 1;
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+    } },
+    abort: async (_task, runtime, context) => {
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+    },
+  });
+  const registry = createRegistry();
+  registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
+  const harness = await Harness.open(await openNodeSqliteStorage(join(dir, "coding-runs.sqlite")),
+    { models: createModels(), registry, settings: { restartLimit: 3 } }, BACKGROUND_CONTEXT);
+  try {
+    assert.equal(retried, 0);
+    await harness.retryTask(id, BACKGROUND_CONTEXT);
+    const settled = await harness.waitForTask(id, BACKGROUND_CONTEXT);
+    assert.equal(settled.state.outcome.status, "completed");
+    assert.equal(retried, 1);
+  } finally { await harness.close(BACKGROUND_CONTEXT); }
 }, 60_000);
 
 test("an interrupted outward effect is parked after a process crash", async () => {
