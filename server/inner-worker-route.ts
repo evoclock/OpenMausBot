@@ -40,7 +40,7 @@ export interface WorkerHost {
 
 export function createWorkerRoute(host: WorkerHost): InnerLoop {
   return {
-    async invoke(contract, _iteration, requestId, signal, remainingUsd): Promise<InnerLoopResult> {
+    async invoke(contract, _iteration, requestId, signal, remainingUsd, context): Promise<InnerLoopResult> {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
       if (contract.repositoryClass !== "agent-private") return { kind: "blocked", evidence: ["external repository requires a separate verified route"], costUsd: 0 };
       const roles = await host.roles(contract.repository);
@@ -70,8 +70,11 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           !workspace.base || !workspace.directory || !workspace.leaseId) {
           return blocked("isolated workspace does not match the run contract");
         }
-        const report = await host.runPlaybook(workspace, roles.development,
-          contract.successCriteria.join("\n"), requestId, signal);
+        const prior = context?.previous;
+        const carry = prior ? context?.compactor?.compact(prior) ??
+          `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
+        const goal = `Iteration ${context?.iteration ?? _iteration}\n${contract.successCriteria.join("\n")}${carry ? `\n${carry}` : ""}`;
+        const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
