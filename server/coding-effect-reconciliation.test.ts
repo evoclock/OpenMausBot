@@ -11,9 +11,9 @@ const effects: CodingEffect[] = [
 
 function inspector(overrides: Partial<ForgeEffectInspector> = {}): ForgeEffectInspector {
   return {
-    async branch() { return { sha: revision }; },
-    async pullRequests() { return { complete: true, items: [{ headRepository: "owner/repo", head: "feature", base: "main", number: 7 }] }; },
-    async comments() { return { complete: true, bodies: ["Reviewed <!-- omb-effect:run-1 -->"] }; },
+    async getBranchRef() { return { kind: "found", sha: revision }; },
+    async findPullRequests() { return { kind: "found", prs: [{ number: 7, headSha: revision, state: "open" }] }; },
+    async findCommentsByIdempotencyKey() { return { kind: "found", ids: [15] }; },
     ...overrides,
   };
 }
@@ -22,20 +22,20 @@ test.each(effects)("$kind: exact presence is recorded", async (effect) => {
   assert.equal((await observeCodingEffect(inspector(), effect)).status, "present");
 });
 
-test("each missing effect is distinguished from an inspection failure", async () => {
+test("each absent effect is distinguished from an inspection failure", async () => {
   const absent = inspector({
-    async branch() { return null; },
-    async pullRequests() { return { complete: true, items: [] }; },
-    async comments() { return { complete: true, bodies: [] }; },
+    async getBranchRef() { return { kind: "absent" }; },
+    async findPullRequests() { return { kind: "absent" }; },
+    async findCommentsByIdempotencyKey() { return { kind: "absent" }; },
   });
   for (const effect of effects) assert.equal((await observeCodingEffect(absent, effect)).status, "missing");
 });
 
-test("each API failure holds the effect without exposing its error text", async () => {
+test("each API failure or inconclusive result holds without exposing error text", async () => {
   const failed = inspector({
-    async branch() { throw new Error("private bearer"); },
-    async pullRequests() { throw new Error("private bearer"); },
-    async comments() { throw new Error("private bearer"); },
+    async getBranchRef() { throw new Error("private bearer"); },
+    async findPullRequests() { return { kind: "inconclusive", reason: "private bearer" }; },
+    async findCommentsByIdempotencyKey() { return { kind: "inconclusive", reason: "private bearer" }; },
   });
   for (const effect of effects) {
     const result = await observeCodingEffect(failed, effect);
@@ -44,27 +44,26 @@ test("each API failure holds the effect without exposing its error text", async 
   }
 });
 
-test("different branch revision and partial or duplicate PR matches are inconclusive", async () => {
-  assert.equal((await observeCodingEffect(inspector({ async branch() { return { sha: "b".repeat(40) }; } }), effects[0]!)).status,
-    "inconclusive");
-  for (const items of [
-    [{ headRepository: "owner/repo", head: "feature", base: "elsewhere", number: 7 }],
-    [{ headRepository: "fork/repo", head: "feature", base: "main", number: 7 }],
-    [{ headRepository: "owner/repo", head: "feature", base: "main", number: 7 },
-      { headRepository: "owner/repo", head: "feature", base: "main", number: 8 }],
-  ]) {
-    const result = await observeCodingEffect(inspector({ async pullRequests() { return { complete: true, items }; } }), effects[1]!);
-    assert.equal(result.status, "inconclusive");
+test("different branch revision and ambiguous PR matches remain blocked", async () => {
+  assert.equal((await observeCodingEffect(inspector({ async getBranchRef() {
+    return { kind: "found", sha: "b".repeat(40) };
+  } }), effects[0]!)).status, "inconclusive");
+  for (const prs of [[], [{ number: 7, headSha: revision, state: "open" },
+    { number: 8, headSha: revision, state: "open" }]]) {
+    assert.equal((await observeCodingEffect(inspector({ async findPullRequests() {
+      return { kind: "found", prs };
+    } }), effects[1]!)).status, "inconclusive");
   }
-  assert.equal((await observeCodingEffect(inspector({ async pullRequests() {
-    return { complete: false, items: [] };
+  assert.equal((await observeCodingEffect(inspector({ async findPullRequests() {
+    return { kind: "inconclusive", reason: "partial base match" };
   } }), effects[1]!)).status, "inconclusive");
 });
 
-test("duplicate or incomplete comment listings cannot authorize replay", async () => {
-  const body = "<!-- omb-effect:run-1 -->";
-  for (const result of [{ complete: true, bodies: [body, body] }, { complete: false, bodies: [] }]) {
-    assert.equal((await observeCodingEffect(inspector({ async comments() { return result; } }), effects[2]!)).status,
-      "inconclusive");
-  }
+test("duplicate or partial comment listings cannot authorize replay", async () => {
+  assert.equal((await observeCodingEffect(inspector({ async findCommentsByIdempotencyKey() {
+    return { kind: "found", ids: [14, 15] };
+  } }), effects[2]!)).status, "inconclusive");
+  assert.equal((await observeCodingEffect(inspector({ async findCommentsByIdempotencyKey() {
+    return { kind: "inconclusive", reason: "pagination cutoff" };
+  } }), effects[2]!)).status, "inconclusive");
 });

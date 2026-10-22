@@ -12,48 +12,50 @@ export const codingEffectSchema = z.discriminatedUnion("kind", [
 ]);
 export type CodingEffect = z.infer<typeof codingEffectSchema>;
 
+type Inconclusive = { kind: "inconclusive"; reason: string };
 export interface ForgeEffectInspector {
-  branch(repository: string, ref: string): Promise<{ sha: string } | null>;
-  pullRequests(repository: string, head: string): Promise<{ complete: boolean; items: Array<{
-    headRepository: string; head: string; base: string; number: number }> }>;
-  comments(repository: string, pullNumber: number): Promise<{ complete: boolean; bodies: string[] }>;
+  getBranchRef(input: { owner: string; repo: string; ref: string }): Promise<
+    { kind: "found"; sha: string } | { kind: "absent" } | Inconclusive>;
+  findPullRequests(input: { owner: string; repo: string; head: string; base: string }): Promise<
+    { kind: "found"; prs: Array<{ number: number; headSha: string; state: string }> } | { kind: "absent" } | Inconclusive>;
+  findCommentsByIdempotencyKey(input: { owner: string; repo: string; issueNumber: number; key: string }): Promise<
+    { kind: "found"; ids: number[] } | { kind: "absent" } | Inconclusive>;
 }
 
 export type EffectObservation = { status: "present" | "missing" | "inconclusive"; evidence: string };
 
 export async function observeCodingEffect(inspector: ForgeEffectInspector, input: CodingEffect): Promise<EffectObservation> {
   const effect = codingEffectSchema.parse(input);
+  const [owner, repo] = effect.repository.split("/") as [string, string];
   try {
     if (effect.kind === "branch-push") {
-      const branch = await inspector.branch(effect.repository, effect.ref);
-      if (!branch) return { status: "missing", evidence: "branch does not exist" };
-      if (!sha.safeParse(branch.sha).success) return { status: "inconclusive", evidence: "branch revision is invalid" };
-      return branch.sha === effect.expectedSha
-        ? { status: "present", evidence: `branch matches ${branch.sha}` }
-        : { status: "inconclusive", evidence: `branch has different revision ${branch.sha}` };
+      const result = await inspector.getBranchRef({ owner, repo, ref: effect.ref });
+      if (result.kind === "absent") return { status: "missing", evidence: "branch does not exist" };
+      if (result.kind === "inconclusive" || !sha.safeParse(result.sha).success) {
+        return { status: "inconclusive", evidence: "branch revision could not be verified" };
+      }
+      return result.sha === effect.expectedSha
+        ? { status: "present", evidence: `branch matches ${result.sha}` }
+        : { status: "inconclusive", evidence: `branch has different revision ${result.sha}` };
     }
     if (effect.kind === "pr-open") {
-      const result = await inspector.pullRequests(effect.repository, effect.head);
-      if (!result.complete || result.items.some((pr) => !repository.safeParse(pr.headRepository).success ||
-        !Number.isSafeInteger(pr.number) || pr.number <= 0)) {
-        return { status: "inconclusive", evidence: "pull request listing is incomplete or inconsistent" };
+      const result = await inspector.findPullRequests({ owner, repo, head: effect.head, base: effect.base });
+      if (result.kind === "absent") return { status: "missing", evidence: "no pull request matches head and base" };
+      if (result.kind === "inconclusive" || result.prs.length !== 1 ||
+        !Number.isSafeInteger(result.prs[0]?.number) || result.prs[0]!.number <= 0 ||
+        !sha.safeParse(result.prs[0]?.headSha).success) {
+        return { status: "inconclusive", evidence: "pull request match is ambiguous or incomplete" };
       }
-      const matches = result.items.filter((pr) => pr.headRepository === effect.repository &&
-        pr.head === effect.head && pr.base === effect.base);
-      if (matches.length === 1 && result.items.length === 1) {
-        return { status: "present", evidence: `pull request ${matches[0]!.number} matches head and base` };
-      }
-      if (result.items.length > 0) return { status: "inconclusive", evidence: "pull request match is ambiguous or partial" };
-      return { status: "missing", evidence: "no pull request has this head" };
+      return { status: "present", evidence: `pull request ${result.prs[0]!.number} matches head and base` };
     }
-    const result = await inspector.comments(effect.repository, effect.pullNumber);
-    if (!result.complete) return { status: "inconclusive", evidence: "comment listing is incomplete" };
-    const marker = `<!-- omb-effect:${effect.key} -->`;
-    const matches = result.bodies.filter((body) => body.includes(marker));
-    if (matches.length === 1) return { status: "present", evidence: "one comment matches the recorded key" };
-    return matches.length > 1
-      ? { status: "inconclusive", evidence: "more than one comment matches the recorded key" }
-      : { status: "missing", evidence: "no comment matches the recorded key" };
+    const result = await inspector.findCommentsByIdempotencyKey({ owner, repo,
+      issueNumber: effect.pullNumber, key: effect.key });
+    if (result.kind === "absent") return { status: "missing", evidence: "no comment matches the recorded key" };
+    if (result.kind === "inconclusive" || result.ids.length !== 1 ||
+      !Number.isSafeInteger(result.ids[0]) || result.ids[0]! <= 0) {
+      return { status: "inconclusive", evidence: "comment match is ambiguous or incomplete" };
+    }
+    return { status: "present", evidence: `comment ${result.ids[0]} matches the recorded key` };
   } catch {
     return { status: "inconclusive", evidence: "forge inspection failed" };
   }

@@ -4,6 +4,7 @@ import { createRegistry, defineExtension, defineTask, Harness, type TaskId } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { join } from "node:path";
 import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 
 export type InnerLoopResult =
   | { kind: "progress"; evidence: string[]; costUsd?: number | null }
@@ -19,6 +20,9 @@ const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
+    /** Only read a durably saved result and priced usage; never restart a worker turn. */
+    recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null> };
 } = {}) {
   const store = new RunContractStore(join(dataDir, "runtime.db"));
   const reportPending = () => {
@@ -42,8 +46,32 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         if (!snapshot) throw new Error("run contract missing");
         if (snapshot.state === "running") {
           const receipt = store.step(task.input.id, snapshot.iteration);
+          const recovery = options.effectRecovery;
+          let result: InnerLoopResult | null = null;
+          if (receipt?.status === "prepared" && recovery) {
+            try { result = await recovery.recoverResult(snapshot.contract, snapshot.iteration, receipt.requestId); }
+            catch { result = null; }
+          }
+          const knownCost = result?.costUsd != null && Number.isFinite(result.costUsd) && result.costUsd >= 0;
+          const withinLimits = snapshot.contract.limits && snapshot.startedAt && !snapshot.spendUncertain && knownCost &&
+            Date.now() - snapshot.startedAt < snapshot.contract.limits.maxWallTimeMs &&
+            snapshot.spentUsd + (result?.costUsd ?? Infinity) < snapshot.contract.limits.maxSpendUsd;
+          const checked = withinLimits && receipt && recovery
+            ? await reconcilePreparedEffects(recovery.receipts, recovery.host, task.input.id, snapshot.iteration) : null;
+          if (checked?.status === "reconciled" && result && receipt &&
+            Date.now() - snapshot.startedAt! < snapshot.contract.limits!.maxWallTimeMs) {
+            const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
+              : result.kind === "progress" ? "waiting" : "blocked";
+            const finished = store.finishIteration(task.input.id, snapshot.iteration, receipt.requestId, state,
+              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd!);
+            if (terminalStates.has(finished.state)) reportPending();
+            await runtime.commit(() => state === "waiting" ? { status: "running", checkpoint: {
+              phase: "iterate", sequence: snapshot.iteration } } :
+              { status: "terminal", outcome: { status: "completed", result: state } }, context);
+            return;
+          }
           transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
-            [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required`
+            checked?.evidence ?? [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required`
               : "interrupted iteration has no effect receipt; owner review required"]);
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
           return;

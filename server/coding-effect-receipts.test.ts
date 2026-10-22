@@ -21,9 +21,12 @@ function scratch() {
 
 function host(effect: CodingEffect, present: () => boolean, apply: () => void): EffectReconcileHost {
   return {
-    async branch() { return present() ? { sha } : null; },
-    async pullRequests() { return { complete: true, items: present() ? [{ headRepository: "owner/repo", head: "review", base: "main", number: 7 }] : [] }; },
-    async comments() { return { complete: true, bodies: present() ? ["done <!-- omb-effect:effect-1 -->"] : [] }; },
+    async getBranchRef() { return present() ? { kind: "found" as const, sha } : { kind: "absent" as const }; },
+    async findPullRequests() { return present()
+      ? { kind: "found" as const, prs: [{ number: 7, headSha: sha, state: "open" }] }
+      : { kind: "absent" as const }; },
+    async findCommentsByIdempotencyKey() { return present()
+      ? { kind: "found" as const, ids: [15] } : { kind: "absent" as const }; },
     async applyMissing(receipt) { assert.deepEqual(receipt.effect, effect); apply(); },
   };
 }
@@ -66,7 +69,7 @@ test("an inconclusive later receipt prevents all missing writes", async () => {
   db.prepare("run-1", 1, "pr", effects[1]!);
   let applied = 0;
   const forge = host(effects[0]!, () => false, () => { applied += 1; });
-  forge.pullRequests = async () => ({ complete: false, items: [] });
+  forge.findPullRequests = async () => ({ kind: "inconclusive", reason: "partial response" });
   assert.equal((await reconcilePreparedEffects(db, forge, "run-1", 1)).status, "blocked");
   assert.equal(applied, 0);
   db.close();
