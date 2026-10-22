@@ -155,9 +155,13 @@ test.each([
     }
     const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
+      mcpConfig?: { toolScope?: { allow?: string[] } };
     }>;
     if (mode === "permission") expect(turns.some((turn) => turn.uiResponse?.value === "Deny")).toBe(true);
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
+    for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
+      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit"]);
+    }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);
     const returns = operations.filter((operation) => operation[0] === "return");
