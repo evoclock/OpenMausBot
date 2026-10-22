@@ -63,6 +63,22 @@ test.each(effects)("$kind: present, missing and inconclusive receipts", async (e
   inconclusive.close();
 });
 
+test("priced step result survives restart and conflicting or unpriced results are held", () => {
+  const dir = scratch();
+  const path = join(dir, "receipts.sqlite");
+  const original = new CodingEffectReceipts(path);
+  const result = { kind: "verified" as const, evidence: ["review accepted"], costUsd: 0.1 };
+  original.saveResult("run-1", 1, "run-1:1", result);
+  original.close();
+  const reopened = new CodingEffectReceipts(path);
+  try {
+    assert.deepEqual(reopened.savedResult("run-1", 1, "run-1:1"), result);
+    assert.throws(() => reopened.savedResult("run-1", 1, "other:1"), /identity changed/);
+    assert.throws(() => reopened.saveResult("run-1", 1, "run-1:1", { ...result, costUsd: 0.2 }), /conflicts/);
+    assert.throws(() => reopened.saveResult("run-1", 2, "run-1:2", { ...result, costUsd: null }), /priced usage/);
+  } finally { reopened.close(); }
+});
+
 test("an inconclusive later receipt prevents all missing writes", async () => {
   const db = new CodingEffectReceipts(":memory:");
   db.prepare("run-1", 1, "branch", effects[0]!);

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { codingEffectSchema, observeCodingEffect, type CodingEffect, type ForgeEffectInspector } from "./coding-effect-reconciliation.ts";
+import type { InnerLoopResult } from "./outer-runner.ts";
 
 export interface EffectReceipt {
   runId: string;
@@ -23,8 +24,39 @@ export class CodingEffectReceipts {
       intent TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('prepared', 'confirmed')),
       PRIMARY KEY (run_id, sequence, effect_key)
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS coding_effect_step_results (
+      run_id TEXT NOT NULL, sequence INTEGER NOT NULL, request_id TEXT NOT NULL,
+      result TEXT NOT NULL, PRIMARY KEY (run_id, sequence)
+    )`);
   }
   close(): void { this.db.close(); }
+  saveResult(runId: string, sequence: number, requestId: string, result: InnerLoopResult): void {
+    if (!runId || !Number.isSafeInteger(sequence) || sequence <= 0 || requestId !== `${runId}:${sequence}` ||
+      !["progress", "verified", "blocked"].includes(result.kind) || !Array.isArray(result.evidence) ||
+      !result.evidence.every((item) => typeof item === "string") ||
+      result.costUsd == null || !Number.isFinite(result.costUsd) || result.costUsd < 0) {
+      throw new Error("step result cannot be recovered without its identity, evidence and priced usage");
+    }
+    const text = JSON.stringify(result);
+    this.db.prepare("INSERT OR IGNORE INTO coding_effect_step_results VALUES (?, ?, ?, ?)")
+      .run(runId, sequence, requestId, text);
+    const saved = this.db.prepare(`SELECT request_id, result FROM coding_effect_step_results
+      WHERE run_id = ? AND sequence = ?`).get(runId, sequence) as { request_id: string; result: string };
+    if (saved.request_id !== requestId || saved.result !== text) throw new Error("saved step result conflicts with its receipt");
+  }
+  savedResult(runId: string, sequence: number, requestId: string): InnerLoopResult | null {
+    const saved = this.db.prepare(`SELECT request_id, result FROM coding_effect_step_results
+      WHERE run_id = ? AND sequence = ?`).get(runId, sequence) as { request_id: string; result: string } | undefined;
+    if (!saved) return null;
+    if (saved.request_id !== requestId) throw new Error("saved step result identity changed");
+    const result = JSON.parse(saved.result) as InnerLoopResult;
+    if (!["progress", "verified", "blocked"].includes(result.kind) || !Array.isArray(result.evidence) ||
+      !result.evidence.every((item) => typeof item === "string") ||
+      result.costUsd == null || !Number.isFinite(result.costUsd) || result.costUsd < 0) {
+      throw new Error("saved step result is not a priced verdict");
+    }
+    return result;
+  }
   prepare(runId: string, sequence: number, key: string, input: CodingEffect): EffectReceipt {
     if (!runId || !Number.isSafeInteger(sequence) || sequence <= 0 || !/^[A-Za-z0-9_-]{1,128}$/.test(key)) {
       throw new Error("invalid effect receipt identity");

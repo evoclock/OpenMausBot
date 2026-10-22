@@ -463,6 +463,8 @@ for (const effect of crashEffects) {
           async invoke() {
             const receipts = new CodingEffectReceipts(${JSON.stringify(receiptPath)});
             const receipt = receipts.prepare(${JSON.stringify(contract.id)}, 1, 'effect-1', ${JSON.stringify(effect)});
+            receipts.saveResult(${JSON.stringify(contract.id)}, 1, ${JSON.stringify(contract.id + ":1")},
+              { kind: 'verified', evidence: ['saved verified result'], costUsd: 0 });
             if (${JSON.stringify(boundary)} !== 'prepared') writeFileSync(${JSON.stringify(marker)}, 'one');
             if (${JSON.stringify(boundary)} === 'confirmed') receipts.confirm(receipt);
             receipts.close();
@@ -500,7 +502,7 @@ for (const effect of crashEffects) {
       const runner = await openOuterRunner(dir, {
         async invoke() { workerCalls += 1; throw new Error("worker turn repeated"); },
       }, { effectRecovery: { receipts, host: forge,
-        async recoverResult() { return { kind: "verified", evidence: ["saved verified result"], costUsd: 0 }; },
+        async recoverResult(_contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
       } });
       try {
         runner.resume();
