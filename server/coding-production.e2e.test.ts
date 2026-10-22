@@ -45,7 +45,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
   const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini",
-    FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json") },
+    FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
   const reservePort = async () => {
@@ -192,9 +192,13 @@ test.each([
     }
     const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
+      mcpConfig?: { toolScope?: { allow?: string[] } };
     }>;
     if (mode === "permission") expect(turns.some((turn) => turn.uiResponse?.value === "Deny")).toBe(true);
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
+    for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
+      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit"]);
+    }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);
     const returns = operations.filter((operation) => operation[0] === "return");
