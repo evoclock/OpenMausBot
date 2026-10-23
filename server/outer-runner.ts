@@ -3,26 +3,70 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, defineExtension, defineTask, Harness, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { join } from "node:path";
+import { access } from "node:fs/promises";
+import { backup, DatabaseSync } from "node:sqlite";
 import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
+import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
+import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 
 export type InnerLoopResult =
-  | { kind: "progress"; evidence: string[] }
-  | { kind: "verified"; evidence: string[] }
-  | { kind: "blocked"; evidence: string[] };
+  | { kind: "progress"; evidence: string[]; costUsd?: number | null }
+  | { kind: "verified"; evidence: string[]; costUsd?: number | null }
+  | { kind: "blocked"; evidence: string[]; costUsd?: number | null };
 
 export interface InnerLoop {
-  invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal): Promise<InnerLoopResult>;
+  invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal,
+    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; history?: IterationEntry[]; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
 }
 
 const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
-  onTerminal?: (snapshot: RunSnapshot) => void;
+  onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  restartLimit?: number;
+  effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
+    /** Only read a durably saved result and priced usage; never restart a worker turn. */
+    recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null> };
+  contextCompactor?: IterationContextCompactor;
 } = {}) {
+  const durablePath = join(dataDir, "coding-runs.sqlite");
+  const restartLimit = options.restartLimit ?? CODING_RESTART_LIMIT_DEFAULT;
+  try {
+    await access(durablePath);
+    const backupPath = `${durablePath}.pre-1.4.0.bak`;
+    let alreadyBackedUp = false;
+    try {
+      await access(backupPath);
+      const saved = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        if (saved.prepare("PRAGMA quick_check").get()?.quick_check !== "ok") throw new Error("durable backup is invalid");
+        alreadyBackedUp = true;
+      } finally { saved.close(); }
+    }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    if (!alreadyBackedUp) {
+      const source = new DatabaseSync(durablePath);
+      try { await backup(source, backupPath); }
+      finally { source.close(); }
+    }
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
   const store = new RunContractStore(join(dataDir, "runtime.db"));
+  const ledger = openLoopLedger(join(dataDir, "runtime.db"));
+  const reportPending = () => {
+    if (!options.onTerminal) return;
+    for (const snapshot of store.pendingReports()) {
+      if (options.onTerminal(snapshot) !== false) store.markReported(snapshot.contract.id);
+    }
+  };
   const transition = (id: string, next: Parameters<RunContractStore["transition"]>[1], at: number, evidence: string[] = []) => {
     const snapshot = store.transition(id, next, at, evidence);
-    if (terminalStates.has(snapshot.state)) options.onTerminal?.(snapshot);
+    if (terminalStates.has(snapshot.state)) reportPending();
     return snapshot;
   };
   const Task = defineTask<{ id: string }, { phase: "iterate"; sequence: number }, string>({
@@ -34,10 +78,45 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         const snapshot = store.get(task.input.id);
         if (!snapshot) throw new Error("run contract missing");
         if (snapshot.state === "running") {
+          const receipt = store.step(task.input.id, snapshot.iteration);
+          const recovery = options.effectRecovery;
+          let result: InnerLoopResult | null = null;
+          if (receipt?.status === "prepared" && recovery) {
+            try { result = await recovery.recoverResult(snapshot.contract, snapshot.iteration, receipt.requestId); }
+            catch { result = null; }
+          }
+          const knownCost = result?.costUsd != null && Number.isFinite(result.costUsd) && result.costUsd >= 0;
+          const withinLimits = snapshot.contract.limits && snapshot.startedAt && !snapshot.spendUncertain && knownCost &&
+            Date.now() - snapshot.startedAt < snapshot.contract.limits.maxWallTimeMs &&
+            snapshot.spentUsd + (result?.costUsd ?? Infinity) < snapshot.contract.limits.maxSpendUsd;
+          const checked = withinLimits && receipt && recovery
+            ? await reconcilePreparedEffects(recovery.receipts, recovery.host, task.input.id, snapshot.iteration) : null;
+          if (checked?.status === "reconciled" && result && receipt &&
+            Date.now() - snapshot.startedAt! < snapshot.contract.limits!.maxWallTimeMs) {
+            const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
+              : result.kind === "progress" ? "waiting" : "blocked";
+            const finished = store.finishIteration(task.input.id, snapshot.iteration, receipt.requestId, state,
+              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd!);
+            if (terminalStates.has(finished.state)) reportPending();
+            await runtime.commit(() => state === "waiting" ? { status: "running", checkpoint: {
+              phase: "iterate", sequence: snapshot.iteration } } :
+              { status: "terminal", outcome: { status: "completed", result: state } }, context);
+            return;
+          }
           transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
-            ["interrupted iteration needs effect reconciliation"]);
+            checked?.evidence ?? [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required`
+              : "interrupted iteration has no effect receipt; owner review required"]);
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
           return;
+        }
+        if (snapshot.state === "waiting" && snapshot.iteration === task.state.checkpoint.sequence + 1) {
+          const finished = store.step(task.input.id, snapshot.iteration);
+          if (finished?.status === "finished" && finished.result?.state === "waiting") {
+            await runtime.commit(() => ({ status: "running", checkpoint: {
+              phase: "iterate", sequence: snapshot.iteration,
+            } }), context);
+            return;
+          }
         }
         if (snapshot.state !== "queued" && snapshot.state !== "waiting") {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: snapshot.state } }), context);
@@ -49,19 +128,64 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
           return;
         }
-        const current = transition(task.input.id, "running", Math.max(Date.now(), snapshot.updatedAt + 1));
+        const limits = snapshot.contract.limits;
+        const elapsed = snapshot.startedAt ? Math.max(snapshot.elapsedMs, Date.now() - snapshot.startedAt) : snapshot.elapsedMs;
+        const reason = !limits ? "coding run refused: configure this bot's wall-clock and spend ceilings"
+          : !snapshot.startedAt ? "coding run start time is uncertain; owner review required"
+            : snapshot.spendUncertain ? "coding run spend is uncertain; owner review required"
+            : elapsed >= limits.maxWallTimeMs ? `wall-clock ceiling reached (${limits.maxWallTimeMs} ms)`
+              : snapshot.spentUsd >= limits.maxSpendUsd ? `spend ceiling reached (${limits.maxSpendUsd} USD)`
+                : snapshot.iteration >= snapshot.contract.maxIterations ? "iteration ceiling reached; owner review required" : null;
+        if (reason) {
+          transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1), [reason]);
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+          return;
+        }
+        const previous = ledger.previous(task.input.id, snapshot.iteration + 1);
+        if (snapshot.iteration > 0 && !previous) {
+          transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["previous iteration receipt is missing; owner review required"]);
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+          return;
+        }
+        const requestId = `${snapshot.contract.id}:${snapshot.iteration + 1}`;
+        const current = store.beginIteration(task.input.id, snapshot.iteration, requestId,
+          Math.max(Date.now(), snapshot.updatedAt + 1));
+        const remaining = current.contract.limits!.maxWallTimeMs - Math.max(current.elapsedMs, Date.now() - current.startedAt!);
+        if (remaining <= 0) {
+          store.finishIteration(task.input.id, current.iteration, requestId, "blocked",
+            Math.max(Date.now(), current.updatedAt + 1),
+            [`wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)`], 0);
+          reportPending();
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+          return;
+        }
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort(), remaining);
         try {
-          const result = await inner.invoke(current.contract, current.iteration,
-            `${current.contract.id}:${current.iteration}`, runtime.signal);
-          const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
-            : result.kind === "progress" ? "waiting" : "blocked";
-          if (state === "waiting" && current.iteration >= current.contract.maxIterations) {
-            transition(task.input.id, "blocked", Math.max(Date.now(), current.updatedAt + 1),
-              [...result.evidence, `iteration ceiling reached (${current.contract.maxIterations})`]);
-            await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
-            return;
-          }
-          transition(task.input.id, state, Math.max(Date.now(), current.updatedAt + 1), result.evidence);
+          const result = await inner.invoke(current.contract, current.iteration, requestId,
+            AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd,
+            { iteration: current.iteration, previous, history: ledger.entries(task.input.id),
+              compactor: options.contextCompactor ?? createIterationContextCompactor() });
+          const at = Math.max(Date.now(), current.updatedAt + 1);
+          const costUsd = result.costUsd ?? null;
+          const reasons = [
+            Math.max(current.elapsedMs, at - current.startedAt!) >= current.contract.limits!.maxWallTimeMs
+              ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)` : null,
+            costUsd === null || !Number.isFinite(costUsd) || costUsd < 0
+              ? "coding run spend is uncertain; owner review required" : null,
+            costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 &&
+              current.spentUsd + costUsd >= current.contract.limits!.maxSpendUsd
+              ? `spend ceiling reached (${current.contract.limits!.maxSpendUsd} USD)` : null,
+            result.kind === "progress" && current.iteration >= current.contract.maxIterations
+              ? `iteration ceiling reached (${current.contract.maxIterations})` : null,
+          ].filter((item): item is string => item !== null);
+          const state = reasons.length ? "blocked"
+            : result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
+              : result.kind === "progress" ? "waiting" : "blocked";
+          const finished = store.finishIteration(task.input.id, current.iteration, requestId, state, at,
+            [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null);
+          if (terminalStates.has(finished.state)) reportPending();
           if (state === "waiting") {
             await runtime.commit(() => ({ status: "running", checkpoint: {
               phase: "iterate", sequence: task.state.checkpoint.sequence + 1,
@@ -73,37 +197,123 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           const latest = store.get(task.input.id);
           if (latest?.state === "running") {
             transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1),
-              [error instanceof Error ? error.message : "inner loop failed"]);
+              [deadline.signal.aborted ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)`
+                : error instanceof Error ? error.message : "inner loop failed"]);
           }
-          throw error;
-        }
+          if (!deadline.signal.aborted) throw error;
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+        } finally { clearTimeout(timer); }
       },
     },
     abort: async (task, runtime, context) => {
       const snapshot = store.get(task.input.id);
       if (snapshot && !["done", "failed", "cancelled"].includes(snapshot.state)) {
+        const receipt = snapshot.state === "running" ? store.step(task.input.id, snapshot.iteration) : undefined;
         transition(task.input.id, snapshot.state === "running" ? "blocked" : "cancelled",
-          Math.max(Date.now(), snapshot.updatedAt + 1), ["run stopped"]);
+          Math.max(Date.now(), snapshot.updatedAt + 1),
+          [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required` : "run stopped"]);
       }
       await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
   });
+  const runByTask = new Map<number, string>();
+  let sessionFailed = false;
+  let sessionFailure: unknown;
+  const requireHealthy = () => {
+    if (sessionFailed) throw new Error("durable session failed; owner review required", { cause: sessionFailure });
+  };
   const registry = createRegistry();
   registry.install(defineExtension({ name: "openmausbot.outer-run", tasks: [Task] }));
-  const harness = await Harness.open(await openNodeSqliteStorage(join(dataDir, "coding-runs.sqlite")),
-    { models: createModels(), registry }, BACKGROUND_CONTEXT);
-  return {
-    async start(contract: RunContractInput) {
-      const snapshot = store.create(contract, Date.now());
-      const root = await harness.root(BACKGROUND_CONTEXT);
-      const id = await root.commit((tx) => tx.createTask(Task, { id: snapshot.contract.id },
-        { ownership: { kind: "conversation" } }), BACKGROUND_CONTEXT);
+  const harness = await Harness.open(await openNodeSqliteStorage(durablePath),
+    { models: createModels(), registry, settings: { restartLimit },
+      onReport(error, info) {
+        if (info.type === "session_failed") { sessionFailed = true; sessionFailure = error; }
+        if (info.type !== "task_parked" && !(info.type === "task_faulted" && info.reason === "restart_limit")) return;
+        const id = runByTask.get(info.task.id);
+        if (!id) return;
+        const snapshot = store.get(id);
+        if (snapshot && !terminalStates.has(snapshot.state)) {
+          transition(id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["restart_limit: durable task parked after repeated crashes; owner review required"]);
+        }
+      } }, BACKGROUND_CONTEXT);
+  for (const item of (await harness.inspect(BACKGROUND_CONTEXT)).tasks) {
+    if (item.record.kind === "openmausbot.outer-run") {
+      const id = (item.record.input as { id: string }).id;
+      runByTask.set(item.record.id, id);
+      if (item.record.restarts !== undefined && item.record.restarts >= restartLimit) {
+        const snapshot = store.get(id);
+        if (snapshot && !terminalStates.has(snapshot.state)) {
+          transition(id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            ["restart_limit: durable task parked after repeated crashes; owner review required"]);
+        }
+      }
+    }
+  }
+  const findTask = async (id: string): Promise<TaskId<string> | undefined> => {
+    const matches = (await harness.inspect(BACKGROUND_CONTEXT)).tasks.filter((item) =>
+      item.record.kind === "openmausbot.outer-run" && (item.record.input as { id?: string }).id === id);
+    if (matches.length > 1) throw new Error("multiple durable tasks share a coding run");
+    return matches[0]?.record.id as TaskId<string> | undefined;
+  };
+  const startOne = async (snapshot: RunSnapshot): Promise<TaskId<string>> => {
+    const existing = await findTask(snapshot.contract.id);
+    if (existing) {
+      runByTask.set(existing, snapshot.contract.id);
+      store.bindTask(snapshot.contract.id, existing);
       harness.resume();
-      return id;
+      return existing;
+    }
+    const recorded = store.taskId(snapshot.contract.id);
+    if (recorded) {
+      const task = await harness.getTask(recorded as TaskId<string>, BACKGROUND_CONTEXT);
+      if (task?.kind !== "openmausbot.outer-run" || (task.input as { id?: string }).id !== snapshot.contract.id) {
+        throw new Error("recorded run task identity requires reconciliation");
+      }
+      runByTask.set(recorded as TaskId<string>, snapshot.contract.id);
+      return recorded as TaskId<string>;
+    }
+    if (snapshot.state !== "queued") throw new Error("run task identity requires reconciliation");
+    const root = await harness.root(BACKGROUND_CONTEXT);
+    const id = await root.commit((tx) => tx.createTask(Task, { id: snapshot.contract.id },
+      { ownership: { kind: "conversation" } }), BACKGROUND_CONTEXT);
+    runByTask.set(id, snapshot.contract.id);
+    store.bindTask(snapshot.contract.id, id);
+    harness.resume();
+    return id;
+  };
+  const starting = new Map<string, Promise<TaskId<string>>>();
+  const start = (contract: RunContractInput): Promise<TaskId<string>> => {
+    requireHealthy();
+    const snapshot = store.create(contract, Date.now());
+    const existing = starting.get(snapshot.contract.id);
+    if (existing) return existing;
+    const attempt = startOne(snapshot).finally(() => starting.delete(snapshot.contract.id));
+    starting.set(snapshot.contract.id, attempt);
+    return attempt;
+  };
+  try {
+    reportPending();
+    for (const contract of store.queued()) await start(contract);
+  } catch (error) {
+    await harness.close(BACKGROUND_CONTEXT);
+    store.close();
+    throw error;
+  }
+  return {
+    start,
+    resume() { requireHealthy(); reportPending(); harness.resume(); },
+    async wait(taskId: TaskId<string>) { requireHealthy(); return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
+    get(id: string) { requireHealthy(); return store.get(id); },
+    report(id: string) { requireHealthy(); return store.report(id); },
+    ledger(id: string) { requireHealthy(); return ledger.entries(id); },
+    reportPending,
+    async cancel(id: string) {
+      requireHealthy();
+      const taskId = store.taskId(id);
+      if (!taskId) return "not_found";
+      return harness.abortTask(taskId as TaskId<string>, BACKGROUND_CONTEXT);
     },
-    resume() { harness.resume(); },
-    async wait(taskId: TaskId<string>) { return harness.waitForTask(taskId, BACKGROUND_CONTEXT); },
-    get(id: string) { return store.get(id); },
-    async close() { await harness.close(BACKGROUND_CONTEXT); store.close(); },
+    async close() { await harness.close(BACKGROUND_CONTEXT); ledger.close(); store.close(); },
   };
 }

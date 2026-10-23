@@ -1,0 +1,22 @@
+{
+  "codingRuns": {
+    "gitDestinations": {
+      "BOT_ID": [
+        {
+          "repository": "evoclock/REPOSITORY",
+          "branchPrefix": "bot/",
+          "credential": { "kind": "github-app", "reference": "INSTALLATION_REFERENCE" }
+        }
+      ]
+    },
+    "gitAppInstallations": {
+      "INSTALLATION_REFERENCE": {
+        "appId": "APP_ID_NUMBER",
+        "installationId": "INSTALLATION_ID_NUMBER",
+        "privateKeyPath": "/path/to/key-placeholder",
+        "repositories": ["evoclock/REPOSITORY"],
+        "visibility": "private"
+      }
+    }
+  }
+}

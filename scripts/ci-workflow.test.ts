@@ -22,11 +22,13 @@ describe('repository CI and release boundaries', () => {
       && step.command.some((command) => command.includes('pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8')))).toBe(true);
   });
 
-  it('keeps the closed-PR housekeeping separate from Buildkite', () => {
-    const stop = workflow('ci-stop-closed.yml');
-    expect(stop.on.pull_request.types).toEqual(['closed']);
-    expect(stop.concurrency.group).toBe('ci-pr-${{ github.event.pull_request.number }}');
-    expect(ci.steps.some((step: { label?: string }) => step.label === 'PR review gate')).toBe(true);
+  it('runs PR checks on Buildkite and keeps platform-specific jobs on GitHub', () => {
+    expect(['Dependencies', 'Docs', 'Author check', 'PR wording', 'PR review gate'].every((label) =>
+      ci.steps.some((step: { label?: string }) => step.label === label))).toBe(true);
+    const windows = workflow('browser-vendor-windows.yml');
+    expect(windows.jobs.smoke['runs-on']).toBe('windows-latest');
+    expect(windows.jobs.build.env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER).toBe('x86_64-w64-mingw32-gcc');
+    expect(readdirSync(new URL('../.github/workflows/', import.meta.url)).sort()).toEqual(['browser-vendor-windows.yml', 'release.yml']);
   });
 
   it('publishes only unsigned GitHub release installers from v* tags', () => {

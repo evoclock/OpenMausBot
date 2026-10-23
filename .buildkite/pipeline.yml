@@ -123,19 +123,6 @@ steps:
       - "pnpm --filter @openmausbot/docs types:check"
       - "pnpm --filter @openmausbot/docs lint"
       - "pnpm docs:build"
-  - label: "Reviewed browser cross-compile"
-    if: build.pull_request.id != null
-    agents: { queue: mac-mini }
-    timeout_in_minutes: 5
-    command:
-      - |
-        git fetch --quiet origin "$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"
-        if ! git diff --name-only "origin/$$BUILDKITE_PULL_REQUEST_BASE_BRANCH"...HEAD | grep -Eq '^(scripts/build-windows-browser-vendor\.mjs|scripts/build-windows-browser-vendor\.test\.mjs|scripts/smoke-browser-bundle\.mjs|third_party/browser/agent-browser-windows-stdio\.patch)$$'; then
-          echo 'Browser vendor sources unchanged; candidate build is not needed'
-          exit 0
-        fi
-        echo 'Reviewed browser cross-compile requires a Linux toolchain; mac-mini cannot build this candidate' >&2
-        exit 1
   - label: "Dependencies"
     if: build.pull_request.id != null
     agents: { queue: mac-mini }

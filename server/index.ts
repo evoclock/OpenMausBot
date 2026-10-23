@@ -1,6 +1,9 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
+import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
+import { createLoopStatusRoutes } from "./routes/loop-status.ts";
+import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
   DRIVER_SCOPED_GATE_CONFIG,
@@ -20,9 +23,9 @@ import { extname, join } from "node:path";
 import { authorizeExternalRuntime, externalRuntimeIsActive, type ExternalRuntimeGrant } from "./external-runtime.ts";
 
 import { z } from "zod";
-import { selectReplay, replayToolCalls, DEFAULT_REBUILD_BYTES, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
+import { selectReplay, replayToolCalls, MAX_SUMMARY_BYTES } from "./context-rebuild.ts";
 import { draftSummary, foldPoint } from "./compaction-summary.ts";
-import { compactBudget, compactionReading, contextWindowFor, shouldCompact } from "./context-budget.ts";
+import { compactBudget, compactionReading, contextWindowFor, replayBudgetBytes, shouldCompact } from "./context-budget.ts";
 import { autoCompactWindow } from "./drivers/claude.ts";
 import { RoomContextTracker, roomResetNote } from "./room-context.ts";
 import { createRoomTranscript, GROUP_CONTEXT_MESSAGES } from "./host/room-transcript.ts";
@@ -225,7 +228,7 @@ import {
   newId,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
-import { recoveryCapabilityError } from "./automatic-recovery.ts";
+import { allowedCodingRecovery, codingRecoveryAllowlist, recoveryCapabilityError } from "./automatic-recovery.ts";
 import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
@@ -439,7 +442,7 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { LocalVmSeatPool, type LocalVmSeatHolder } from "./local-vm-seat-pool.ts";
 import { createLoopGuard, loopGuardSettings } from "./host/loop-guard.ts";
 import { claudeUserSkillsEnabled, settingsTurnFields } from "./turn-settings.ts";
-import { addHeldSecretScrubber, redactSecretsInText } from "./redact.ts";
+import { addHeldSecretScrubber, redactSecretsInText, redactToolResult } from "./redact.ts";
 import * as vps from "./vps-computer.ts";
 import { ROUTINE_RESTARTED, RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { CalendarCallManager, type CalendarCall } from "./calendar-calls.ts";
@@ -547,6 +550,7 @@ import {
 } from "./request-auth.ts";
 import { cookieMaxAgeSeconds, formatPairingCode, SessionRegistry, type Scope, type SessionRecord } from "./sessions.ts";
 import { ThreadStarters } from "./thread-starters.ts";
+import { SessionStatusFeed } from "./session-status-feed.ts";
 import {
   appendAdminAction,
   botAuditSnapshot,
@@ -629,6 +633,7 @@ import { createMcpServerRoutes } from "./routes/mcp-servers.ts";
 import { createSetupImportRoutes } from "./routes/setup-import.ts";
 import { createComputerRoutes } from "./routes/computers.ts";
 import { createStatusRoutes } from "./routes/status.ts";
+import { createSessionStatusRoutes } from "./routes/session-status.ts";
 import { findAntigravityLeftovers, removeAntigravityLeftovers } from "./drivers/antigravity-temp.ts";
 import { createLiveRoutes } from "./routes/live.ts";
 import { createNotificationRoutes } from "./routes/notifications.ts";
@@ -636,7 +641,6 @@ import { createUsageRoutes } from "./routes/usage.ts";
 import { createBotMessageRoutes } from "./routes/bot-messages.ts";
 import { createThreadRoutes } from "./routes/threads.ts";
 import { withScopeHint } from "./connector-scope-hint.ts";
-
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
 const WEBHOOK_PUBLIC_URL = process.env.OMB_WEBHOOK_PUBLIC_URL || undefined;
@@ -653,7 +657,6 @@ const MIME: Record<string, string> = {
   ".webmanifest": "application/manifest+json",
   ".woff2": "font/woff2",
 };
-
 ensureDirs();
 // Acquire before any durable identity, sessions, config or Store state is loaded.
 const dataDirLease = acquireDataDirLeaseForProcess(DATA_DIR);
@@ -730,8 +733,8 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
   console.warn("cloud home: its secrets came in this process's environment, which anything running as the same user can read in /proc; start it with cloud-home-start");
 }
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
+const sessionStatusFeed = new SessionStatusFeed(join(DATA_DIR, "session-status.sqlite"));
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
-// Every saved login value is scrubbed from whatever a bot or a transcript can read.
 const logins = new LoginStore({ dataDir: DATA_DIR });
 const highlevel = createHighLevelService({ dataDir: DATA_DIR });
 const heldSecrets = new HeldSecrets(logins);
@@ -5993,7 +5996,7 @@ function ingestEngineHook(capability: InternalCapability, body: unknown): { ok: 
   const key = `${threadId}:${turnId}:${toolUseId}`;
   if (!commandReceipt("hook.ingest", key)) {
     const dir = join(TOOL_RESULTS_DIR, threadId.replace(/[^\w.-]/g, "_"));
-    const redacted = redactSecretsInText(text);
+    const redacted = redactToolResult(text, row.tool.input ?? row.tool.name);
     const fullResult = spillToolResult(dir, key, redacted, TOOL_RESULT_SPILL_MAX);
     store.patchMessage(threadId, row.id, { tool: { ...row.tool, fullResult } }, { kind: "hook.ingest", key });
   }
@@ -8220,6 +8223,7 @@ async function startTurn(
     compactOnly?: boolean;
     automaticRecoveryAttempted?: boolean;
     automaticRecoveryIndex?: number;
+    codingFallbackModels?: Array<{ instanceId: string; model: string }>;
     onTurnSettled?: () => void;
     coordination?: { id: string; resumed: boolean; settle: (outcome: HostTurnResult) => void };
   },
@@ -8280,6 +8284,7 @@ async function startTurn(
   else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) clearUnattended(threadId);
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
+  const codingFallbackModels = codingRecoveryAllowlist(task.title, opts?.codingFallbackModels);
   if (hostedModels && !hostedModels.allows(bot.modelSelection)) throw Object.assign(new Error(hostedModels.error()), { status: 409 });
   const plan = turnSurfacePlan(bot, opts?.runOn, threadId);
   const instance = registry.get(bot.modelSelection.instanceId);
@@ -8292,7 +8297,7 @@ async function startTurn(
   }
   const policyRefusal = policyModelRefusal(instance);
   if (policyRefusal) throw Object.assign(new Error(policyRefusal), { status: 409, code: "managed_policy" });
-  const toolScope = toolScopeForTurn(bot.id);
+  const toolScope = codingTurnToolScope(cfg.codingRuns, bot.id, toolScopeForTurn(bot.id));
   guestDrivenTurns.delete(threadId);
   const guestConfined = cloudGuestDriven(threadId) || cloudGuestDrivenHandoff(opts?.coordination?.id);
   if (guestConfined && instance.adapter.capabilities.guestTurns !== "confined") {
@@ -8481,7 +8486,7 @@ async function startTurn(
       const contextOrder = context.map(m => m.id);
       const replayable = context.filter(m => !skipTranscript.has(m.id));
       const record = latestCompaction(activeMessages);
-      const selection = selectReplay(context, { budgetBytes: cfg.context?.rebuildBytes ?? DEFAULT_REBUILD_BYTES, excludedIds: skipTranscript, compaction: record, tools: replayToolCalls(activeMessages, cfg.context) });
+      const selection = selectReplay(context, { budgetBytes: replayBudgetBytes(contextWindowFor(model, instance.models), cfg.context?.rebuildBytes), maxMessages: Number.MAX_SAFE_INTEGER, excludedIds: skipTranscript, compaction: record, tools: replayToolCalls(activeMessages, cfg.context), reserveToolBytes: 3_000 });
       const transcript = selection.transcript.map(({ role, text }) => ({ role, text }));
       const contextReset = selection.compacted > 0 && record?.id !== task.appliedCompactionId;
       if (contextReset) store.patchTask(bot.id, threadId, { resumeCursors: {} });
@@ -9072,7 +9077,7 @@ async function startTurn(
       const dispatch = await guardTurnDispatch(shareNote.after(instance.adapter.sendTurn({
         threadId,
         botId: bot.id,
-        startupRecovery: cfg.automaticRecovery?.enabled === true &&
+        startupRecovery: !codingFallbackModels && cfg.automaticRecovery?.enabled === true &&
           (opts?.automaticRecoveryIndex ?? 0) < ((liveBot ?? bot).fallback?.length || (cfg.automaticRecovery.backup ? 1 : 0)),
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
@@ -9198,7 +9203,8 @@ async function startTurn(
         : [];
       const nextIndex = backups.findIndex((candidate, index) => index >= (opts?.automaticRecoveryIndex ?? 0) &&
         registry.get(candidate.instanceId)?.enabled &&
-        (candidate.instanceId !== instanceId || candidate.model !== model));
+        (candidate.instanceId !== instanceId || candidate.model !== model) &&
+        allowedCodingRecovery(candidate, codingFallbackModels));
       const backup = backups[nextIndex];
       if (mayRecover && backup && current && (!opts?.cardContinuation || opts.coordination) &&
           !directRequestOwners.get(threadId)?.stopped && !hasQueuedSteeredMessages(bot.id, threadId) &&
@@ -9416,42 +9422,20 @@ async function interruptRoutineGroupGoal(
 }
 
 /** Cancellation flags flip synchronously; the awaited work only drains capabilities and interrupts started processes. */
-async function stopBotForEmergencyApprovalDowngrade(botId: string): Promise<void> {
-  const bot = store.bot(botId);
-  if (!bot) return;
-  for (const task of store.tasks(botId)) {
-    if (task.approvalMode === "full" || task.approvalMode === "custom") {
-      store.patchTask(botId, task.threadId, { approvalMode: "ask", autoApprove: false, alwaysAllow: [] });
-    }
-  }
-  const directStop = interruptAllDirectThreads(botId);
+const stopBotForEmergencyApprovalDowngrade = createEmergencyApprovalDowngrade({
+  store, stopDirect: interruptAllDirectThreads,
+  activeRoutine: (botId) => routines?.activeBotRunForBot(botId),
+  cancelRoutine: (runId) => routines!.cancelRun(runId),
+  activeGroup: activeGroupTurnForBot, cancelGroup: cancelGroupTurnOperations,
+  revoke: revokeInternalCapabilitiesForThread, cancelDispatch: cancelDirectTurnDispatch,
+  closeApprovals: closeOpenApprovals,
+  interruptGroup: (botId, threadId) => {
+    const bot = store.bot(botId);
+    return bot ? runningTurnInstance(bot, threadId)?.adapter.interruptTurn(threadId) : undefined;
+  },
+});
 
-  const routineRun = routines?.activeBotRunForBot(bot.id);
-  if (routineRun) {
-    if (routineRun.threadId) revokeInternalCapabilitiesForThread(routineRun.threadId);
-    cancelDirectTurnDispatch(bot.id, routineRun.threadId);
-    await routines!.cancelRun(routineRun.id);
-    if (routineRun.threadId) closeOpenApprovals(routineRun.threadId);
-    await directStop;
-    return;
-  }
-
-  const groupTurn = activeGroupTurnForBot(bot.id);
-  if (groupTurn) {
-    revokeInternalCapabilitiesForThread(groupTurn.threadId);
-    cancelGroupTurnOperations(groupTurn.group.id, groupTurn.threadId);
-    const results = await Promise.allSettled([
-      directStop,
-      runningTurnInstance(bot, groupTurn.threadId)?.adapter.interruptTurn(groupTurn.threadId),
-    ]);
-    closeOpenApprovals(groupTurn.threadId);
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) throw failure.reason;
-    return;
-  }
-
-  await directStop;
-}
+let coding: Awaited<ReturnType<typeof openProductionCodingRuntime>> | null = null;
 
 routines = new RoutineManager({
   emit: broadcast,
@@ -9518,6 +9502,10 @@ routines = new RoutineManager({
     }
   },
   startTurn: async (botId, threadId, prompt, runOn, triggerSource, onDispatchError) => {
+    const run = routines?.runForThread(threadId);
+    if (run && coding?.registered(run.routineId) && (triggerSource === "schedule" || triggerSource === "webhook")) {
+      return coding.start(run, botId, threadId, triggerSource);
+    }
     await startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError });
   },
   startGoal: async (groupId, threadId, prompt, coordinatorBotId, runId, _onDispatchError) => {
@@ -10196,7 +10184,17 @@ const webhooks = new WebhookManager({
   },
 });
 const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (botId) => store.bot(botId)?.name ?? "the bot" });
-
+if (cfg.codingRuns) {
+  coding = await openProductionCodingRuntime({
+    config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
+    sourceApprovalMode,
+    driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
+    async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {
+      await startTurn(botId, text, { ...options, automationSource: triggerSource, codingFallbackModels: allowedFallbackModels });
+    },
+    interrupt: interruptDirectThread,
+  });
+}
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
@@ -13346,9 +13344,8 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   sharedWorkspace: () => workspaceShared({ hosted: HOSTED_WORKSPACE, cloudHome: Boolean(CLOUD_HOME), signIn: signInAllowList() }),
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
-
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
-ROUTES.push(createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id) }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
 // `routines` is assigned at boot, so it is read per request.
@@ -13651,7 +13648,8 @@ ROUTES.push(createStatusRoutes({
   browserEngineInstall: { get: () => browserEngineInstall, set: (install) => { browserEngineInstall = install; } },
   browserEngineInstallError: { set: (error) => { browserEngineInstallError = error; } },
 }));
-
+ROUTES.push(createSessionStatusRoutes({ feed: sessionStatusFeed,
+  wake: () => { const id = cfg.sessionStatus?.wakeRoutineId; if (id) routines?.runNow(id); }, broadcast: (payload) => broadcast(payload, { adminOnly: true }) }));
 ROUTES.push(desktopViewer.route);
 ROUTES.push(createBrowserViewerRoutes({
   upgrades, viewers: browserLive, dataDir: DATA_DIR,
@@ -17064,7 +17062,6 @@ upgrades.attach(server, handleRequest);
 
 calendarCalls.start();
 
-// Resolve the edition before accepting requests so /api/edition is never a guess.
 console.log(describeEdition(await loadEnterpriseLayer()));
 const startupLicenseWarning = licenseWarning(editionStatus());
 if (startupLicenseWarning) console.warn(startupLicenseWarning);
@@ -17242,6 +17239,7 @@ const gracefulShutdown = createGracefulShutdown({
       vps.closeAllVpsDesktopTunnels();
       watchdog.stop();
       routines?.close();
+      sessionStatusFeed.close();
       calendarCalls?.stop();
       memoryUpkeep.stop();
       cacheKeepWarm.dispose();
@@ -17249,6 +17247,7 @@ const gracefulShutdown = createGracefulShutdown({
       webhookIngress?.server.close();
       tunnelListener?.close(); stopCloudHomeConnectedApps();
     },
+    async () => { await coding?.close(); },
     async () => { await managedDesktop.close(); await registry.disposeAll(); },
     async () => { await dataEngine.closeAll().catch((error) => console.warn("data: close failed", error)); },
     async () => {
@@ -17265,7 +17264,6 @@ const gracefulShutdown = createGracefulShutdown({
     () => bus.flush(),
     () => closeMessageSearch(),
   ],
-  // Release only after the concurrent cleanup jobs settle, right before exit, so no new server overlaps a still-mutating old one.
   exit: (code) => {
     let finished = false;
     const finish = (exitCode: number) => {

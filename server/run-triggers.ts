@@ -39,6 +39,10 @@ async function startOnce(port: RunStartPort, source: string, template: TriggerTe
   return { status: "accepted" as const, id: contract.id };
 }
 
+export function scheduledCodingRunId(routine: { id: string; routineId: string; scheduledFor: number }): string {
+  return triggerId(`routine:${routine.routineId}:${routine.id}:${routine.scheduledFor}`);
+}
+
 export function startScheduledCodingRun(port: RunStartPort, routine: {
   id: string; routineId: string; botId: string; scheduledFor: number; triggerSource?: string; status: string;
 }, template: TriggerTemplate) {
@@ -46,6 +50,22 @@ export function startScheduledCodingRun(port: RunStartPort, routine: {
     return Promise.resolve({ status: "ignored" as const });
   }
   return startOnce(port, `routine:${routine.routineId}:${routine.id}:${routine.scheduledFor}`, template);
+}
+
+export function webhookCodingRunId(webhookId: string, deliveryId: string): string {
+  return triggerId(`webhook:${webhookId}:${deliveryId}`);
+}
+
+export function startWebhookCodingRun(port: RunStartPort, run: {
+  id: string; routineId: string; botId: string; webhookId?: string; deliveryId?: string;
+  triggerSource?: string; status: string;
+}, webhookId: string, template: TriggerTemplate) {
+  if (run.triggerSource !== "webhook" || run.status !== "running" ||
+    run.webhookId !== webhookId || run.routineId !== webhookId || !run.deliveryId ||
+    run.botId !== template.botId) {
+    return Promise.resolve({ status: "ignored" as const });
+  }
+  return startOnce(port, `webhook:${webhookId}:${run.deliveryId}`, template);
 }
 
 export async function startGithubCodingRun(port: RunStartPort, input: {

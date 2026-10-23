@@ -11,6 +11,7 @@ import {
   type ChipTone,
 } from "@/lib/activity";
 import { listenLiveFrames } from "@/lib/live-events";
+import { LoopWatchPanel } from "./LoopWatchPanel";
 import { t } from "@/lib/i18n";
 
 const LIMIT = 300;
@@ -124,6 +125,7 @@ export function ActivityPanel({ bot }: { bot: Bot }) {
       </p>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <LoopWatchPanel botId={bot.id} />
         {error && <div className="px-4 py-3 text-[13px] text-danger">{t("activity.panel.error", { message: error })}</div>}
         {rows && rows.length === 0 && !error && (
           <div className="px-4 py-6 text-[13px] text-ink-secondary">

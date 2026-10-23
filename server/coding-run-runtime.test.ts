@@ -4,12 +4,14 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
+import { CodingEffectReceipts } from "./coding-effect-receipts.ts";
 import type { WorkerHost } from "./inner-worker-route.ts";
-import type { TriggerTemplate } from "./run-triggers.ts";
+import { webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
   successCriteria: ["pstack verifies the goal"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+  limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
 
 function fixtureDir() {
@@ -24,8 +26,8 @@ function host(calls: string[]): WorkerHost {
     async acquire(contract) { return { repository: contract.repository, directory: "isolated",
       branch: "review", base: "base", leaseId: "lease" }; },
     async release() { calls.push("release"); },
-    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true }; },
-    async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"] }; },
+    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true, costUsd: 0 }; },
+    async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
   };
 }
@@ -41,7 +43,8 @@ async function settled(runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>
 
 test("a scheduled occurrence and signed event drive the same outer/inner route", async () => {
   const calls: string[] = [];
-  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+  const dataDir = fixtureDir();
+  const runtime = await openCodingRunRuntime({ dataDir, workerHost: host(calls),
     routines: new Map([["routine", template]]), github: new Map([["registration", { secret: "fixture-secret", template }]]) });
   try {
     const run = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
@@ -50,7 +53,16 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal(scheduled.status, "accepted");
     if (!("id" in scheduled)) throw new Error("missing scheduled id");
     assert.equal(await settled(runtime, scheduled.id), "done");
+    const receipts = new CodingEffectReceipts(join(dataDir, "effect-receipts.sqlite"));
+    try {
+      assert.deepEqual(receipts.savedResult(scheduled.id, 1, `${scheduled.id}:1`),
+        { kind: "verified", evidence: ["work", "review", "verified"], costUsd: 0 });
+    } finally { receipts.close(); }
     assert.equal((await runtime.scheduled(run)).status, "existing");
+    const nextOccurrence = await runtime.scheduled({ ...run, id: "next-occurrence", scheduledFor: 200 });
+    assert.equal(nextOccurrence.status, "accepted");
+    if (!("id" in nextOccurrence)) throw new Error("missing next occurrence id");
+    assert.equal(await settled(runtime, nextOccurrence.id), "done");
 
     const raw = Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: template.repository } }));
     const input = { raw, event: "workflow_run", deliveryId: "11111111-1111-4111-8111-111111111111",
@@ -61,7 +73,77 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal(await settled(runtime, received.id), "done");
     assert.equal((await runtime.github("registration", input)).status, "existing");
     assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
+      "development-role", "review-role", "pstack-check",
       "development-role", "review-role", "pstack-check"]);
     await assert.rejects(runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
   } finally { await runtime.close(); }
+});
+
+test("concurrent re-fire does not start two workers for one occurrence", async () => {
+  const calls: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map([["routine", template]]), github: new Map() });
+  try {
+    const run = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
+      triggerSource: "schedule", status: "running" };
+    const results = await Promise.all([runtime.scheduled(run), runtime.scheduled(run)]);
+    const ids = results.map((result) => "id" in result ? result.id : undefined);
+    assert.deepEqual(results.map((result) => result.status).sort(), ["accepted", "existing"]);
+    assert.ok(ids[0]);
+    assert.equal(ids[0], ids[1]);
+    assert.equal(await settled(runtime, ids[0]), "done");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+  } finally { await runtime.close(); }
+});
+
+test("verified webhook delivery runs once and survives restart replay", async () => {
+  const calls: string[] = [];
+  const options = { dataDir: fixtureDir(), workerHost: host(calls), routines: new Map<string, TriggerTemplate>(),
+    github: new Map(), webhooks: new Map([["hook", template]]) };
+  const run = { id: "webhook-run", routineId: "hook", botId: "fixture", webhookId: "hook",
+    deliveryId: "delivery-1", triggerSource: "webhook", status: "running" };
+  const first = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await first.webhook({ ...run, webhookId: "other" })).status, "ignored");
+    assert.equal((await first.webhook({ ...run, routineId: "other" })).status, "ignored");
+    assert.equal((await first.webhook({ ...run, deliveryId: undefined })).status, "ignored");
+    const accepted = await first.webhook(run);
+    assert.equal(accepted.status, "accepted");
+    if (!("id" in accepted)) throw new Error("missing webhook id");
+    assert.equal(accepted.id, webhookCodingRunId("hook", "delivery-1"));
+    assert.equal(await settled(first, accepted.id), "done");
+    assert.equal((await first.webhook(run)).status, "existing");
+  } finally { await first.close(); }
+  const replay = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await replay.webhook(run)).status, "existing");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+  } finally { await replay.close(); }
+});
+
+test("restart replay retains both trigger identities without starting another worker", async () => {
+  const calls: string[] = [];
+  const dataDir = fixtureDir();
+  const options = { dataDir, workerHost: host(calls), routines: new Map([["routine", template]]),
+    github: new Map([["registration", { secret: "fixture-secret", template }]]) };
+  const occurrence = { id: "occurrence", routineId: "routine", botId: "fixture", scheduledFor: 100,
+    triggerSource: "schedule", status: "running" };
+  const raw = Buffer.from(JSON.stringify({ action: "completed", repository: { full_name: template.repository } }));
+  const event = { raw, event: "workflow_run", deliveryId: "11111111-1111-4111-8111-111111111111",
+    signature: `sha256=${createHmac("sha256", "fixture-secret").update(raw).digest("hex")}` };
+  const first = await openCodingRunRuntime(options);
+  try {
+    const schedule = await first.scheduled(occurrence);
+    const webhook = await first.github("registration", event);
+    if (!("id" in schedule) || !("id" in webhook)) throw new Error("missing trigger id");
+    assert.equal(await settled(first, schedule.id), "done");
+    assert.equal(await settled(first, webhook.id), "done");
+  } finally { await first.close(); }
+  const replay = await openCodingRunRuntime(options);
+  try {
+    assert.equal((await replay.scheduled(occurrence)).status, "existing");
+    assert.equal((await replay.github("registration", event)).status, "existing");
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
+      "development-role", "review-role", "pstack-check"]);
+  } finally { await replay.close(); }
 });

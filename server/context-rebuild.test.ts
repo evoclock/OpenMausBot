@@ -380,8 +380,7 @@ describe("tool history in a rebuilt session", () => {
       ran("t3", "Edit", { ok: undefined }),
     ];
 
-    it("returns nothing while the setting is off", () => {
-      expect(replayToolCalls(thread, undefined, NO_ENV)).toEqual([]);
+    it("returns nothing when explicitly switched off", () => {
       expect(replayToolCalls(thread, { replayToolHistory: false }, NO_ENV)).toEqual([]);
       expect(replayToolCalls(thread, ON, { OMB_REPLAY_TOOL_HISTORY: "0" })).toEqual([]);
     });
@@ -394,6 +393,7 @@ describe("tool history in a rebuilt session", () => {
       ];
       // t0 ran before anything was said, so there is nothing to put it between
       expect(replayToolCalls(thread, ON, NO_ENV)).toEqual(expected);
+      expect(replayToolCalls(thread, undefined, NO_ENV)).toEqual(expected);
       expect(replayToolCalls(thread, undefined, { OMB_REPLAY_TOOL_HISTORY: "1" })).toEqual(expected);
     });
 

@@ -54,6 +54,30 @@ const reloaded = (patch: object, cfg: AppConfig = {}) =>
   changedInstanceIds(engineLaunches(instanceConfigs(cfg), {}), engineLaunches(instanceConfigs({ ...cfg, ...patch } as AppConfig), {}));
 
 describe("configuration boundaries", () => {
+  it("requires an operator coding registration and preserves a per-bot Pi CLI instance", () => {
+    const codingRuns = { repositoryRoot: "/fixture/private", rolesFilePath: "/fixture/private/.pi/pstack-model-roles.v1.json", registrations: [{
+      routineId: "scheduled", workerBotId: "worker", reviewerBotId: "reviewer",
+      developmentRole: "worker-role", reviewRole: "review-role", repository: "fixture/agents",
+      ref: "main", successCriteria: ["verified result"],
+    }] };
+    expect(parseStoredConfig({}).codingRuns).toBeUndefined();
+    expect(parseStoredConfig({ codingRuns }).codingRuns).toEqual(codingRuns);
+    expect(parseStoredConfig({ codingRuns: { ...codingRuns, restartLimit: 3 } }).codingRuns?.restartLimit).toBe(3);
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, restartLimit: 0 } })).toThrow();
+    expect(parseConfigPatch({ codingRuns })).not.toHaveProperty("codingRuns");
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, registrations: [] } })).toThrow();
+    const bots = { origin: { maxWallTimeMs: 60_000, maxSpendUsd: 1 } };
+    expect(parseStoredConfig({ codingRuns: { ...codingRuns, bots } }).codingRuns?.bots?.origin)
+      .toEqual({ ...bots.origin, allowedFallbackModels: [], allowedFallbackDataRoutes: [] });
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns,
+      bots: { origin: { maxWallTimeMs: 0, maxSpendUsd: 1 } } } })).toThrow();
+    expect(() => parseStoredConfig({ codingRuns: { ...codingRuns,
+      bots: { origin: { maxWallTimeMs: 60_000, maxSpendUsd: 0 } } } })).toThrow();
+    const configured = parseStoredConfig({ instances: {
+      "coding-pi": { driver: "piAgent", config: { cli: "/fixture/fake-pi" } },
+    } });
+    expect(instanceConfigs(configured)["coding-pi"]?.config).toEqual({ cli: "/fixture/fake-pi" });
+  });
   it("requires an explicit backup to opt into automatic recovery without reloading engines", () => {
     expect(parseStoredConfig({}).automaticRecovery).toBeUndefined();
     expect(parseConfigPatch({ automaticRecovery: { enabled: false } })).toEqual({ automaticRecovery: { enabled: false } });
@@ -753,6 +777,24 @@ describe("saving the newer sections", () => {
       const disk = JSON.parse(readFileSync(path, "utf8"));
       expect(disk.threads).toEqual({ maxConcurrentPerBot: 3, eventLogRetentionDays: 30 });
       expect(parseStoredConfig(disk).threads).toEqual({ maxConcurrentPerBot: 3, eventLogRetentionDays: 30 });
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("accepts one routine id as the status feed's wake target and nothing else", () => {
+    expect(parseConfigPatch({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } })).toEqual({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } });
+    expect(parseConfigPatch({ sessionStatus: {} })).toEqual({ sessionStatus: {} });
+    expect(() => parseConfigPatch({ sessionStatus: { wakeRoutineId: "../escape" } })).toThrow(/wakeRoutineId/);
+    expect(() => parseConfigPatch({ sessionStatus: { wakeRoutineId: "x".repeat(65) } })).toThrow(/wakeRoutineId/);
+    expect(() => parseConfigPatch({ sessionStatus: { unknown: true } })).toThrow();
+    const path = join(DATA_DIR, "config.json");
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(path, JSON.stringify({}));
+    try {
+      saveConfig({ sessionStatus: { wakeRoutineId: "checkpoint-routine" } });
+      expect(JSON.parse(readFileSync(path, "utf8")).sessionStatus).toEqual({ wakeRoutineId: "checkpoint-routine" });
+      expect(loadConfig().sessionStatus).toEqual({ wakeRoutineId: "checkpoint-routine" });
     } finally {
       rmSync(path, { force: true });
     }
