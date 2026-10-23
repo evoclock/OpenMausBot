@@ -22,13 +22,22 @@ describe('repository CI and release boundaries', () => {
       && step.command.some((command) => command.includes('pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8')))).toBe(true);
   });
 
-  it('runs PR checks on Buildkite and keeps platform-specific jobs on GitHub', () => {
-    expect(['Dependencies', 'Docs', 'Author check', 'PR wording', 'PR review gate'].every((label) =>
-      ci.steps.some((step: { label?: string }) => step.label === label))).toBe(true);
+  it('keeps policy gates on GitHub and test-style PR checks on Buildkite', () => {
+    const labels = ci.steps.map((step: { label?: string }) => step.label);
+    expect(labels).toContain('Dependencies');
+    expect(labels).toContain('Docs');
+    expect(labels).not.toContain('Author check');
+    expect(labels).not.toContain('PR wording');
+    expect(labels).not.toContain('PR review gate');
+    expect(Object.keys(workflow('author-check.yml').jobs)).toEqual(['author-check']);
+    expect(Object.keys(workflow('pr-wording.yml').jobs)).toEqual(['pr-wording']);
+    expect(Object.keys(workflow('pr-review-gate.yml').jobs)).toEqual(['pr-review-gate']);
     const windows = workflow('browser-vendor-windows.yml');
     expect(windows.jobs.smoke['runs-on']).toBe('windows-latest');
     expect(windows.jobs.build.env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER).toBe('x86_64-w64-mingw32-gcc');
-    expect(readdirSync(new URL('../.github/workflows/', import.meta.url)).sort()).toEqual(['browser-vendor-windows.yml', 'release.yml']);
+    expect(readdirSync(new URL('../.github/workflows/', import.meta.url)).sort()).toEqual([
+      'author-check.yml', 'browser-vendor-windows.yml', 'pr-review-gate.yml', 'pr-wording.yml', 'release.yml',
+    ]);
   });
 
   it('publishes only unsigned GitHub release installers from v* tags', () => {

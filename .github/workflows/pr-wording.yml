@@ -1,0 +1,27 @@
+name: PR wording
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  pr-wording:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+      - name: Lint PR title and body from the trusted base
+        run: |
+          LINT=.github/tools/pr-wording/pr_wording_lint.py
+          if [ ! -f "$LINT" ]; then
+            echo '::notice::PR wording tool is absent on the base branch (bootstrap PR).'
+            exit 0
+          fi
+          ARGS=(--event "$GITHUB_EVENT_PATH")
+          if [ -f .github/pr-wording.json ]; then ARGS+=(--config .github/pr-wording.json); fi
+          python3 "$LINT" "${ARGS[@]}"
