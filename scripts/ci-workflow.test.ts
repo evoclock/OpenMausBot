@@ -9,8 +9,8 @@ const ci = parse(readFileSync(new URL('../.buildkite/pipeline.yml', import.meta.
 describe('repository CI and release boundaries', () => {
   it('runs typecheck, lint, and every test shard on the Mac for PRs and main', () => {
     const steps = ci.steps.filter((step: { label?: string }) => step.label);
-    expect(steps.every((step: { agents?: { queue?: string }; timeout_in_minutes?: number }) =>
-      step.agents?.queue === 'mac-mini' && step.timeout_in_minutes! > 0)).toBe(true);
+    expect(steps.every((step: { agents?: { queue?: string }; timeout_in_minutes?: number; priority?: number }) =>
+      step.agents?.queue === 'mac-mini' && step.timeout_in_minutes! > 0 && step.priority === -1)).toBe(true);
     expect(steps.find((step: { label: string }) => step.label === 'Typecheck').command).toContain('pnpm typecheck');
     expect(steps.find((step: { label: string }) => step.label === 'Lint and policy tests').command).toContain('pnpm lint');
     const main = steps.filter((step: { label: string }) => /^Tests [1-4]\/4$/.test(step.label));

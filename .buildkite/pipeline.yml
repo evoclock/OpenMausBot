@@ -6,6 +6,7 @@ env:
   PATH: "${HOME}/.pi/pi/harness/bin:${PATH}"
 steps:
   - label: "Typecheck"
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 20
     command:
@@ -13,6 +14,7 @@ steps:
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm typecheck"
   - label: "Lint and policy tests"
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 20
     command:
@@ -24,6 +26,7 @@ steps:
       - "uv run --no-project --managed-python --no-python-downloads --python 3.12 python -m unittest discover -s .github/tools/pr-wording/tests -p 'test_*.py'"
   - label: "Tests 1/4"
     if: build.pull_request.id == null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     command:
@@ -32,6 +35,7 @@ steps:
       - "pnpm exec vitest run --shard=1/4"
   - label: "Tests 2/4"
     if: build.pull_request.id == null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     command:
@@ -40,6 +44,7 @@ steps:
       - "pnpm exec vitest run --shard=2/4"
   - label: "Tests 3/4"
     if: build.pull_request.id == null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     command:
@@ -48,6 +53,7 @@ steps:
       - "pnpm exec vitest run --shard=3/4"
   - label: "Tests 4/4"
     if: build.pull_request.id == null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     command:
@@ -56,6 +62,7 @@ steps:
       - "pnpm exec vitest run --shard=4/4"
   - label: "PR Mac tests 1/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "0" }
@@ -74,47 +81,55 @@ steps:
         exit "$$status"
   - label: "PR Mac tests 2/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "1" }
     command: *mac-pr-tests
   - label: "PR Mac tests 3/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "2" }
     command: *mac-pr-tests
   - label: "PR Mac tests 4/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "3" }
     command: *mac-pr-tests
   - label: "PR Mac tests 5/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "4" }
     command: *mac-pr-tests
   - label: "PR Mac tests 6/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "5" }
     command: *mac-pr-tests
   - label: "PR Mac tests 7/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "6" }
     command: *mac-pr-tests
   - label: "PR Mac tests 8/8"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "7" }
     command: *mac-pr-tests
   - label: "Docs"
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 15
     command:
@@ -125,6 +140,7 @@ steps:
       - "pnpm docs:build"
   - label: "Dependencies"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 15
     command:
@@ -133,16 +149,19 @@ steps:
       - ".buildkite/pr-checks.sh dependencies"
   - label: "Author check"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 5
     command: ".buildkite/pr-checks.sh author"
   - label: "PR wording"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 5
     command: ".buildkite/pr-checks.sh wording"
   - label: "PR review gate"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 10
     command: ".buildkite/pr-checks.sh review"
@@ -150,6 +169,7 @@ steps:
       continue_on_failure: true
   - label: "Slowest 20 tests"
     if: build.pull_request.id != null
+    priority: -1
     agents: { queue: mac-mini }
     timeout_in_minutes: 5
     command:
