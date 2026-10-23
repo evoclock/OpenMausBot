@@ -2,8 +2,10 @@ import { strict as assert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "vitest";
 import { openOuterRunner } from "./outer-runner.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 import { RunContractStore, type RunContractInput } from "./run-contract.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -70,6 +72,7 @@ test("ledger persists bounded entries across restart and carries only the preced
       : { kind: "verified" as const, evidence: ["done"], costUsd: 0 };
   } };
   const first = await openOuterRunner(dir, inner);
+  let firstLedger: ReturnType<typeof first.ledger> = [];
   try {
     await first.wait(await first.start({ ...contract, maxIterations: 34 }));
     assert.equal(contexts[0]?.iteration, 1);
@@ -79,13 +82,86 @@ test("ledger persists bounded entries across restart and carries only the preced
     assert.equal(first.ledger(contract.id).length, 32);
     assert.deepEqual(first.ledger(contract.id).map((entry) => entry.iteration),
       Array.from({ length: 32 }, (_, index) => index + 3));
+    firstLedger = first.ledger(contract.id);
   } finally { await first.close(); }
   const reopened = await openOuterRunner(dir, inner);
   try {
     assert.equal(reopened.ledger(contract.id).length, 32);
+    assert.equal(createIterationContextCompactor().compact(reopened.ledger(contract.id)),
+      createIterationContextCompactor().compact(firstLedger));
     assert.equal(reopened.ledger(contract.id).at(-1)?.verdict, "done");
     await reopened.wait(await reopened.start({ ...contract, maxIterations: 34 }));
     assert.equal(contexts.length, 34);
+  } finally { await reopened.close(); }
+});
+
+test("restart after a finished mid-run receipt gives the same next carry without replay", async () => {
+  const dir = fixtureDir();
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const original = RunContractStore.prototype.finishIteration;
+    RunContractStore.prototype.finishIteration = function(...args) {
+      const result = original.apply(this, args);
+      if (result.iteration === 6) process.exit(46);
+      return result;
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke(_contract, iteration) { return { kind: 'progress', evidence: [
+        iteration === 1 ? 'failed approach: skipped checks; criterion still unmet' : 'review failed ' + iteration,
+      ], costUsd: 0 }; },
+    });
+    await runner.start(${JSON.stringify({ ...contract, maxIterations: 12 })});
+    await new Promise(() => {});`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), timeout: 30_000, encoding: "utf8" });
+  assert.equal(child.status, 46, child.stderr);
+  const observed: string[] = [];
+  const reopened = await openOuterRunner(dir, {
+    async invoke(_contract, iteration, _requestId, _signal, _budget, context) {
+      observed.push(context?.compactor?.compact(context.history ?? []) ?? "");
+      return iteration < 12 ? { kind: "progress", evidence: [`review failed ${iteration}`], costUsd: 0 }
+        : { kind: "verified", evidence: ["complete"], costUsd: 0 };
+    },
+  });
+  try {
+    const expected = createIterationContextCompactor().compact(reopened.ledger(contract.id));
+    await reopened.wait(await reopened.start({ ...contract, maxIterations: 12 }));
+    assert.equal(observed[0], expected);
+    assert.match(observed[0]!, /failed approach: skipped checks/);
+    assert.equal(reopened.get(contract.id)?.state, "done");
+    assert.equal(observed.length, 6);
+  } finally { await reopened.close(); }
+});
+
+test("missing preceding receipt blocks dispatch even with a compactor", async () => {
+  const dir = fixtureDir();
+  const source = `import { openOuterRunner } from './server/outer-runner.ts';
+    import { RunContractStore } from './server/run-contract.ts';
+    const original = RunContractStore.prototype.beginIteration;
+    RunContractStore.prototype.beginIteration = function(...args) {
+      if (args[1] === 1) process.exit(46);
+      return original.apply(this, args);
+    };
+    const runner = await openOuterRunner(${JSON.stringify(dir)}, {
+      async invoke() { return { kind: 'progress', evidence: ['first'], costUsd: 0 }; },
+    });
+    await runner.start(${JSON.stringify({ ...contract, maxIterations: 3 })});
+    await new Promise(() => {});`;
+  const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", source],
+    { cwd: process.cwd(), timeout: 30_000, encoding: "utf8" });
+  assert.equal(child.status, 46, child.stderr);
+  const db = new DatabaseSync(join(dir, "runtime.db"));
+  try { db.prepare("DELETE FROM coding_run_steps WHERE run_id = ? AND sequence = 1").run(contract.id); }
+  finally { db.close(); }
+  let calls = 0;
+  const reopened = await openOuterRunner(dir, {
+    async invoke() { calls++; return { kind: "verified", evidence: ["must not dispatch"], costUsd: 0 }; },
+  });
+  try {
+    await reopened.wait(await reopened.start({ ...contract, maxIterations: 3 }));
+    assert.equal(calls, 0);
+    assert.equal(reopened.get(contract.id)?.state, "blocked");
+    assert.match(reopened.get(contract.id)?.evidence.join(" ") ?? "", /previous iteration receipt is missing/);
   } finally { await reopened.close(); }
 });
 

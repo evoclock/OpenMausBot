@@ -72,7 +72,7 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           return blocked("isolated workspace does not match the run contract");
         }
         const prior = context?.previous;
-        const carry = prior ? context?.compactor?.compact(prior) ??
+        const carry = prior ? context?.compactor?.compact(context.history ?? [prior]) ??
           `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
         const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0)}${carry ? `\n${carry}` : ""}`;
         const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
