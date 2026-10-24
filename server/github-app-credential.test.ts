@@ -61,7 +61,8 @@ test("App config selects an installation explicitly without embedding key materi
 test("a throwaway RSA key mints a fresh repo-scoped token per decision", async () => {
   const f = fixture();
   assert.equal(await f.provider().canWrite(credential, repository), true);
-  assert.equal(await f.provider().canWrite(credential, repository), true);
+  assert.equal(await f.provider().scopedToken(credential, repository), tokenBody.token);
+  assert.equal(await f.provider().scopedToken(credential, "evoclock/Other"), null);
   assert.deepEqual(f.calls, ["POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot",
     "POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot"]);
 });
