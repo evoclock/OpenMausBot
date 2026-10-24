@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { ApprovalMode } from "../shared/approval-mode.ts";
+import type { ProviderRegistry } from "./harness/registry.ts";
+import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
 import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost, type CodingGitRequest } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
@@ -30,6 +32,7 @@ export async function openProductionCodingRuntime(options: {
   webhooks: Pick<WebhookManager, "list">;
   sourceApprovalMode: (botId: string, threadId: string) => ApprovalMode;
   driverKind: (botId: string) => string | undefined;
+  registry: Pick<ProviderRegistry, "instances" | "access">;
   startTurn: (botId: string, text: string, input: { threadId: string; requestId: string;
     triggerSource: "schedule" | "webhook"; allowedFallbackModels: Array<{ instanceId: string; model: string }>;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
@@ -38,6 +41,11 @@ export async function openProductionCodingRuntime(options: {
 }) {
   const { config, dataDir, store, routines } = options;
   const registrations = config.registrations;
+  const modelChain = () => codingModelChain(options.registry.instances().map((instance) => ({
+    instanceId: instance.instanceId, driverKind: instance.driverKind, enabled: instance.enabled,
+    access: options.registry.access(instance.instanceId), models: instance.models,
+  })), config.localModelProviders ?? DEFAULT_CODING_LOCAL_PROVIDERS)
+    .map(({ instanceId, model }) => ({ instanceId, model }));
   const first = registrations[0];
   const repository = first?.repository;
   if (!repository || registrations.some((entry) => entry.repository !== repository ||
@@ -72,8 +80,8 @@ export async function openProductionCodingRuntime(options: {
     const botId = (routine ?? hook)!.botId;
     const botConfig = config.bots?.[botId];
     const limits = botConfig && {
-      maxWallTimeMs: botConfig.maxWallTimeMs, maxSpendUsd: botConfig.maxSpendUsd,
-      allowedFallbackModels: botConfig.allowedFallbackModels,
+      maxWallTimeMs: botConfig.maxWallTimeMs, modelAccess: "subscription" as const,
+      allowedFallbackModels: [],
       allowedFallbackDataRoutes: botConfig.allowedFallbackDataRoutes,
     };
     const template: TriggerTemplate = {
@@ -105,6 +113,7 @@ export async function openProductionCodingRuntime(options: {
       return run.triggerSource === "webhook" ? "ask" : options.sourceApprovalMode(origin.botId, origin.threadId);
     },
     driverKind: options.driverKind,
+    modelChain,
     async costForThread(botId, threadId, since) {
       if (!Number.isSafeInteger(since) || since <= 0) return null;
       await flushUsageLedger(dataDir);
@@ -118,9 +127,7 @@ export async function openProductionCodingRuntime(options: {
     async startTurn(botId, text, input) {
       const origin = originForRequest(input.requestId);
       const run = origin && routines.runForThread(origin.threadId);
-      const request = input.requestId.startsWith("review:") ? input.requestId.slice(7) : input.requestId;
-      const allowedFallbackModels = origin ? runStore.get(request.slice(0, 36))
-        ?.contract.limits?.allowedFallbackModels ?? [] : [];
+      const allowedFallbackModels = origin ? modelChain() : [];
       await options.startTurn(botId, text, { ...input, allowedFallbackModels,
         triggerSource: run?.triggerSource === "webhook" ? "webhook" : "schedule" });
     },
@@ -148,8 +155,9 @@ export async function openProductionCodingRuntime(options: {
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
     const detail = evidence || "No result was reported.";
     routines.settleCodingRun(run.id, snapshot);
+    const models = (snapshot.modelsUsed ?? []).map((item) => `iteration ${item.iteration}: ${item.instanceId}/${item.model}`).join("; ");
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-      threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` }) === "delivered";
+      threadId: run.threadId, text: `Coding run ${snapshot.state}: ${models ? `Models: ${models}. ` : ""}${detail}` }) === "delivered";
   };
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
     contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
