@@ -12,7 +12,7 @@ const serverDir = dirname(fileURLToPath(import.meta.url));
 const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
-async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
+async function fixture(mode: "coding" | "happy" | "permission" | "drill", localOnly = false) {
   const cache = join(root, "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
@@ -48,7 +48,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini,openai-codex/gpt-6-luna",
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-luna",
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
@@ -119,11 +119,12 @@ test("parallel composed fixtures bind distinct OS-assigned listener ports", asyn
 }, 90_000);
 
 test.each([
-  { mode: "coding" as const, expected: "done", released: false },
-  { mode: "happy" as const, expected: "blocked", released: true },
-  { mode: "permission" as const, expected: "blocked", released: true },
-])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released }) => {
-  const f = await fixture(mode);
+  { mode: "coding" as const, expected: "done", released: false, localOnly: false },
+  { mode: "coding" as const, expected: "done", released: false, localOnly: true },
+  { mode: "happy" as const, expected: "blocked", released: true, localOnly: false },
+  { mode: "permission" as const, expected: "blocked", released: true, localOnly: false },
+])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released, localOnly }) => {
+  const f = await fixture(mode, localOnly);
   try {
     await f.start();
     const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
@@ -131,7 +132,8 @@ test.each([
     const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
     await f.api("PATCH", `/api/bots/${origin.id}`, { approvalMode: "ask" });
     for (const bot of [worker, reviewer]) {
-      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
+      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi",
+        model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini" } });
     }
     const routine = (await f.api("POST", "/api/routines", {
       name: "Scheduled coding fixture", prompt: "Complete fixture coding task", botId: origin.id,
@@ -217,10 +219,8 @@ test.each([
       try {
         const snapshot = runs.get(scheduledCodingRunId(run));
         expect(snapshot?.contract.limits?.maxSpendUsd).toBeUndefined();
-        expect(snapshot?.modelsUsed).toEqual([
-          { iteration: 1, instanceId: "pi", model: "openai-codex/gpt-6-luna" },
-          { iteration: 1, instanceId: "pi", model: "openai-codex/gpt-6-luna" },
-        ]);
+        expect(snapshot?.modelsUsed).toEqual(Array.from({ length: 2 }, () => ({ iteration: 1,
+          instanceId: "pi", model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai-codex/gpt-6-luna" })));
       } finally { runs.close(); }
       expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(true);
       expect(turns.filter((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toHaveLength(2);
