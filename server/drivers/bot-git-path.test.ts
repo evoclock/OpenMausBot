@@ -20,7 +20,12 @@ describe("bot Git PATH", () => {
     expect(run("-C", process.cwd(), "rev-parse", "--show-toplevel").status).toBe(0);
   });
 
-  it.skipIf(process.platform === "win32")("fails closed without a real Git executable", () => {
-    expect(() => botGitPath("/nonexistent", mkdtempSync(join(scratch, "bot-git-missing-")))).toThrow("Git is unavailable");
+  it.skipIf(process.platform === "win32")("denies checkout creation even when the fixture has no Git", () => {
+    const path = botGitPath("/nonexistent", mkdtempSync(join(scratch, "bot-git-missing-")));
+    const git = join(path.split(":")[0], "git");
+    const denied = spawnSync(git, ["clone", "source", "destination"], { encoding: "utf8" });
+    expect(denied.status).toBe(1);
+    expect(denied.stderr).toContain("Treehouse");
+    expect(spawnSync(git, ["status"], { encoding: "utf8" }).status).not.toBe(0);
   });
 });

@@ -18,11 +18,10 @@ export function botGitPath(path = augmentedPath(), dataDir = DATA_DIR): string {
       if (candidate !== join(bin, "git")) { git = candidate; break; }
     } catch { /* A PATH directory can disappear between calls. */ }
   }
-  if (!git) throw new Error("Git is unavailable for this bot run; cannot install the checkout guard");
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   const script = `#!/bin/sh
 set -eu
-real_git=${quote(git)}
+real_git=${quote(git ?? "/__omb_git_unavailable__")}
 verb=
 following=
 expect_value=0
