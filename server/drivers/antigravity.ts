@@ -25,6 +25,7 @@ import {
 import { resolveAntigravityReleaseAsset } from "./antigravity-release.ts";
 import { VERIFICATION_TEMP_KEY, scheduleAntigravityTempSweep } from "./antigravity-temp.ts";
 import { augmentedPath } from "../env-path.ts";
+import { botGitPath } from "./bot-git-path.ts";
 
 export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
   default: "gemini-3.8-flash-high",
@@ -146,7 +147,7 @@ export const AntigravityDriver: ProviderDriver<AcpConfig> = {
     let installFailure: string | undefined;
     const runtimeAndProfile = async () => {
       // A GUI launch's raw PATH may omit the official runtime the model picker found.
-      const environment = { ...process.env, ...input.environment, PATH: augmentedPath() };
+      const environment = { ...process.env, ...input.environment, PATH: botGitPath(augmentedPath()) };
       const runtime = await resolveAntigravityRuntime(input.config.cli, environment);
       const profile = await prepareAntigravityProfile({
         instanceId: input.instanceId,

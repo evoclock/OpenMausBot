@@ -53,6 +53,7 @@ import type {
 } from "../../contracts.ts";
 import { newEventId, newId, TurnNotStartedError } from "../../contracts.ts";
 import { augmentedPath } from "../../env-path.ts";
+import { botGitPath } from "../bot-git-path.ts";
 import { supportsApprovalMode } from "../../../shared/approval-mode.ts";
 import { MAX_QUESTION_TEXT, parseAskQuestions, parseChoices, questionAnswersByQuestion } from "../../../shared/ask-question.ts";
 
@@ -487,7 +488,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const env: Record<string, string | undefined> = {
           ...process.env,
           ...input.environment,
-          PATH: augmentedPath(),
+          PATH: botGitPath(augmentedPath()),
         };
         const allowedCredentials = new Set(support.credentialEnv ?? []);
         // Foreign provider keys would flip billing off the CLI's login, and workspace credentials are
