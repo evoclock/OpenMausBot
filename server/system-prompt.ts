@@ -60,8 +60,8 @@ export function buildSystemPrompt(
     // Right after the soul: on a direct turn, ahead of every section that names a tool.
     { id: "tool-bridge", label: "Tool search", text: agentsToolBridged(agents) ? AGENTS_TOOL_BRIDGE_PROMPT : "" },
     { id: "reply-style", label: "Reply style", text: replyStylePrompt(opts?.replyStyle) },
-    { id: "repo-workspaces", label: "Repository workspaces", text: REPO_WORKSPACE_PROMPT },
     ...parts,
+    { id: "repo-workspaces", label: "Repository workspaces", text: REPO_WORKSPACE_PROMPT },
   ];
   const sections = ordered
     .filter((part) => part.text.length > 0)

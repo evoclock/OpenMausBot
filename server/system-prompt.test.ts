@@ -94,7 +94,7 @@ describe("buildSystemPrompt", () => {
     expect(built.text).toContain("likes tea");
     expect(built.text).toContain("@Fig");
 
-    expect(built.stable).toBe("You are Kiwi." + REPO_WORKSPACE_PROMPT + " Search past sessions.");
+    expect(built.stable).toBe("You are Kiwi. Search past sessions." + REPO_WORKSPACE_PROMPT);
     expect(built.volatile).toContain("likes tea");
     expect(built.volatile).toContain("@Fig");
     expect(built.volatile).toContain("today 20:48");
@@ -120,19 +120,19 @@ describe("buildSystemPrompt", () => {
       { id: "memory", label: "Memory", text: " Your memory file is X." },
     ];
     const built = buildSystemPrompt("You are Kiwi.", "", parts);
-    expect(built.text).toBe("You are Kiwi." + REPO_WORKSPACE_PROMPT + " You can act on the computer. Your memory file is X.");
-    expect(built.sections.map((s) => s.id)).toEqual(["persona", "repo-workspaces", "computer", "memory"]);
+    expect(built.text).toBe("You are Kiwi. You can act on the computer. Your memory file is X." + REPO_WORKSPACE_PROMPT);
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "computer", "memory", "repo-workspaces"]);
   });
 
   it("puts the soul block directly after the persona and measures it in bytes", () => {
     const built = buildSystemPrompt("You are Kiwi.", "Be brief. é", [
       { id: "memory", label: "Memory", text: " Your memory file is X." },
     ]);
-    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "repo-workspaces", "memory"]);
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "memory", "repo-workspaces"]);
     const soul = built.sections[1]!;
     expect(soul.text).toBe(soulSystemPrompt("Be brief. é"));
     expect(soul.bytes).toBe(Buffer.byteLength(soul.text, "utf8"));
-    expect(built.text).toBe("You are Kiwi." + soul.text + REPO_WORKSPACE_PROMPT + " Your memory file is X.");
+    expect(built.text).toBe("You are Kiwi." + soul.text + " Your memory file is X." + REPO_WORKSPACE_PROMPT);
   });
 });
 
@@ -337,7 +337,7 @@ describe("reply style", () => {
       { id: "memory", label: "Memory", text: " memory" },
       { id: "x", label: "X", text: " tail" },
     ], undefined, { replyStyle: "conversational" });
-    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "reply-style", "repo-workspaces", "memory", "x"]);
+    expect(built.sections.map((s) => s.id)).toEqual(["persona", "soul", "reply-style", "memory", "x", "repo-workspaces"]);
     expect(built.stable).toContain(CONVERSATIONAL_STYLE_PROMPT);
     expect(built.volatile).not.toContain("Reply style");
     expect(CONVERSATIONAL_STYLE_PROMPT).toMatch(/short/i);
