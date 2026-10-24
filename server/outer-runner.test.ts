@@ -553,12 +553,14 @@ test("unconfigured unattended run stops with a terminal owner report before invo
 
 test("subscription and local runs need no spend cap and persist the actual model per iteration", async () => {
   for (const modelAccess of ["subscription", "local"] as const) {
-    const runner = await openOuterRunner(fixtureDir(), { async invoke() {
+    const runner = await openOuterRunner(fixtureDir(), { async invoke(_contract, _iteration, _requestId, _signal, remainingUsd) {
+      assert.equal(remainingUsd, undefined);
       return { kind: "verified" as const, evidence: ["checked"], costUsd: null,
         modelsUsed: [{ instanceId: "pi", model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }] };
     } });
     try {
-      await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000, modelAccess } }));
+      await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000,
+        ...(modelAccess === "subscription" ? { maxSpendUsd: 1 } : {}), modelAccess } }));
       const snapshot = runner.report(contract.id)?.snapshot;
       assert.equal(snapshot?.state, "done");
       assert.deepEqual(snapshot?.modelsUsed, [{ iteration: 1, instanceId: "pi",

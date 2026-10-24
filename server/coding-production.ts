@@ -76,8 +76,7 @@ export async function openProductionCodingRuntime(options: {
     const botId = (routine ?? hook)!.botId;
     const botConfig = config.bots?.[botId];
     const limits = botConfig && {
-      maxWallTimeMs: botConfig.maxWallTimeMs, maxSpendUsd: botConfig.maxSpendUsd,
-      modelAccess: "subscription" as const,
+      maxWallTimeMs: botConfig.maxWallTimeMs, modelAccess: "subscription" as const,
       allowedFallbackModels: [],
       allowedFallbackDataRoutes: botConfig.allowedFallbackDataRoutes,
     };

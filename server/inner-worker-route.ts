@@ -78,7 +78,7 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         const prior = context?.previous;
         const carry = prior ? context?.compactor?.compact(context.history ?? [prior]) ??
           `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
-        const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd)}${carry ? `\n${carry}` : ""}`;
+        const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, spendRequired ? remainingUsd ?? contract.limits?.maxSpendUsd : undefined)}${carry ? `\n${carry}` : ""}`;
         const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
         if (report.modelUsed) modelsUsed.push(report.modelUsed);
         if (!charge(report.costUsd)) return blocked(spentUsd === null

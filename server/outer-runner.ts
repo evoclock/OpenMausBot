@@ -168,7 +168,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         const timer = setTimeout(() => deadline.abort(), remaining);
         try {
           const result = await inner.invoke(current.contract, current.iteration, requestId,
-            AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd === undefined ? undefined : current.contract.limits!.maxSpendUsd - current.spentUsd,
+            AbortSignal.any([runtime.signal, deadline.signal]), requiresSpendCap(current.contract.limits)
+              ? current.contract.limits!.maxSpendUsd! - current.spentUsd : undefined,
             { iteration: current.iteration, previous, history: ledger.entries(task.input.id),
               compactor: options.contextCompactor ?? createIterationContextCompactor() });
           const at = Math.max(Date.now(), current.updatedAt + 1,

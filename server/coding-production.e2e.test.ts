@@ -216,6 +216,7 @@ test.each([
       const runs = new RunContractStore(join(f.dataDir, "coding-run", "runtime.db"));
       try {
         const snapshot = runs.get(scheduledCodingRunId(run));
+        expect(snapshot?.contract.limits?.maxSpendUsd).toBeUndefined();
         expect(snapshot?.modelsUsed).toEqual([
           { iteration: 1, instanceId: "pi", model: "openai-codex/gpt-6-luna" },
           { iteration: 1, instanceId: "pi", model: "openai-codex/gpt-6-luna" },
