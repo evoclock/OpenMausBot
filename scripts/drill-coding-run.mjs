@@ -43,7 +43,9 @@ if (mode === "--fixture-real-worker" && process.argv.length === 3) {
     !config.botConfig?.modelSelection?.instanceId || config.botConfig.modelSelection.model !== config.model ||
     !Number.isSafeInteger(config.botConfig.maxIterations) || config.botConfig.maxIterations <= 0 ||
     !Number.isSafeInteger(config.botConfig.limits.maxWallTimeMs) || config.botConfig.limits.maxWallTimeMs <= 0 ||
-    !Number.isFinite(config.botConfig.limits.maxSpendUsd) || config.botConfig.limits.maxSpendUsd <= 0 ||
+    !["openai-codex/gpt-6-luna", "dsf41/deepseek-v4.1-flash-tf"].includes(config.model) ||
+    (config.botConfig.limits.modelAccess !== "subscription" && config.botConfig.limits.modelAccess !== "local" &&
+      (!Number.isFinite(config.botConfig.limits.maxSpendUsd) || config.botConfig.limits.maxSpendUsd <= 0)) ||
     !/^[0-9a-f]{40}$/.test(config.baseRevision ?? "") || !config.expectedRevisions?.length) {
     throw new Error("Refusing incomplete or unconfirmed sandbox drill configuration");
   }

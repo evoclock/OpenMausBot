@@ -547,8 +547,41 @@ test("unconfigured unattended run stops with a terminal owner report before invo
     await runner.wait(await runner.start({ ...contract, limits: undefined }));
     assert.equal(calls, 0);
     assert.equal(runner.get(contract.id)?.state, "blocked");
-    assert.match(runner.report(contract.id)?.snapshot.evidence.join(" ") ?? "", /configure this bot's wall-clock and spend ceilings/);
+    assert.match(runner.report(contract.id)?.snapshot.evidence.join(" ") ?? "", /configure this bot's wall-clock ceiling/);
   } finally { await runner.close(); }
+});
+
+test("subscription and local runs need no spend cap and persist the actual model per iteration", async () => {
+  for (const modelAccess of ["subscription", "local"] as const) {
+    const runner = await openOuterRunner(fixtureDir(), { async invoke() {
+      return { kind: "verified" as const, evidence: ["checked"], costUsd: null,
+        modelsUsed: [{ instanceId: "pi", model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }] };
+    } });
+    try {
+      await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000, modelAccess } }));
+      const snapshot = runner.report(contract.id)?.snapshot;
+      assert.equal(snapshot?.state, "done");
+      assert.deepEqual(snapshot?.modelsUsed, [{ iteration: 1, instanceId: "pi",
+        model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }]);
+      assert.equal(snapshot?.spendUncertain, false);
+    } finally { await runner.close(); }
+  }
+});
+
+test("API and unknown billing block before dispatch without a spend cap", async () => {
+  for (const modelAccess of ["api", undefined] as const) {
+    let calls = 0;
+    const runner = await openOuterRunner(fixtureDir(), { async invoke() {
+      calls++;
+      return { kind: "verified" as const, evidence: ["should not run"], costUsd: 0 };
+    } });
+    try {
+      await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000, modelAccess } }));
+      assert.equal(calls, 0);
+      assert.equal(runner.report(contract.id)?.snapshot.state, "blocked");
+      assert.match(runner.report(contract.id)?.snapshot.evidence.join(" ") ?? "", /requires a spend ceiling/);
+    } finally { await runner.close(); }
+  }
 });
 
 test("wall-clock ceiling interrupts an active local run and reports the terminal result", async () => {

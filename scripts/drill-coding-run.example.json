@@ -3,15 +3,15 @@
   "host": "mac-mini",
   "credentialReference": "",
   "worktree": "",
-  "model": "gpt-6-sol",
+  "model": "openai-codex/gpt-6-luna",
   "thinking": "low",
   "botConfig": {
     "originBotId": "",
     "workerBotId": "",
     "reviewerBotId": "",
-    "modelSelection": { "instanceId": "", "model": "gpt-6-sol" },
-    "maxIterations": null,
-    "limits": { "maxWallTimeMs": null, "maxSpendUsd": null, "allowedFallbackModels": [], "allowedFallbackDataRoutes": [] }
+    "modelSelection": { "instanceId": "", "model": "openai-codex/gpt-6-luna" },
+    "maxIterations": 3,
+    "limits": { "maxWallTimeMs": 600000, "modelAccess": "subscription", "allowedFallbackModels": [], "allowedFallbackDataRoutes": [] }
   },
   "baseRevision": "",
   "expectedRevisions": [],

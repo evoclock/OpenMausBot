@@ -47,9 +47,12 @@ export const codingRunConfigSchema = z.object({
   restartLimit: z.number().int().positive().optional(),
   /** Maximum UTF-8 bytes of redacted iteration history in the next worker goal; default 8192. */
   contextCarryMaxBytes: z.number().int().min(256).max(32768).optional(),
+  /** Only these Pi provider IDs are trusted as local coding fallbacks. */
+  localModelProviders: z.array(z.string().regex(/^[a-z0-9][a-z0-9._-]*$/)).optional(),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({
-    maxIterations: z.number().int().positive().optional(),
+    maxIterations: z.number().int().positive().default(8),
+    maxWallTimeMs: z.number().int().positive().max(2_147_483_647).default(45 * 60_000),
   })).optional(),
   registrations: z.array(z.object({
     routineId: z.string().min(1), workerBotId: z.string().min(1), reviewerBotId: z.string().min(1),

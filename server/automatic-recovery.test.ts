@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { allowedCodingRecovery, codingRecoveryAllowlist, recoveryCapabilityError } from "./automatic-recovery.ts";
+import { allowedCodingRecovery, codingRecoveryAllowlist, codingModelChain, recoveryCapabilityError } from "./automatic-recovery.ts";
 
 describe("automatic recovery capabilities", () => {
+  it("orders subscription, preferred local, then allowlisted locals and excludes API and unlisted loaded models", () => {
+    const instance = (instanceId: string, access: "api" | "custom", models: string[]) => ({
+      instanceId, driverKind: "piAgent", enabled: true, access,
+      models: { options: models.map((id) => ({ id })) },
+    });
+    expect(codingModelChain([
+      instance("pi", "custom", ["local-2/other", "merge-gateway/paid", "dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-luna"]),
+      instance("billed", "api", ["dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-luna"]),
+    ], ["dsf41", "local-2", "merge-gateway"])).toEqual([
+      { instanceId: "pi", model: "openai-codex/gpt-6-luna", modelAccess: "subscription" },
+      { instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf", modelAccess: "local" },
+      { instanceId: "pi", model: "local-2/other", modelAccess: "local" },
+    ]);
+    expect(codingModelChain([instance("pi", "custom", ["unknown/loaded", "merge-gateway/paid"])], ["dsf41"]))
+      .toEqual([]);
+    expect(codingModelChain([instance("pi", "custom", ["unknown/loaded", "dsf41/deepseek-v4.1-flash-tf"])], ["dsf41"]))
+      .toEqual([{ instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf", modelAccess: "local" }]);
+  });
   const engine = { driverKind: "qwenAgent", capabilities: {
     sessionModelSwitch: "unsupported" as const, agentsMcp: true, browserMcp: true,
     customMcp: true, dataMcp: true, highlevelMcp: true, images: true,
