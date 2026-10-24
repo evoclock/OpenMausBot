@@ -151,7 +151,8 @@ export async function openProductionCodingRuntime(options: {
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
       threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` }) === "delivered";
   };
-  const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit, workerHost: host,
+  const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
+    contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
     routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver });
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;

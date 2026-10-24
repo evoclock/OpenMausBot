@@ -18,3 +18,12 @@
 - Friction: a combined routine startup/recovery regression run exceeded the 120-second shell limit. Split the existing suites: startup passed in 6 seconds; recovery passed in 143 seconds with a bounded 240-second limit. Logs are in the requested proof directory; no check was silently counted green on timeout.
 - Friction: the linked dependency target became unavailable during main reconciliation. Preserved the old slot-11 links under `deprecated/` and installed the locked dependencies offline inside slot 11 through `sfw pnpm install --offline --frozen-lockfile`. No package or lockfile changed; generated caches remain inside slot 11.
 - Friction: `pipeline_output/codebase_inventory.jsonl` is absent in this checkout. Prior art inspected directly: `server/run-triggers.ts`, `server/coding-run-runtime.ts`, `server/routines.ts`, `server/webhooks.ts`, `server/index.ts`; reuse those rather than authoring another scheduler.
+
+# CI worktree notes
+
+- The Mac agent's system Python is 3.15, not 3.12. Buildkite checks now select an existing uv-managed 3.12 interpreter and fail early if it is missing. The host preflight also checks git and gh, so missing tools fail before lengthy test setup. The local host check and Python policy tests passed with 3.12.13.
+- Hosted Linux test shards lacked browser libraries and could not complete a fake-engine install. All eight PR test shards now run on the Mac queue, with explicit timeouts. The local pipeline check confirms unique shard indexes and timeouts on every step; the next Buildkite result is still pending.
+- A dependency audit failed when the base audit returned an invalid response. The latest dependency check passed without changing the lockfile or masking audit errors.
+- Two CI tests still read a workflow removed during the cutover. They now inspect the active pipeline and remaining workflows; the targeted tests pass without Docker.
+- Cloud sync used the Mac's low free-space reading, which blocked its fixture upload. The isolated server fixture now reports stable synthetic capacity; all three cloud-sync tests pass.
+- Two tests used wall-clock-sensitive startup assertions under load. The coordination test now waits for the bot's observable idle-and-waiting state; the command-server budget test advances both the clock and timers. Both targeted tests pass locally.

@@ -262,15 +262,13 @@ class PrWordingLint(unittest.TestCase):
         self.assertNotRegex(result.stdout, r"--(?:path|paths|glob|files?|dir)\b")
 
     def test_workflow_runs_only_on_pull_requests(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "pr-wording.yml").read_text(encoding="utf-8")
+        self.assertIn("  pull_request:", workflow)
+        self.assertNotIn("  push:", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.base.sha }}", workflow)
+        self.assertIn('python3 "$LINT" "${ARGS[@]}"', workflow)
         pipeline = (ROOT / ".buildkite" / "pipeline.yml").read_text(encoding="utf-8")
-        wording = pipeline.split('  - label: "PR wording"\n', 1)[1].split('  - label: "PR review gate"\n', 1)[0]
-        self.assertIn("if: build.pull_request.id != null", wording)
-        self.assertIn('command: ".buildkite/pr-checks.sh wording"', wording)
-        check = (ROOT / ".buildkite" / "pr-checks.sh").read_text(encoding="utf-8")
-        self.assertIn('if [[ "$pr" == false || -z "$pr" ]]', check)
-        self.assertIn('git show "$base_sha:$base/$name"', check)
-        self.assertIn('git show "$base_sha:.github/pr-wording.json"', check)
-        self.assertIn('"$python" "$scratch/pr-wording/pr_wording_lint.py" "${args[@]}"', check)
+        self.assertNotIn('label: "PR wording"', pipeline)
 
     def test_no_personal_config_is_committed(self) -> None:
         self.assertFalse((ROOT / ".github" / "pr-wording.json").exists())
