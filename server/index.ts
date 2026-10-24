@@ -228,7 +228,7 @@ import {
   newId,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
-import { allowedCodingRecovery, codingRecoveryAllowlist, recoveryCapabilityError } from "./automatic-recovery.ts";
+import { allowedCodingRecovery, codingRecoveryAllowlist, codingRecoveryCandidates, recoveryCapabilityError } from "./automatic-recovery.ts";
 import { createQuotaSwitchHost } from "./host/quota-switch.ts";
 import { decodeGeneratedImage } from "./generated-image.ts";
 import {
@@ -9198,10 +9198,8 @@ async function startTurn(
       if (e instanceof PlaceUnavailableError) clearFailedAutoPin(bot.id, threadId, e.place);
       let message = e instanceof Error ? e.message : String(e);
       const current = store.projectBotForTask(bot.id, threadId);
-      const backups = codingFallbackModels !== undefined ? codingFallbackModels
-        : cfg.automaticRecovery?.enabled
-          ? current?.fallback?.length ? current.fallback : cfg.automaticRecovery.backup ? [cfg.automaticRecovery.backup] : []
-          : [];
+      const backups = codingRecoveryCandidates(codingFallbackModels, cfg.automaticRecovery?.enabled,
+        current?.fallback, cfg.automaticRecovery?.backup);
       const nextIndex = backups.findIndex((candidate, index) => index >= (opts?.automaticRecoveryIndex ?? 0) &&
         registry.get(candidate.instanceId)?.enabled &&
         (candidate.instanceId !== instanceId || candidate.model !== model) &&
@@ -10190,10 +10188,7 @@ if (cfg.codingRuns) {
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
     sourceApprovalMode,
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
-    availableModels: () => registry.instances().map((instance) => ({
-      instanceId: instance.instanceId, driverKind: instance.driverKind, enabled: instance.enabled,
-      access: registry.access(instance.instanceId), models: instance.models,
-    })),
+    registry,
     async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {
       await startTurn(botId, text, { ...options, automationSource: triggerSource, codingFallbackModels: allowedFallbackModels });
     },

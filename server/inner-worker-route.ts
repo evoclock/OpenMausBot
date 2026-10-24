@@ -92,15 +92,18 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         if (signal.aborted) return blocked("review interrupted; reconcile outward effects");
         if (review.revision !== report.revision || !review.accepted || !review.evidence.some((item) => item.trim())) {
           retainLease = true;
-          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd, modelsUsed };
+          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
         const verified = await host.verifyWithPstack(workspace, report.revision, contract.successCriteria, signal);
         if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
         retainLease = true;
         if (!verified?.some((item) => item.trim())) {
-          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd, modelsUsed };
+          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
-        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], costUsd: spentUsd, modelsUsed };
+        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], costUsd: spentUsd,
+          ...(modelsUsed.length ? { modelsUsed } : {}) };
       } catch (error) {
         return blocked("worker route failed; reconcile outward effects",
           error instanceof Error ? error.message : String(error));

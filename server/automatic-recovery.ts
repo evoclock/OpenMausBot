@@ -29,6 +29,14 @@ export function codingModelChain(instances: readonly {
   return [...primary, ...local];
 }
 
+export function codingRecoveryCandidates<T extends { instanceId: string; model: string }>(
+  coding: T[] | undefined, enabled: boolean | undefined, fallback: T[] | undefined, backup: T | undefined,
+): T[] {
+  if (coding !== undefined) return coding;
+  if (!enabled) return [];
+  return fallback?.length ? fallback : backup ? [backup] : [];
+}
+
 export function allowedCodingRecovery(selection: { instanceId: string; model: string },
   allowed?: readonly { instanceId: string; model: string }[]): boolean {
   return allowed === undefined || allowed.some((item) =>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allowedCodingRecovery, codingRecoveryAllowlist, codingModelChain, recoveryCapabilityError } from "./automatic-recovery.ts";
+import { allowedCodingRecovery, codingRecoveryAllowlist, codingModelChain, codingRecoveryCandidates, recoveryCapabilityError } from "./automatic-recovery.ts";
 
 describe("automatic recovery capabilities", () => {
   it("orders subscription, preferred local, then allowlisted locals and excludes API and unlisted loaded models", () => {
@@ -32,6 +32,11 @@ describe("automatic recovery capabilities", () => {
   });
   it("does not silently move work to a file-less engine", () => {
     expect(recoveryCapabilityError(engine, { ...engine, driverKind: "openai-compat" })).toMatch(/same workspace/);
+  });
+  it("never uses ordinary API recovery when coding has no permitted fallback", () => {
+    const paid = { instanceId: "paid", model: "merge-gateway/paid" };
+    expect(codingRecoveryCandidates([], true, [paid], paid)).toEqual([]);
+    expect(codingRecoveryCandidates(undefined, true, [paid], paid)).toEqual([paid]);
   });
   it("rejects unlisted model fallback for coding turns without changing ordinary recovery", () => {
     const candidate = { instanceId: "fixture-2", model: "other-model" };
