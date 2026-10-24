@@ -47,7 +47,8 @@ refreshes it.
 
 `app-update.yml` is baked into every packaged desktop app. Builds through
 0.1.46 point to `milind-soni/openmausbot-releases`; newer builds point to
-`milind-soni/OpenMausBot`. For that reason:
+`milind-soni/OpenMausBot`. Builds starting at 0.2.0 point to
+`evoclock/OpenMausBot`. For that reason:
 
 1. Every new release is published byte-for-byte to both repositories during
    the bridge period.
