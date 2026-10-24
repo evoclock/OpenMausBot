@@ -1,7 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
 import { importPKCS8, SignJWT } from "jose";
 import type { CodingGitCredentialProvider } from "./coding-git-policy.ts";
-import type { CodingGitAppInstallation } from "./coding-run-config.ts";
+import type { CodingGitAppInstallation, CodingGitCredential } from "./coding-run-config.ts";
 
 const REPOSITORY = /^evoclock\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -10,21 +10,20 @@ export function createGitHubAppCredentialProvider(options: {
   installations: Readonly<Record<string, CodingGitAppInstallation>>;
   request?: typeof fetch;
   now?: () => number;
-}): CodingGitCredentialProvider {
+}): CodingGitCredentialProvider & { scopedToken(credential: CodingGitCredential, repository: string): Promise<string | null> } {
   const request = options.request ?? globalThis.fetch;
   const now = options.now ?? Date.now;
-  return {
-    async canWrite(credential, repository) {
+  const scopedToken = async (credential: CodingGitCredential, repository: string): Promise<string | null> => {
       if (credential.kind !== "github-app" || !REPOSITORY.test(repository) ||
-        !Object.hasOwn(options.installations, credential.reference)) return false;
+        !Object.hasOwn(options.installations, credential.reference)) return null;
       const installation = options.installations[credential.reference];
       if (!installation || !Number.isSafeInteger(installation.appId) || installation.appId <= 0 ||
         !Number.isSafeInteger(installation.installationId) || installation.installationId <= 0 ||
         !Array.isArray(installation.repositories) || !installation.repositories.includes(repository) ||
-        !installation.privateKeyPath?.startsWith("/")) return false;
+        !installation.privateKeyPath?.startsWith("/")) return null;
       try {
         const file = await lstat(installation.privateKeyPath);
-        if (!file.isFile() || (file.mode & 0o077) !== 0) return false;
+        if (!file.isFile() || (file.mode & 0o077) !== 0) return null;
         const privateKey = await readFile(installation.privateKeyPath, "utf8");
         const signingKey = await importPKCS8(privateKey, "RS256");
         const seconds = Math.floor(now() / 1000);
@@ -38,7 +37,7 @@ export function createGitHubAppCredentialProvider(options: {
           body: JSON.stringify({ repositories: [repo], permissions: { contents: "write", pull_requests: "write" } }),
           signal: AbortSignal.timeout(15_000),
         });
-        if (created.status !== 201) return false;
+        if (created.status !== 201) return null;
         const tokenBody = await created.json() as { token?: unknown; expires_at?: unknown;
           repositories?: Array<{ full_name?: unknown }>; permissions?: { contents?: unknown; pull_requests?: unknown } };
         const expiresAt = typeof tokenBody.expires_at === "string" ? Date.parse(tokenBody.expires_at) : NaN;
@@ -46,19 +45,21 @@ export function createGitHubAppCredentialProvider(options: {
           !Number.isFinite(expiresAt) || expiresAt <= now() ||
           !Array.isArray(tokenBody.repositories) || tokenBody.repositories.length !== 1 ||
           tokenBody.repositories[0]?.full_name !== repository ||
-          tokenBody.permissions?.contents !== "write" || tokenBody.permissions.pull_requests !== "write") return false;
+          tokenBody.permissions?.contents !== "write" || tokenBody.permissions.pull_requests !== "write") return null;
         const result = await request(`https://api.github.com/repos/${owner}/${repo}`, {
           method: "GET", headers: { accept: "application/vnd.github+json", authorization: `Bearer ${tokenBody.token}`,
             "x-github-api-version": "2022-11-28" }, signal: AbortSignal.timeout(15_000),
         });
-        if (!result.ok) return false;
+        if (!result.ok) return null;
         const facts = await result.json() as { full_name?: unknown; visibility?: unknown;
           permissions?: { push?: unknown } };
         return facts.full_name === repository && facts.permissions?.push === true &&
-          (installation.visibility === undefined || facts.visibility === installation.visibility);
+          (installation.visibility === undefined || facts.visibility === installation.visibility) ? tokenBody.token : null;
       } catch {
-        return false;
+        return null;
       }
-    },
   };
+  return { scopedToken, async canWrite(credential, repository) {
+    return (await scopedToken(credential, repository)) !== null;
+  } };
 }
