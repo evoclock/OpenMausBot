@@ -39,13 +39,7 @@ import { claudeApiErrorMessage, claudeLimitRefusal, claudeUsageLimit, claudeLimi
 import { TEAM_TOOLS_FAILED, teamToolsFailed } from "./team-tools.ts";
 import { sessionIdlePolicy } from "./session-idle.ts";
 import { parseVersionTriple, versionAtLeast } from "./acp/core.ts";
-import {
-  applyClaudeInject,
-  decodeInjectId,
-  mergeLocalInject,
-  probeLocalInjects,
-  resolveInjectId,
-} from "./local-inject.ts";
+import { applyClaudeInject, decodeInjectId, mergeLocalInject, probeLocalInjects, resolveInjectId } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { runKeepWarmPing, type KeepWarmContract } from "./claude-keepwarm.ts";
 import { BACKGROUND_CALL_TIMEOUT_MS, backgroundCallArgs, spawnBackgroundCall } from "./claude-background.ts";

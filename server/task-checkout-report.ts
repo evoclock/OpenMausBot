@@ -4,6 +4,22 @@ import { join, relative, sep } from "node:path";
 
 export interface CheckoutReport { found: string[]; incomplete: boolean; artifact?: string }
 
+export function reportTaskCheckoutsAtTurnEnd(botId: string | undefined, threadId: string, root: string, notify: (detail: string) => void): void {
+  if (!botId || !/^[A-Za-z0-9_-]{1,128}$/.test(botId) || !/^[A-Za-z0-9_-]{1,128}$/.test(threadId)) return;
+  const workspace = join(root, botId, threadId);
+  if (!existsSync(workspace)) return;
+  try {
+    const report = reportTaskCheckouts(workspace, 20_000, root);
+    if (report.found.length || report.incomplete) {
+      const detail = report.incomplete ? "The checkout scan was incomplete" : `${report.found.length} nested Git checkout(s) found`;
+      console.warn(`[task-checkout] ${botId}/${threadId}: ${detail}; ${report.artifact}`);
+      notify(detail);
+    }
+  } catch (error) {
+    console.error("[task-checkout] Could not record the checkout scan", error);
+  }
+}
+
 export function reportTaskCheckouts(workspace: string, maxEntries = 20_000, approvedRoot?: string): CheckoutReport {
   if (!lstatSync(workspace).isDirectory() ||
     (approvedRoot && !realpathSync(workspace).startsWith(realpathSync(approvedRoot) + sep))) {

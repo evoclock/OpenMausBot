@@ -20,8 +20,7 @@ import { codexLaunchesStarting, codexLaunchSlot, codexRpcTimeoutMs, keepStopping
 import { isReservedMcpEnvEntry } from "../mcp-registry.ts";
 
 import type {
-  DriverCreateInput,
-  McpServerSpec,
+  DriverCreateInput, McpServerSpec,
   ProviderDriver,
   ProviderInstance,
   ProviderSnapshot,

@@ -363,14 +363,8 @@ import {
   workspaceDir,
 } from "./workspace.ts";
 import { listMemoryTopics, memoryDate, readMemoryFile, readMemoryTopic, writeMemoryFile, writeMemoryTopic } from "./workspace.ts";
-import { reportTaskCheckouts } from "./task-checkout-report.ts";
-import {
-  beginMemoryTurn,
-  endMemoryTurn,
-  flushAllMemoryJournals,
-  journalTurnWrite,
-  type MemoryJournalEntry,
-} from "./memory-journal.ts";
+import { reportTaskCheckoutsAtTurnEnd } from "./task-checkout-report.ts";
+import { beginMemoryTurn, endMemoryTurn, flushAllMemoryJournals, journalTurnWrite, type MemoryJournalEntry } from "./memory-journal.ts";
 import {
   readSections,
   sectionContextKey,
@@ -7218,21 +7212,8 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "turn.completed": {
-      if (bot && /^[A-Za-z0-9_-]{1,128}$/.test(bot.id) && /^[A-Za-z0-9_-]{1,128}$/.test(event.threadId)) {
-        const workspace = join(TASK_WORKSPACES_DIR, bot.id, event.threadId);
-        if (existsSync(workspace)) {
-          try {
-            const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
-            if (report.found.length || report.incomplete) {
-              const detail = report.incomplete ? "The checkout scan was incomplete" : `${report.found.length} nested Git checkout(s) found`;
-              console.warn(`[task-checkout] ${bot.id}/${event.threadId}: ${detail}; ${report.artifact}`);
-              pushMessage({ role: "bot", kind: "activity", tool: { name: `notice: ${detail}; report saved in this task's artefacts`, ok: false } });
-            }
-          } catch (error) {
-            console.error("[task-checkout] Could not record the checkout scan", error);
-          }
-        }
-      }
+      reportTaskCheckoutsAtTurnEnd(bot?.id, event.threadId, TASK_WORKSPACES_DIR, (detail) =>
+        pushMessage({ role: "bot", kind: "activity", tool: { name: `notice: ${detail}; report saved in this task's artefacts`, ok: false } }));
       settleWaitingOnPersonChips(event.threadId);
       const internal = isInternalTurn(event.threadId);
       clearInternalTurn(event.threadId);

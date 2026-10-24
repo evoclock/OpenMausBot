@@ -15,9 +15,8 @@ import {
   promptHalves,
   readPromptSplitReceipt,
   splitSessionPrompt,
-  writePromptSplitReceipt,
+  writePromptSplitReceipt, type PromptSplitReceipt,
 } from "./prompt-split.ts";
-import type { PromptSplitReceipt } from "./prompt-split.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 
