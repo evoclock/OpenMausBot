@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { acpPermissionCommand, permissionCommand } from "./permission-command.ts";
+import { acpPermissionCommand, acpShellRequest, answersAlone, permissionCommand } from "./permission-command.ts";
+import { bindSafetyFloor, safetyFloorBlock } from "../safety-floor-gate.ts";
 
 const CWD = "/home/user/work";
 
@@ -39,6 +40,19 @@ describe("acpPermissionCommand", () => {
     expect(acpPermissionCommand({ CommandLine: "", Cwd: CWD }, undefined)).toBeUndefined();
     expect(acpPermissionCommand(null, CWD)).toBeUndefined();
     expect(acpPermissionCommand(["ls"], CWD)).toBeUndefined();
+  });
+});
+
+describe("bot checkout commands", () => {
+  it("blocks ad hoc checkout commands without the optional safety floor", () => {
+    bindSafetyFloor(() => ({}));
+    for (const line of ["git clone source destination", "git init repo", "git worktree add ../scratch", "git -C repo worktree add ../scratch", "env git clone source destination", "sh -c 'git init repo'"]) {
+      expect(answersAlone(line)).toBe(false);
+      expect(safetyFloorBlock(line)).toMatchObject({ rule: "git-checkout-creation", reason: expect.stringContaining("Treehouse") });
+    }
+    expect(answersAlone("git status --short")).toBe(true);
+    expect(safetyFloorBlock("echo 'git clone source destination'")).toBeNull();
+    expect(acpShellRequest(true, { CommandLine: "git clone a b", Cwd: CWD }, CWD).commandLine).toBe("git clone a b");
   });
 });
 
