@@ -239,10 +239,22 @@ describe("the Data routes", () => {
       expect(initial.status).toBe(200);
       const good = sheets.for("bot-1").card("c_1");
       const started = deferred();
+      const cancelled = deferred();
+      const finished = deferred();
       const materialise = database.materialise.bind(database);
-      database.materialise = (sql, name, options) => {
-        if (sql.includes("100000000")) started.resolve();
-        return materialise(sql, name, options);
+      database.materialise = async (sql, name, options) => {
+        if (sql.includes("100000000")) {
+          expect(options.signal).toBeDefined();
+          const disconnected = new Promise<void>((resolve) => options.signal!.addEventListener("abort", () => resolve(), { once: true }));
+          started.resolve();
+          await disconnected;
+          cancelled.resolve();
+        }
+        try {
+          return await materialise(sql, name, options);
+        } finally {
+          finished.resolve();
+        }
       };
       const abort = new AbortController();
       const disconnected = fetch(`${base}/api/bots/bot-1/data/run`, {
@@ -252,7 +264,8 @@ describe("the Data routes", () => {
       await started.promise;
       abort.abort();
       expect(await disconnected).toBeInstanceOf(Error);
-      await database.run("SELECT 1", { connection: "panel", timeoutMs: 1_000 });
+      await cancelled.promise;
+      await finished.promise;
       expect(sheets.for("bot-1").card("c_1")).toBe(good);
       await expect.poll(async () => (await database.run("SELECT table_name FROM information_schema.tables WHERE table_schema = 'omb_results'", { connection: "bot" })).rows).toEqual([[good!.result]]);
     } finally {

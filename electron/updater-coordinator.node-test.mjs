@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createUpdaterCoordinator } from "./updater-coordinator.mjs";
@@ -30,6 +31,11 @@ function harness(options) {
   );
   return { updater, coordinator, states, getState: () => state };
 }
+
+test("packaged updater publishes from the evoclock fork", () => {
+  const config = readFileSync(new URL("../electron-builder.yml", import.meta.url), "utf8");
+  assert.match(config, /^publish:\s*\n  - provider: github\s*\n    owner: evoclock\s*\n    repo: OpenMausBot\s*$/m);
+});
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
