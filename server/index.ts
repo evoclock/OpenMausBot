@@ -7222,7 +7222,7 @@ bus.subscribe((event: RuntimeEvent) => {
         const workspace = join(TASK_WORKSPACES_DIR, bot.id, event.threadId);
         if (existsSync(workspace)) {
           try {
-            const report = reportTaskCheckouts(workspace);
+            const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
             if (report.found.length || report.incomplete) {
               const detail = report.incomplete ? "The checkout scan was incomplete" : `${report.found.length} nested Git checkout(s) found`;
               console.warn(`[task-checkout] ${bot.id}/${event.threadId}: ${detail}; ${report.artifact}`);

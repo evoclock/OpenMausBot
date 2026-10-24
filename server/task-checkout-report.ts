@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { join, relative, sep } from "node:path";
 
 export interface CheckoutReport { found: string[]; incomplete: boolean; artifact?: string }
 
-export function reportTaskCheckouts(workspace: string, maxEntries = 20_000): CheckoutReport {
+export function reportTaskCheckouts(workspace: string, maxEntries = 20_000, approvedRoot?: string): CheckoutReport {
+  if (!lstatSync(workspace).isDirectory() ||
+    (approvedRoot && !realpathSync(workspace).startsWith(realpathSync(approvedRoot) + sep))) {
+    throw new Error("Task workspace is not a directory within the workspace root");
+  }
   const found: string[] = [];
   const pending: Array<{ dir: string; depth: number }> = [{ dir: workspace, depth: 0 }];
   let visited = 0;

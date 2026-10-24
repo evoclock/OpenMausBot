@@ -212,7 +212,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         for (const threadId of allowed) {
           const workspace = join(TASK_WORKSPACES_DIR, bot.id, threadId);
           if (!existsSync(workspace)) continue;
-          const report = reportTaskCheckouts(workspace);
+          const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
           if (report.found.length || report.incomplete) console.warn(`[task-checkout] ${bot.id}/${threadId}: ${report.found.length} nested Git checkout(s); report: ${report.artifact}`);
         }
       } catch {
@@ -398,7 +398,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       const workspace = join(TASK_WORKSPACES_DIR, bot.id, m[2]);
       if (existsSync(workspace)) {
         try {
-          const report = reportTaskCheckouts(workspace);
+          const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
           if (report.found.length || report.incomplete) console.warn(`[task-checkout] ${bot.id}/${m[2]}: ${report.found.length} nested Git checkout(s); report: ${report.artifact}`);
         } catch {
           return json(res, 409, { error: "Could not record the checkout scan; task record was preserved" });

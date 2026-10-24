@@ -24,6 +24,7 @@ describe("task checkout report", () => {
     mkdirSync(join(other, ".git"));
     symlinkSync(other, join(root, "outside"));
     expect(reportTaskCheckouts(root).found).toEqual([]);
+    expect(() => reportTaskCheckouts(join(root, "outside"), 20_000, root)).toThrow("not a directory");
     mkdirSync(join(root, "project", ".git"), { recursive: true });
     expect(reportTaskCheckouts(root, 1).incomplete).toBe(true);
   });
