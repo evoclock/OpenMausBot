@@ -1,5 +1,5 @@
 // Gates are per model, so two tasks on one bot stay in flight until the test completes or stops each.
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -389,6 +389,9 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect(before.messages.some((message: any) => message.role === "user" && message.text === "LAST_THREAD_WORK")).toBe(true);
     const artifact = join(session.info.dataDir, "task-workspaces", botId, threadId, "result.txt");
     writeFileSync(artifact, "Retain generated project files");
+    const gitfile = join(session.info.dataDir, "task-workspaces", botId, threadId, "review", ".git");
+    mkdirSync(join(session.info.dataDir, "task-workspaces", botId, threadId, "review"));
+    writeFileSync(gitfile, "gitdir: ../original");
 
     const deleted = await api("DELETE", `/api/bots/${botId}/tasks/${threadId}`);
     expect(deleted.status).toBe(200);
@@ -399,6 +402,9 @@ describe("independent bot tasks through the isolated control surface", () => {
     expect(fresh.messages).toEqual([]);
     expect(fresh.modelSelection).toEqual(before.modelSelection);
     expect(readFileSync(artifact, "utf8")).toBe("Retain generated project files");
+    expect(readFileSync(gitfile, "utf8")).toBe("gitdir: ../original");
+    const reports = readdirSync(join(session.info.dataDir, "task-workspaces", botId, threadId, "artefacts"));
+    expect(reports.some((name) => name.startsWith("checkout-report-"))).toBe(true);
     expect((await api("DELETE", `/api/bots/${botId}/tasks/${threadId}`)).status).toBe(404);
     const loaded = (await api("GET", "/api/bots")).body.bots.find((bot: any) => bot.id === botId);
     expect(loaded.threadId).toBe(fresh.threadId);

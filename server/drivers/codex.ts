@@ -37,6 +37,7 @@ import { decodeCodexSelection, OFFICIAL_CODEX_PROVIDER, readCodexModelCatalog, S
 import { codexLocalProviderArgs } from "./local-inject.ts";
 import { codexBackgroundModel, runCodexOneShot } from "./codex-background-text.ts";
 import { augmentedPath, splitCliString } from "../env-path.ts";
+import { botGitPath } from "./bot-git-path.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
 import { answersAlone, permissionLaunchCwd, shellRequest } from "./permission-command.ts";
@@ -543,7 +544,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const env: Record<string, string | undefined> = {
         ...process.env,
         ...input.environment,
-        PATH: augmentedPath(),
+        PATH: botGitPath(augmentedPath()),
         NPM_CONFIG_LOGLEVEL: "error",
       };
       // A leaked API key silently flips Codex's own ChatGPT login to pay-as-you-go.

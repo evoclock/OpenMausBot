@@ -182,7 +182,8 @@ describe("Chat MCP session", () => {
     vi.stubEnv("PATH", "/usr/bin:/bin");
     const f = fixture();
     await f.mount();
-    expect(f.read().path).toBe(widened);
+    expect(f.read().path).toContain(widened);
+    if (process.platform !== "win32") expect(f.read().path).toContain("bot-git-bin:");
   });
 
   it("lets a PATH set on the server descriptor win over the widened one", async () => {

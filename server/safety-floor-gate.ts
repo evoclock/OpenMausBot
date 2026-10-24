@@ -58,7 +58,13 @@ let unreadableLogged = false;
 
 /** A command the floor could not read is neither blocked nor clear. Off, or with no command, everything is clear. */
 function finding(command: string | undefined): { state: "clear" } | { state: "blocked" | "unreadable"; block: FloorBlock } {
-  if (!command || !safetyFloorOn()) return { state: "clear" };
+  if (!command) return { state: "clear" };
+  const checkout = floorReading(command, host, homedir());
+  if (checkout.read && checkout.verdict?.rule === "git-checkout-creation") {
+    return { state: "blocked", block: blockOf(checkout.verdict.rule, checkout.verdict.label,
+      "Lease a Treehouse slot from the registered repository root. Never create a clone or worktree in the task workspace.") };
+  }
+  if (!safetyFloorOn()) return { state: "clear" };
   let reading: ReturnType<typeof floorReading>;
   try {
     reading = read(command, host, homedir());

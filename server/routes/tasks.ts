@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { approvalModeFor, approvalModeWidens, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
 import { threadLinkUrl } from "../../shared/thread-link.ts";
 import type { WireBot, WireTask } from "../../shared/wire.ts";
@@ -12,6 +14,8 @@ import type { RoutineManager } from "../routines.ts";
 import type { SkillReview } from "../skill-review.ts";
 import { isProjectEmoji, type BotRecord, type Store, type TaskRecord } from "../store.ts";
 import { parseSurface } from "../surface.ts";
+import { reportTaskCheckouts } from "../task-checkout-report.ts";
+import { TASK_WORKSPACES_DIR } from "../workspace.ts";
 import type { ThreadStarters } from "../thread-starters.ts";
 import { titleConversationExcerpt, type ThreadTitleSource } from "../thread-title.ts";
 import type { MessagePage } from "./channels.ts";
@@ -204,6 +208,16 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         if (!refusal) allowed.push(threadId);
         else refused.push({ threadId, reason: refusal.status === 409 ? "busy" : "not-found" });
       }
+      try {
+        for (const threadId of allowed) {
+          const workspace = join(TASK_WORKSPACES_DIR, bot.id, threadId);
+          if (!existsSync(workspace)) continue;
+          const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
+          if (report.found.length || report.incomplete) console.warn(`[task-checkout] ${bot.id}/${threadId}: ${report.found.length} nested Git checkout(s); report: ${report.artifact}`);
+        }
+      } catch {
+        return json(res, 409, { error: "Could not record the checkout scan; task records were preserved" });
+      }
       const result = deleteTasks(bot.id, allowed);
       if (!result) return json(res, 404, { error: "no such bot" });
       for (const threadId of result.missing) refused.push({ threadId, reason: "not-found" });
@@ -381,6 +395,15 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
       if (!bot) return json(res, 404, { error: "no such task" });
       const refusal = deleteRefusal(auth, bot.id, m[2]);
       if (refusal) return json(res, refusal.status, { error: refusal.error });
+      const workspace = join(TASK_WORKSPACES_DIR, bot.id, m[2]);
+      if (existsSync(workspace)) {
+        try {
+          const report = reportTaskCheckouts(workspace, 20_000, TASK_WORKSPACES_DIR);
+          if (report.found.length || report.incomplete) console.warn(`[task-checkout] ${bot.id}/${m[2]}: ${report.found.length} nested Git checkout(s); report: ${report.artifact}`);
+        } catch {
+          return json(res, 409, { error: "Could not record the checkout scan; task record was preserved" });
+        }
+      }
       const updated = deleteTasks(bot.id, [m[2]]);
       if (!updated?.deleted.length) return json(res, 404, { error: "no such task" });
       return json(res, 200, { bot: publicBot(updated.bot) });

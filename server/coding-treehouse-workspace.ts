@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, copyFileSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
@@ -156,6 +156,26 @@ export class CodingTreehouseWorkspace {
       appendFileSync(join(dir, "INDEX.md"), `- ${activeBranch} | ${bundle} | ${slot.path}\n`);
     }
     if (git("status", "--porcelain", "--untracked-files=all")) throw new Error("workspace changed during reconciliation");
+    const ignored = execFileSync(this.gitExecutable, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+      { cwd: slot.path, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }).toString("utf8").split("\0").filter(Boolean);
+    if (ignored.length > 10_000) throw new Error("Too many ignored files to salvage; lease retained");
+    if (ignored.length) {
+      const target = join(this.salvageDir, `ignored-${suffix}-${randomUUID()}`);
+      let bytes = 0;
+      for (const name of ignored) {
+        if (name.startsWith("/") || name.split("/").includes("..")) throw new Error("Unsafe ignored path; lease retained");
+        const source = join(slot.path, name);
+        const stat = lstatSync(source);
+        bytes += stat.size;
+        if (bytes > 1024 * 1024 * 1024) throw new Error("Ignored files exceed salvage budget; lease retained");
+        const output = join(target, name);
+        mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
+        if (stat.isSymbolicLink()) writeFileSync(`${output}.symlink.txt`, readlinkSync(source), { flag: "wx", mode: 0o600 });
+        else if (stat.isFile()) copyFileSync(source, output);
+        else throw new Error("Unsupported ignored file; lease retained");
+      }
+      appendFileSync(join(this.salvageDir, "INDEX.md"), `- ignored files | ${target} | ${slot.path}\n`);
+    }
     this.call("return", slot.path, "--if-lease-id", leaseId, "--if-lease-holder", slot.lease_holder);
     this.db.prepare("DELETE FROM coding_workspaces WHERE path = ? AND lease_id = ?").run(slot.path, leaseId);
   }

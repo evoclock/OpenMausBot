@@ -57,7 +57,8 @@ export function acpPermissionCommand(rawInput: unknown, launchCwd: string | unde
 /** shellRequest for an ACP tool call: only a shell-typed call gets the descriptor, but any call naming a command
  * line carries it for the safety floor. */
 export function acpShellRequest(isShellCommand: boolean, rawInput: unknown, launchCwd: string | undefined): ReturnType<typeof shellRequest> {
-  const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput) ? (rawInput as Record<string, unknown>).command : undefined;
+  const command = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+    ? (rawInput as Record<string, unknown>).command ?? (rawInput as Record<string, unknown>).CommandLine : undefined;
   return { command: isShellCommand ? acpPermissionCommand(rawInput, launchCwd) : undefined, commandLine: shellRequest(command, undefined).commandLine };
 }
 
