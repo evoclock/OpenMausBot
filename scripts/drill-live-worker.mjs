@@ -18,6 +18,10 @@ const identity = { GIT_AUTHOR_NAME: "evoclock", GIT_AUTHOR_EMAIL: "52983349+evoc
 const save = (name, value) => writeFileSync(join(proofRoot, name), JSON.stringify(value, null, 2));
 
 export function checkLiveConfig(config) {
+  const limits = config.botConfig?.limits;
+  const noSpendModel =
+    (config.model === "openai-codex/gpt-6-luna" && limits?.modelAccess === "subscription") ||
+    (config.model === "dsf41/deepseek-v4.1-flash-tf" && limits?.modelAccess === "local");
   if (config.destination !== SANDBOX || config.host !== "mac-mini" ||
     config.credentialReference?.kind !== "github-app" || config.credentialReference.reference !== "sandbox-drill" ||
     config.gitAppInstallations?.["sandbox-drill"]?.appId !== 5424694 ||
@@ -26,11 +30,10 @@ export function checkLiveConfig(config) {
     config.gitAppInstallations?.["sandbox-drill"]?.repositories?.length !== 1 ||
     config.gitAppInstallations["sandbox-drill"].repositories[0] !== SANDBOX ||
     !config.gitAppInstallations["sandbox-drill"].privateKeyPath?.startsWith("/") ||
-    config.model !== "openai-codex/gpt-6-sol" ||
     config.thinking !== "low" || config.botConfig?.modelSelection?.model !== config.model ||
     !Number.isSafeInteger(config.botConfig?.maxIterations) || config.botConfig.maxIterations < 2 ||
     !Number.isSafeInteger(config.botConfig?.limits?.maxWallTimeMs) || config.botConfig.limits.maxWallTimeMs < 30_000 ||
-    !Number.isFinite(config.botConfig?.limits?.maxSpendUsd) || config.botConfig.limits.maxSpendUsd <= 0 ||
+    !noSpendModel || limits?.maxSpendUsd !== undefined ||
     !resolve(config.worktree ?? "/").startsWith(proofRoot + "/") ||
     !config.skillPath?.startsWith("/") ||
     !/^[0-9a-f]{40}$/.test(config.baseRevision ?? "") ||
