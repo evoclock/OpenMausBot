@@ -10,8 +10,9 @@ before installation. Dependencies are installed through Socket Firewall.
 Every build runs typecheck, lint, the policy tests, the public scan, and the
 docs typecheck, lint, and build. PRs run eight Vitest shards and the dependency
 check. Main builds run four Vitest shards. The pipeline reports the 20 slowest
-PR tests after the shards finish, even if a shard fails. A canceled shard is
-not a passing test result.
+PR tests after the shards finish, even if a shard fails. Each PR shard uploads
+its Vitest JSON and JUnit reports as build artifacts, including when it fails.
+A canceled shard is not a passing test result.
 
 The dependency check compares production audit findings with the PR base. The
 CI workflow tests verify queue, priority, timeouts, shard coverage, and the
