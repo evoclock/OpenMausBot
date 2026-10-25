@@ -27,6 +27,7 @@ function fixture(keyType: "pkcs1" | "pkcs8" = "pkcs8") {
   let mint = tokenBody;
   let mintStatus = 201;
   let repoFacts = { full_name: repository, visibility: "private", permissions: { push: true } };
+  let repoStatus = 200;
   const calls: string[] = [];
   const request = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
@@ -43,12 +44,12 @@ function fixture(keyType: "pkcs1" | "pkcs8" = "pkcs8") {
     assert.equal(url.pathname, "/repos/evoclock/OpenMausBot");
     assert.ok(init?.headers);
     assert.equal((init.headers as Record<string, string>).authorization, `Bearer ${tokenBody.token}`);
-    return response(repoFacts);
+    return response(repoFacts, repoStatus);
   }) as typeof fetch;
   const provider = () => createGitHubAppCredentialProvider({ installations: { "review-installation": installation }, request,
     now: () => time });
   return { dir, installation, calls, provider, setMint(next: typeof tokenBody, status = 201) { mint = next; mintStatus = status; },
-    setRepo(next: typeof repoFacts) { repoFacts = next; } };
+    setRepo(next: typeof repoFacts, status = 200) { repoFacts = next; repoStatus = status; } };
 }
 
 test("App config selects an installation explicitly without embedding key material", () => {
@@ -65,6 +66,23 @@ test.each(["pkcs1", "pkcs8"] as const)("a throwaway %s RSA key mints a fresh rep
   assert.equal(await f.provider().scopedToken(credential, "evoclock/Other"), null);
   assert.deepEqual(f.calls, ["POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot",
     "POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot"]);
+});
+
+test("credential failures expose only stable, non-secret reason codes", async () => {
+  const f = fixture();
+  f.setMint(tokenBody, 401);
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "mint-status-401" });
+  f.setMint({ ...tokenBody, permissions: { contents: "read", pull_requests: "write" } });
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "permissions-missing-contents" });
+  f.setMint(tokenBody);
+  f.setRepo({ full_name: repository, visibility: "private", permissions: { push: true } }, 404);
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "repo-lookup-404" });
+  f.setRepo({ full_name: repository, visibility: "public", permissions: { push: true } });
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "visibility-mismatch" });
+  writeFileSync(f.installation.privateKeyPath, "not a private key", { mode: 0o600 });
+  const parseFailure = await f.provider().scopedTokenResult(credential, repository);
+  assert.deepEqual(parseFailure, { token: null, failure: "key-parse" });
+  assert.equal(JSON.stringify(parseFailure).includes("not a private key"), false);
 });
 
 test("missing keys, repo mismatch, authorization failures and narrowed scopes refuse", async () => {

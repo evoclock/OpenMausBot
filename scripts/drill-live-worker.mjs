@@ -91,8 +91,9 @@ export async function runLive(config) {
   mkdirSync(proofRoot, { recursive: true });
   const started = Date.now();
   const credentials = createGitHubAppCredentialProvider({ installations: config.gitAppInstallations });
-  const token = await credentials.scopedToken(config.credentialReference, SANDBOX);
-  if (!token) throw new Error("scoped GitHub App installation credential unavailable");
+  const credentialResult = await credentials.scopedTokenResult(config.credentialReference, SANDBOX);
+  const token = credentialResult.token;
+  if (!token) throw new Error(`scoped GitHub App installation credential unavailable: ${credentialResult.failure}`);
   const destination = `https://github.com/${SANDBOX}.git`;
   const askpass = join(root, "scripts", "drill-git-askpass.mjs");
   const parent = dirname(config.worktree);
