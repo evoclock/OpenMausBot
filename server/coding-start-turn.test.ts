@@ -9,6 +9,29 @@ const cwd = process.cwd();
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
 const workspace: IsolatedWorkspace = { repository: "fixture/agents", directory: cwd, branch: "main", base: "main", leaseId: "lease" };
 
+test("coding turn pins an allowed model and reports the model that completed the turn", async () => {
+  let selected = { instanceId: "pi", model: "openai-codex/gpt-6-luna" };
+  const messages = [{ role: "bot" as const, kind: "text" as const, text: `ACCEPT ${revision}`, turnTerminal: true }];
+  const store = {
+    bot: () => ({ id: "worker" }), tasks: () => [],
+    createTask: () => ({ threadId: "thread", createdAt: 1 }),
+    patchTask: () => ({}), messagesFor: () => messages,
+    switchTaskModel(_botId: string, _threadId: string, model: typeof selected) { selected = model; return {}; },
+    projectBotForTask: () => ({ modelSelection: selected }),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, approvalMode: () => "ask", driverKind: () => "piAgent",
+    modelChain: () => [{ instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf" }],
+    costForThread: async () => null,
+    async startTurn(_botId, _text, { onTurnSettled }) {
+      assert.equal(selected.model, "dsf41/deepseek-v4.1-flash-tf");
+      onTurnSettled();
+    }, async interrupt() {},
+  });
+  const result = await port.run({ botId: "worker", workspace, role: "review", prompt: "Review",
+    requestId: "review:local", signal: new AbortController().signal });
+  assert.deepEqual(result.modelUsed, { instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf" });
+});
+
 test("normal turn callback gets the originating approval mode and persisted output, then refuses replay", async () => {
   const tasks: Array<{ title: string; threadId: string; cwd?: string }> = [];
   const messages: Array<{ id: string; role: "bot"; kind: "text"; text: string; turnTerminal: boolean }> = [];

@@ -5,7 +5,8 @@ import { z } from "zod";
 
 export const codingRunLimitsSchema = z.object({
   maxWallTimeMs: z.number().int().positive().max(2_147_483_647),
-  maxSpendUsd: z.number().finite().positive(),
+  maxSpendUsd: z.number().finite().positive().optional(),
+  modelAccess: z.enum(["subscription", "local", "api"]).optional(),
   allowedFallbackModels: z.array(z.object({ instanceId: z.string().min(1), model: z.string().min(1) }).strict()).default([]),
   allowedFallbackDataRoutes: z.array(z.string().min(1)).default([]),
 }).strict();
@@ -46,6 +47,7 @@ export const runSnapshotSchema = z.object({
   elapsedMs: z.number().int().nonnegative().default(0),
   spentUsd: z.number().finite().nonnegative().default(0),
   spendUncertain: z.boolean().default(false),
+  modelsUsed: z.array(z.object({ iteration: z.number().int().positive(), instanceId: z.string().min(1), model: z.string().min(1) }).strict()).optional(),
   evidence: z.array(z.string()),
 }).strict();
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
@@ -194,7 +196,8 @@ export class RunContractStore {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   finishIteration(id: string, sequence: number, requestId: string, nextState: RunState,
-    at: number, evidence: string[], costUsd: number | null = null): RunSnapshot {
+    at: number, evidence: string[], costUsd: number | null = null,
+    modelsUsed: Array<{ instanceId: string; model: string }> = []): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const current = this.get(id);
@@ -204,7 +207,9 @@ export class RunContractStore {
       if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd < 0)) throw new Error("invalid run spend");
       const advanced = advanceRun(current, nextState, at, evidence);
       const next = runSnapshotSchema.parse({ ...advanced, spentUsd: current.spentUsd + (costUsd ?? 0),
-        spendUncertain: current.spendUncertain || costUsd === null });
+        modelsUsed: [...(current.modelsUsed ?? []), ...modelsUsed.map((selection) => ({ ...selection, iteration: sequence }))],
+        spendUncertain: current.spendUncertain || (current.contract.limits?.modelAccess !== "local" &&
+          current.contract.limits?.modelAccess !== "subscription" && costUsd === null) });
       this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
         .run(JSON.stringify(next), id);
       this.db.prepare("UPDATE coding_run_steps SET status = 'finished', result = ? WHERE run_id = ? AND sequence = ?")

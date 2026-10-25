@@ -16,12 +16,13 @@ export function loopStatus(snapshot: RunSnapshot, entries: ReturnType<LoopStatus
       iterationsUsed: snapshot.iteration,
       iterationsRemaining: Math.max(0, snapshot.contract.maxIterations - snapshot.iteration),
       spentUsd: snapshot.spentUsd,
-      spendRemainingUsd: limits && !snapshot.spendUncertain ? Math.max(0, limits.maxSpendUsd - snapshot.spentUsd) : null,
+      spendRemainingUsd: limits?.maxSpendUsd !== undefined && !snapshot.spendUncertain ? Math.max(0, limits.maxSpendUsd - snapshot.spentUsd) : null,
       spendUncertain: snapshot.spendUncertain,
       elapsedMs: snapshot.elapsedMs,
       wallTimeRemainingMs: limits && snapshot.startedAt
         ? Math.max(0, limits.maxWallTimeMs - Math.max(snapshot.elapsedMs, Date.now() - snapshot.startedAt)) : null,
     },
+    modelsUsed: snapshot.modelsUsed ?? [],
     lastVerdict: entries.find((entry) => entry.verdict !== null)?.verdict ?? null,
     entries,
   };
