@@ -2,6 +2,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
 import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
+import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
@@ -10190,6 +10191,7 @@ if (cfg.codingRuns) {
       await startTurn(botId, text, { ...options, automationSource: triggerSource, codingFallbackModels: allowedFallbackModels });
     },
     interrupt: interruptDirectThread,
+    gitHost: createProductionCodingGitHost(cfg.codingRuns),
   });
 }
 let webhookIngress: WebhookIngress | null = null;

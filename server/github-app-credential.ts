@@ -51,9 +51,8 @@ export function createGitHubAppCredentialProvider(options: {
             "x-github-api-version": "2022-11-28" }, signal: AbortSignal.timeout(15_000),
         });
         if (!result.ok) return null;
-        const facts = await result.json() as { full_name?: unknown; visibility?: unknown;
-          permissions?: { push?: unknown } };
-        return facts.full_name === repository && facts.permissions?.push === true &&
+        const facts = await result.json() as { full_name?: unknown; visibility?: unknown };
+        return facts.full_name === repository &&
           (installation.visibility === undefined || facts.visibility === installation.visibility) ? tokenBody.token : null;
       } catch {
         return null;

@@ -3,8 +3,10 @@ import { join } from "node:path";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
-import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost, type CodingGitRequest } from "./coding-git-policy.ts";
+import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
+import { createProductionCodingGitHost } from "./coding-git-host.ts";
+import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
@@ -40,6 +42,7 @@ export async function openProductionCodingRuntime(options: {
   gitHost?: CodingGitHost;
 }) {
   const { config, dataDir, store, routines } = options;
+  const gitHost = options.gitHost ?? createProductionCodingGitHost(config);
   const registrations = config.registrations;
   const modelChain = () => codingModelChain(options.registry.instances().map((instance) => ({
     instanceId: instance.instanceId, driverKind: instance.driverKind, enabled: instance.enabled,
@@ -55,11 +58,15 @@ export async function openProductionCodingRuntime(options: {
     throw new Error("coding registrations require one repository and distinct worker and reviewer routes");
   }
   const codingDir = join(dataDir, "coding-run");
-  const workspace = new CodingTreehouseWorkspace({ repository, root: config.repositoryRoot, dataDir: codingDir });
+  const workspaceManager = new CodingTreehouseWorkspace({ repository, root: config.repositoryRoot, dataDir: codingDir });
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
   delivery.replay();
   const origins = new Map<string, { botId: string; threadId: string; runId: string }>();
+  const workspacesByRun = new Map<string, IsolatedWorkspace>();
+  const publishing = new Map<string, Promise<string>>();
+  const publicationResults = new Map<string, string>();
+  let reportPending = () => {};
   const templates = new Map<string, TriggerTemplate>();
   const webhookTemplates = new Map<string, TriggerTemplate>();
   const roles = new Map(registrations.map((entry) => [entry.repository, {
@@ -87,7 +94,7 @@ export async function openProductionCodingRuntime(options: {
     const template: TriggerTemplate = {
       botId,
       repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
-      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
+      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit", "push", "draft-pr"], authorisedExternalWrites: [],
       ...(limits ? { limits, ...(botConfig.maxIterations ? { maxIterations: botConfig.maxIterations } : {}) } : {}),
     };
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
@@ -103,7 +110,11 @@ export async function openProductionCodingRuntime(options: {
   };
   const turn = createCodingStartTurnPort({
     store,
-    onTaskCreated: options.onTaskCreated,
+    onTaskCreated(botId, threadId, requestId, workspace) {
+      const runId = requestId.slice(0, 36);
+      workspacesByRun.set(runId, workspace);
+      options.onTaskCreated?.(botId, threadId, requestId, workspace);
+    },
     assertActiveRun(requestId) {
       const origin = originForRequest(requestId);
       const run = origin && routines.runForThread(origin.threadId);
@@ -134,7 +145,7 @@ export async function openProductionCodingRuntime(options: {
     },
     interrupt: options.interrupt,
   });
-  const host = createCodingWorkerHost({ roles, rolesFilePath: config.rolesFilePath, workspace, turn,
+  const host = createCodingWorkerHost({ roles, rolesFilePath: config.rolesFilePath, workspace: workspaceManager, turn,
     async verify(leased, revision) {
       try {
         execFileSync("git", ["cat-file", "-e", `${revision}^{commit}`], { cwd: leased.directory, timeout: 10_000 });
@@ -153,8 +164,31 @@ export async function openProductionCodingRuntime(options: {
     if (!run?.threadId) return false;
     runStore.linkRoutine(run.id, snapshot.contract.id);
     runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
+    if (snapshot.state === "done" && !publicationResults.has(snapshot.contract.id)) {
+      let publication = publishing.get(snapshot.contract.id);
+      if (!publication) {
+        const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
+        if (!workspace) return false;
+        const candidateBranch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
+        const hasDestination = (config.gitDestinations?.[snapshot.contract.botId] ?? []).some((grant) =>
+          grant.repository === snapshot.contract.repository && candidateBranch.startsWith(grant.branchPrefix));
+        publication = publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
+          createBranch: (directory, branch, base) => gitHost.port.createBranch(directory, branch, base), gitAction })
+          .then((branch) => branch ? `Published draft branch ${branch}` : "No authorized Git destination was configured")
+          .catch((error) => `Draft publication failed: ${error instanceof Error ? error.message : String(error)}`);
+        publishing.set(snapshot.contract.id, publication);
+        void publication.then((result) => {
+          publicationResults.set(snapshot.contract.id, result);
+          publishing.delete(snapshot.contract.id);
+          reportPending();
+        });
+        return false;
+      }
+      return false;
+    }
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
-    const detail = evidence || "No result was reported.";
+    const detail = [evidence || "No result was reported.", publicationResults.get(snapshot.contract.id)]
+      .filter((item): item is string => Boolean(item)).join("\n");
     routines.settleCodingRun(run.id, snapshot);
     const models = (snapshot.modelsUsed ?? []).map((item) => `iteration ${item.iteration}: ${item.instanceId}/${item.model}`).join("; ");
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
@@ -163,6 +197,7 @@ export async function openProductionCodingRuntime(options: {
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
     contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
     routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver });
+  reportPending = runtime.reportPending;
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;
     const id = run.triggerSource === "schedule" && templates.has(run.routineId)
@@ -172,10 +207,7 @@ export async function openProductionCodingRuntime(options: {
     if (id && runtime.get(id)) runStore.linkRoutine(run.id, id);
   }
   runtime.reportPending();
-  const gitAction = options.gitHost ? createCodingGitRunPolicy(config, runStore, options.gitHost)
-    : async (_request: CodingGitRequest): Promise<"applied" | "owner-eligible"> => {
-      throw new Error("Git destination refused: no credential provider and checked host Git port are configured");
-    };
+  const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
   const dispatch = async (run: RoutineRun, botId: string, threadId: string) => {
     const id = run.triggerSource === "webhook" && run.webhookId && run.deliveryId
       ? webhookCodingRunId(run.webhookId, run.deliveryId) : scheduledCodingRunId(run);
@@ -198,6 +230,6 @@ export async function openProductionCodingRuntime(options: {
       }
       return dispatch(run, botId, threadId);
     },
-    async close() { await runtime.close(); delivery.close(); runStore.close(); workspace.close(); },
+    async close() { await runtime.close(); delivery.close(); runStore.close(); workspaceManager.close(); },
   };
 }

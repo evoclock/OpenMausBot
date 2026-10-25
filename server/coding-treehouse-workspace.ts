@@ -59,6 +59,19 @@ export class CodingTreehouseWorkspace {
   private readonly readRevision: (path: string, ref: string) => string;
   private readonly readStatus: (path: string) => string;
   close() { this.db.close(); }
+  findForRun(runId: string): IsolatedWorkspace | undefined {
+    const rows = this.db.prepare("SELECT request_id, contract, path, lease_id, base_sha FROM coding_workspaces WHERE request_id LIKE ? ORDER BY rowid DESC")
+      .all(`${runId}:%`) as Array<{ request_id: string; contract: string; path: string | null; lease_id: string | null; base_sha: string | null }>;
+    const row = rows.find((candidate) => candidate.request_id.startsWith(`${runId}:`) && candidate.path && candidate.lease_id && candidate.base_sha);
+    if (!row?.path || !row.lease_id || !row.base_sha) return undefined;
+    const contract = JSON.parse(row.contract) as RunContractInput;
+    if (contract.id !== runId || contract.repository !== this.repository) return undefined;
+    try {
+      if (realpathSync(row.path) !== row.path || !this.verifySlot(row.path)) return undefined;
+    } catch { return undefined; }
+    return { repository: contract.repository, directory: row.path, branch: contract.ref,
+      base: row.base_sha, leaseId: row.lease_id };
+  }
   private call(...args: string[]): string {
     return execFileSync(this.executable, args, { cwd: this.root, encoding: "utf8", timeout: 30_000,
       maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });

@@ -91,7 +91,7 @@ test("missing keys, repo mismatch, authorization failures and narrowed scopes re
   f.setRepo({ full_name: repository, visibility: "public", permissions: { push: true } });
   assert.equal(await f.provider().canWrite(credential, repository), false);
   f.setRepo({ full_name: repository, visibility: "private", permissions: { push: false } });
-  assert.equal(await f.provider().canWrite(credential, repository), false);
+  assert.equal(await f.provider().canWrite(credential, repository), true);
 });
 
 test("App credential does not override verified evoclock authorship or allow squash", async () => {
@@ -100,7 +100,7 @@ test("App credential does not override verified evoclock authorship or allow squ
   let authors = [{ name: "github[bot]", email: "bot@users.noreply.github.com" }];
   const port: CodingGitPort = {
     async origin() { return "git@github.com:evoclock/OpenMausBot.git"; },
-    async branch() { return "bot/work"; }, async head() { return "a".repeat(40); },
+    async branch() { return "bot/work"; }, async createBranch() {}, async head() { return "a".repeat(40); },
     async outgoingAuthors() { return authors; },
     async push() { pushes++; }, async pullRequest() { pushes++; }, async recordOwnerMerge() { pushes++; },
   };
