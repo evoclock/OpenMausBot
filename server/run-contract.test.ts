@@ -6,7 +6,7 @@ import { advanceRun, runContractSchema, RunContractStore, type RunContractInput 
 
 const contract: RunContractInput = {
   id: "11111111-1111-4111-8111-111111111111", botId: "fixture", repository: "fixture/repo", ref: "review",
-  successCriteria: ["inner loop confirms the goal"], repositoryClass: "agent-private", allowedEffects: ["edit"],
+  successCriteria: ["inner loop confirms the goal"], checkCommand: ["node", "-e", "process.exit(0)"], repositoryClass: "agent-private", allowedEffects: ["edit"],
   authorisedExternalWrites: [],
 };
 
@@ -22,7 +22,7 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   assert.equal(second.get(contract.id)?.state, "running");
   assert.throws(() => second.transition(contract.id, "done", 3), /evidence/);
   assert.equal(second.get(contract.id)?.state, "running");
-  assert.equal(second.transition(contract.id, "done", 4, ["fixture verdict"]).state, "done");
+  assert.equal(second.transition(contract.id, "done", 4, ["fixture verdict"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 3, durationMs: 1, timedOut: false, outputTail: "" }).state, "done");
   assert.throws(() => second.transition(contract.id, "running", 5), /transition/);
   second.close();
 });
@@ -34,7 +34,7 @@ test("terminal routine link survives restart and can be reconciled by coding ide
   const first = new RunContractStore(path);
   first.create(contract, 1);
   first.transition(contract.id, "running", 2);
-  const terminal = first.transition(contract.id, "done", 3, ["verified"]);
+  const terminal = first.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   assert.deepEqual(first.linkRoutine("routine-run", contract.id), { status: "pending" });
   assert.equal(first.claimRoutineTerminal(contract.id, terminal)?.status, "claimed");
   first.close();
@@ -54,7 +54,7 @@ test("owner private-merge reason is attached to a verified run and survives rest
   assert.throws(() => store.recordOwnerMerge(contract.id, contract.repository,
     "This unblocks further development", "merge"), /verified run/);
   store.transition(contract.id, "running", 2);
-  store.transition(contract.id, "done", 3, ["verified"]);
+  store.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   assert.throws(() => store.recordOwnerMerge(contract.id, "wrong/repo",
     "This unblocks further development", "merge"), /verified run/);
   store.recordOwnerMerge(contract.id, contract.repository, "This unblocks further development", "merge");

@@ -7,7 +7,7 @@ import type { RunContractInput } from "./run-contract.ts";
 
 const contract: RunContractInput = {
   id: "44444444-4444-4444-8444-444444444444", botId: "fixture", repository: "fixture/agents", ref: "review",
-  repositoryClass: "agent-private", successCriteria: ["pstack acceptance passes"],
+  repositoryClass: "agent-private", successCriteria: ["pstack acceptance passes"], checkCommand: ["node", "-e", "process.exit(0)"],
   allowedEffects: ["edit", "commit", "push", "draft-pr"], authorisedExternalWrites: [],
   limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
@@ -23,6 +23,7 @@ function host(): WorkerHost & { calls: string[] } {
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["separate review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack"); return ["acceptance result"]; },
+    async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
 
@@ -32,7 +33,8 @@ test("independent review and inner acceptance evidence precede completion", asyn
   const route = host();
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
   assert.equal(result.kind, "verified");
-  assert.deepEqual(route.calls, ["acquire", "worker", "reviewer", "pstack"]);
+  assert.equal(result.hostCheck?.exitCode, 0);
+  assert.deepEqual(route.calls, ["acquire", "worker", "reviewer", "pstack", "host-check"]);
 });
 
 test("worker goal carries iteration number and the preceding receipt", async () => {

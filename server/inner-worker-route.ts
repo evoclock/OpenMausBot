@@ -1,4 +1,4 @@
-import type { RunContractInput } from "./run-contract.ts";
+import type { HostCheckRecord, RunContractInput } from "./run-contract.ts";
 import { codingPlaybookPrompt } from "./coding-playbook-prompt.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
 
@@ -39,6 +39,7 @@ export interface WorkerHost {
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
   review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal): Promise<ReviewReport>;
   verifyWithPstack(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
+  runHostCheck(workspace: IsolatedWorkspace, command: string[], revision: string): Promise<HostCheckRecord>;
 }
 
 export function createWorkerRoute(host: WorkerHost): InnerLoop {
@@ -102,7 +103,12 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
           return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
             ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
-        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], costUsd: spentUsd,
+        if (!contract.checkCommand) return { kind: "blocked", evidence: [...report.evidence, "run contract has no host check command"], costUsd: spentUsd };
+        const hostCheck = await host.runHostCheck(workspace, contract.checkCommand, report.revision);
+        if (hostCheck.exitCode !== 0 || hostCheck.commitSha !== report.revision) {
+          return { kind: "blocked", evidence: [...report.evidence, ...verified, "host check failed"], hostCheck, costUsd: spentUsd };
+        }
+        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], hostCheck, costUsd: spentUsd,
           ...(modelsUsed.length ? { modelsUsed } : {}) };
       } catch (error) {
         return blocked("worker route failed; reconcile outward effects",
