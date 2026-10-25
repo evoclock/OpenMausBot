@@ -58,7 +58,7 @@ describe("configuration boundaries", () => {
     const codingRuns = { repositoryRoot: "/fixture/private", rolesFilePath: "/fixture/private/.pi/pstack-model-roles.v1.json", registrations: [{
       routineId: "scheduled", workerBotId: "worker", reviewerBotId: "reviewer",
       developmentRole: "worker-role", reviewRole: "review-role", repository: "fixture/agents",
-      ref: "main", successCriteria: ["verified result"],
+      ref: "main", successCriteria: ["verified result"], checkCommand: ["node", "-e", "process.exit(0)"],
     }] };
     expect(parseStoredConfig({}).codingRuns).toBeUndefined();
     expect(parseStoredConfig({ codingRuns }).codingRuns).toEqual(codingRuns);

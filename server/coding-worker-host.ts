@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { runHostCheck } from "./coding-host-check.ts";
 import { parsePiRoles } from "./pi-readiness.ts";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace, WorkerHost, WorkerRoles } from "./inner-worker-route.ts";
@@ -58,6 +59,9 @@ export function createCodingWorkerHost(options: {
       const result = await options.turn.run({ botId: config.developmentBotId, workspace, role: "development", prompt: goal, requestId, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         progress: Boolean(result.revision && result.evidence.length), modelUsed: result.modelUsed };
+    },
+    async runHostCheck(workspace, command, revision) {
+      return runHostCheck({ command, cwd: workspace.directory, revision });
     },
     async review(workspace, role, revision, signal) {
       const config = options.roles.get(workspace.repository);

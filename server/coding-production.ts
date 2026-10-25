@@ -87,7 +87,8 @@ export async function openProductionCodingRuntime(options: {
     const template: TriggerTemplate = {
       botId,
       repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
-      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
+      successCriteria: entry.successCriteria, checkCommand: entry.checkCommand,
+      allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
       ...(limits ? { limits, ...(botConfig.maxIterations ? { maxIterations: botConfig.maxIterations } : {}) } : {}),
     };
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
