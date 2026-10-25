@@ -20,6 +20,8 @@ describe('repository CI and release boundaries', () => {
     expect(pr.map((step: { env: { SHARD_INDEX: string } }) => Number(step.env.SHARD_INDEX))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(pr.every((step: { if: string; command: string[] }) => step.if === 'build.pull_request.id != null'
       && step.command.some((command) => command.includes('pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8')))).toBe(true);
+    expect(pr.every((step: { artifact_paths?: string[] }) => step.artifact_paths?.includes('.omb-scratch/buildkite-reports/vitest-*.json')
+      && step.artifact_paths.includes('.omb-scratch/buildkite-reports/junit-*.xml'))).toBe(true);
   });
 
   it('keeps policy gates on GitHub and test-style PR checks on Buildkite', () => {
