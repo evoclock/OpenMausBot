@@ -1,5 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
-import { importPKCS8, SignJWT } from "jose";
+import { createPrivateKey } from "node:crypto";
+import { SignJWT } from "jose";
 import type { CodingGitCredentialProvider } from "./coding-git-policy.ts";
 import type { CodingGitAppInstallation, CodingGitCredential } from "./coding-run-config.ts";
 
@@ -25,7 +26,7 @@ export function createGitHubAppCredentialProvider(options: {
         const file = await lstat(installation.privateKeyPath);
         if (!file.isFile() || (file.mode & 0o077) !== 0) return null;
         const privateKey = await readFile(installation.privateKeyPath, "utf8");
-        const signingKey = await importPKCS8(privateKey, "RS256");
+        const signingKey = createPrivateKey(privateKey);
         const seconds = Math.floor(now() / 1000);
         const jwt = await new SignJWT({}).setProtectedHeader({ alg: "RS256" })
           .setIssuer(String(installation.appId)).setIssuedAt(seconds - 60)

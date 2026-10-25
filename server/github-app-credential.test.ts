@@ -15,13 +15,13 @@ const tokenBody = { token: "test-generated-placeholder", expires_at: "2026-10-22
   repositories: [{ full_name: repository }], permissions: { contents: "write", pull_requests: "write" } };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-function fixture() {
+function fixture(keyType: "pkcs1" | "pkcs8" = "pkcs8") {
   const cache = join(process.cwd(), "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "github-app-fixture-"));
   const path = join(dir, "throwaway.pem");
   const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  writeFileSync(path, pair.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  writeFileSync(path, pair.privateKey.export({ type: keyType, format: "pem" }), { mode: 0o600 });
   const installation = { appId: 123, installationId: 456, privateKeyPath: path,
     repositories: [repository], visibility: "private" as const };
   let mint = tokenBody;
@@ -58,8 +58,8 @@ test("App config selects an installation explicitly without embedding key materi
   assert.equal(codingGitAppInstallationSchema.safeParse({ ...f.installation, token: "not allowed" }).success, false);
 });
 
-test("a throwaway RSA key mints a fresh repo-scoped token per decision", async () => {
-  const f = fixture();
+test.each(["pkcs1", "pkcs8"] as const)("a throwaway %s RSA key mints a fresh repo-scoped token per decision", async (keyType) => {
+  const f = fixture(keyType);
   assert.equal(await f.provider().canWrite(credential, repository), true);
   assert.equal(await f.provider().scopedToken(credential, repository), tokenBody.token);
   assert.equal(await f.provider().scopedToken(credential, "evoclock/Other"), null);
