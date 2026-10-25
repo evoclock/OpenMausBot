@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -338,6 +338,7 @@ describe("CursorAgentDriver", () => {
       return turnId;
     };
     const reply = () => JSON.parse(readFileSync(join(scratch, "answer.json"), "utf8"));
+    const waitForReply = () => vi.waitFor(reply, { interval: 25, timeout: 2_000 });
 
     afterEach(async () => {
       recorder?.stop();
@@ -402,15 +403,13 @@ describe("CursorAgentDriver", () => {
       expect(await recorder.until((e) => e.type === "request.resolved")).toMatchObject({
         requestId: (opened as { requestId: string }).requestId, behavior: "deny", source: "system",
       });
-      for (let i = 0; i < 80 && !existsSync(join(scratch, "answer.json")); i++) await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(reply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
+      expect(await waitForReply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
     });
 
     it("cancels a request that arrives between turns without opening a card", async () => {
       await start("t-cursor-ask-idle", { FAKE_ACP_ASK_TIMING: "after-result" });
       await recorder.until((e) => e.type === "turn.completed");
-      for (let i = 0; i < 80 && !existsSync(join(scratch, "answer.json")); i++) await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(reply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
+      expect(await waitForReply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
       expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
     });
 
@@ -450,7 +449,7 @@ describe("CursorAgentDriver", () => {
         vi.useRealTimers();
       }
       await recorder.until((e) => e.type === "turn.completed");
-      expect(reply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
+      expect(await waitForReply()).toEqual({ result: { outcome: { outcome: "cancelled" } } });
     });
   });
 
