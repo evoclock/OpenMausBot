@@ -23,6 +23,7 @@ let home = "";
 let base = "";
 let child: ChildProcess;
 let log = "";
+let spawnDump = "";
 let owner = "";
 let connector: ReturnType<typeof createComputerSharing> | undefined;
 const proxies: ChildProcess[] = [];
@@ -63,7 +64,7 @@ async function leftBehind(of: { threadIds?: string[]; routineIds?: string[] }) {
 }
 
 async function agentsFor(start: () => Promise<void>) {
-  const dump = join(home, "spawn.json");
+  const dump = spawnDump;
   rmSync(dump, { force: true });
   await start();
   // Once the engine has written all of it: it is not written atomically.
@@ -97,7 +98,7 @@ beforeAll(async () => {
   writeFileSync(cli, `#!/usr/bin/env node
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true, email: "person@example.test" })); process.exit(0); }
 process.env.FAKE_CLAUDE_VERSION = "2.1.284";
-if (process.argv[2] !== "--version") { process.env.FAKE_CLAUDE_DUMP = ${JSON.stringify(join(home, "spawn.json"))}; process.env.FAKE_CLAUDE_MODE = "hang"; }
+if (process.argv[2] !== "--version") process.env.FAKE_CLAUDE_MODE = "hang";
 await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-claude-cli.ts")).href)});
 `, { mode: 0o755 });
   // No `features` block: the maintainer flag is off, as on every Cloud home.
@@ -118,12 +119,14 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
 let port = 0;
 async function boot() {
   const dataDir = join(home, ".openmausbot");
+  spawnDump = join(home, `spawn-${randomUUID()}.json`);
   const offlinePrelude = `data:text/javascript,${encodeURIComponent('const real = globalThis.fetch; globalThis.fetch = async (url, init) => String(url).startsWith("http://127.0.0.1:") ? real(url, init) : new Response("offline fixture", { status: 503 });')}`;
   child = spawn(process.execPath, ["--import", offlinePrelude, join(SERVER_DIR, "index.ts")], {
     cwd: join(SERVER_DIR, ".."),
     env: {
       PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
+      FAKE_CLAUDE_DUMP: spawnDump,
       OMB_CLOUD_ROLE: "home", OMB_CLOUD_MACHINE_ID: "3f9c2a4e-8b1d-4c6e-9a7f-2d5e8c1b0a93", OMB_CLOUD_ADMIN_URL: "https://cloud.example.test",
       OMB_CLOUD_BOOTSTRAP_SECRET: secret, OMB_PUBLIC_URL: `https://${HOST}`,
     },
@@ -247,7 +250,7 @@ it("the person's Mac, lent through the real connector, is usable by the owner's 
   expect((await api("PATCH", `/api/bots/${hookBot.id}`, { token: owner, body: { cwd: project, approvalMode: "auto" } })).status).toBe(200);
   const hook = await newHook(hookBot.id);
   const hookCall = await proxyFor(() => deliver(hook, "read ~/.ssh from the Mac"));
-  const hookTurn = JSON.parse(readFileSync(join(home, "spawn.json"), "utf8")) as { argv: string[]; cwd: string };
+  const hookTurn = JSON.parse(readFileSync(spawnDump, "utf8")) as { argv: string[]; cwd: string };
   expect(hookTurn.argv[hookTurn.argv.indexOf("--permission-mode") + 1]).toBe("auto");
   expect(realpathSync(hookTurn.cwd)).toBe(realpathSync(project));
   expect(hookTurn.argv).not.toContain("--restricted");
@@ -275,7 +278,7 @@ it("the person's Mac, lent through the real connector, is usable by the owner's 
   const updatesCall = await proxyFor(async () => {
     expect((await api("POST", `/api/bots/${postBot.id}/messages`, { token: owner, body: { text: "Handle the update.", threadId: updates } })).status).toBe(202);
   });
-  const updatesTurn = JSON.parse(readFileSync(join(home, "spawn.json"), "utf8")) as { argv: string[] };
+  const updatesTurn = JSON.parse(readFileSync(spawnDump, "utf8")) as { argv: string[] };
   expect(updatesTurn.argv).not.toContain("--restricted");
   expect(await sees(updatesCall)).toBe(0);
   expect(JSON.parse((await updatesCall("list_shared_computers")).content[0].text).unavailable).toContain("Someone else wrote in this conversation");
