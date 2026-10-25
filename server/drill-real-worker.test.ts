@@ -30,7 +30,7 @@ test("drill: scripted local worker finishes on iteration two with the previous v
   execFileSync("git", ["init", "--bare", destination], { cwd: run, stdio: "pipe" });
   git("push", destination, "main");
   const contract = { id: "44444444-4444-4444-8444-444444444444", botId: "fixture-owner", repository: config.repository,
-    ref: "main", successCriteria: ["node check.mjs exits zero"], repositoryClass: "agent-private" as const,
+    ref: "main", successCriteria: ["node check.mjs exits zero"], checkCommand: ["node", "check.mjs"], repositoryClass: "agent-private" as const,
     allowedEffects: ["edit" as const], authorisedExternalWrites: [], limits: config.limits,
     maxIterations: config.maxIterations };
   const startedAt = Date.now();
@@ -79,7 +79,9 @@ test("drill: scripted local worker finishes on iteration two with the previous v
       const check = spawnSync(process.execPath, ["check.mjs"], { cwd: repo, encoding: "utf8" });
       writeFileSync(join(proof, "test-output.txt"), `${check.stdout}${check.stderr}`);
       assert.equal(check.status, 0, check.stderr);
-      return { kind: "verified", evidence: ["node check.mjs passed", check.stdout.trim()], costUsd: 0.01 };
+      return { kind: "verified", evidence: ["node check.mjs passed", check.stdout.trim()], costUsd: 0.01,
+        hostCheck: { command: ["node", "check.mjs"], exitCode: 0, commitSha: git("rev-parse", "HEAD"),
+          startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: check.stdout.trim() } };
     },
   }, { onTerminal(snapshot) { reports.push({ state: snapshot.state, evidence: snapshot.evidence }); } });
   try {

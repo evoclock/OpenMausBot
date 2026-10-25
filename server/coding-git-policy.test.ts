@@ -80,7 +80,7 @@ test("coding bots receive only closed worktree tools, not shell or MCP executors
   assert.equal(allowsTool(narrower, { kind: "native", name: "coding_command" }), true);
   const config = { repositoryRoot: "fixture", registrations: [{ routineId: "routine", workerBotId: "worker",
     reviewerBotId: "reviewer", developmentRole: "dev", reviewRole: "review", repository,
-    ref: "trunk", successCriteria: ["verified"] }] };
+    ref: "trunk", successCriteria: ["verified"], checkCommand: ["node", "-e", "process.exit(0)"] }] };
   assert.equal(codingTurnToolScope(config, "other", undefined), undefined);
   assert.equal(allowsTool(codingTurnToolScope(config, "worker", undefined), { kind: "native", name: "bash" }), false);
   assert.equal(allowsTool(codingTurnToolScope(config, "reviewer", undefined), { kind: "native", name: "bash" }), false);
@@ -186,10 +186,11 @@ test("a private merge eligibility reason is stored on the verified coding run", 
   const store = new RunContractStore(path);
   const runId = "11111111-1111-4111-8111-111111111111";
   store.create({ id: runId, botId: "worker", repository, ref: "bot/review",
-    successCriteria: ["verified"], repositoryClass: "agent-private", allowedEffects: ["edit"],
+    successCriteria: ["verified"], checkCommand: ["node", "-e", "process.exit(0)"], repositoryClass: "agent-private", allowedEffects: ["edit"],
     authorisedExternalWrites: [] }, 1);
   store.transition(runId, "running", 2);
-  store.transition(runId, "done", 3, ["review verified"]);
+  store.transition(runId, "done", 3, ["review verified"], { command: ["node", "-e", "process.exit(0)"], exitCode: 0,
+    commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   const h = harness();
   const { recordOwnerMerge: _unused, ...port } = h.port;
   const policy = createCodingGitRunPolicy({ repositoryRoot: "fixture", registrations: [],
