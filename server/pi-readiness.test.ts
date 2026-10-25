@@ -69,10 +69,36 @@ describe("Pi readiness", () => {
     expect(result.roles.development.ready).toBe(true);
   });
 
-  it("exchanges RPC frames with an isolated fake CLI and skill package", async () => {
+  it.each(["poteto-mode-pi", "skill:poteto-mode-pi"])("treats get_commands skill %s as loaded", async (name) => {
+    const { root, agentDir } = fixture();
+    const result = await checkPiReadiness({ cli: "fake-pi", env: {}, cwd: root, agentDir, skillOnly: true,
+      probe: async () => ({ commands: [{ name, source: "skill" }, { name: "other", source: "extension" }] }),
+    });
+    expect(result.skill.ready).toBe(true);
+    expect(result.skill.action).toBe("");
+  });
+
+  it("ignores a prefixed name from another source and a different skill", async () => {
+    const { root, agentDir } = fixture();
+    for (const commands of [
+      [{ name: "skill:poteto-mode-pi", source: "prompt" }],
+      [{ name: "poteto-mode-pi", source: "extension" }],
+      [{ name: "skill:other", source: "skill" }],
+      [{ name: "skill:poteto-mode-pi-extra", source: "skill" }],
+    ]) {
+      const result = await checkPiReadiness({ cli: "fake-pi", env: {}, cwd: root, agentDir, skillOnly: true,
+        probe: async () => ({ commands }),
+      });
+      expect(result.skill.ready).toBe(false);
+      expect(result.skill.action).toContain("did not load");
+    }
+  });
+
+  it.each(["poteto-mode-pi", "skill:poteto-mode-pi"])("exchanges RPC frames when the fake CLI reports %s", async (name) => {
     const { root, agentDir } = fixture();
     const cli = join(root, "fake-pi");
-    writeFileSync(cli, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nprocess.stdin.on('data', chunk => {\n  const request = JSON.parse(chunk.toString());\n  const loaded = fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'skills', 'poteto-mode-pi', 'SKILL.md'));\n  const commands = loaded ? [{name:'poteto-mode-pi', source:'skill'}] : [];\n  console.log(JSON.stringify({type:'response', command: request.type, success:true, data:{commands}}));\n});\n`);
+    const reported = JSON.stringify(name);
+    writeFileSync(cli, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst path = require('node:path');\nprocess.stdin.on('data', chunk => {\n  const request = JSON.parse(chunk.toString());\n  const loaded = fs.existsSync(path.join(process.env.PI_CODING_AGENT_DIR, 'skills', 'poteto-mode-pi', 'SKILL.md'));\n  const commands = loaded ? [{name:${reported}, source:'skill'}] : [];\n  console.log(JSON.stringify({type:'response', command: request.type, success:true, data:{commands}}));\n});\n`);
     chmodSync(cli, 0o700);
     const result = await checkPiReadiness({ cli, env: { PATH: process.env.PATH }, cwd: root, agentDir, probe: piRpcProbe });
     expect(result.skill.ready).toBe(true);
