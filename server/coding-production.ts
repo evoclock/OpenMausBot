@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import type { ApprovalMode } from "../shared/approval-mode.ts";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
@@ -11,6 +10,7 @@ import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
 import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
+import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 import { flushUsageLedger, readUsage } from "./usage-ledger.ts";
@@ -30,7 +30,7 @@ export async function openProductionCodingRuntime(options: {
   store: Store;
   routines: RoutineManager;
   webhooks: Pick<WebhookManager, "list">;
-  sourceApprovalMode: (botId: string, threadId: string) => ApprovalMode;
+  onTaskCreated?: (botId: string, threadId: string, requestId: string, workspace: IsolatedWorkspace) => void;
   driverKind: (botId: string) => string | undefined;
   registry: Pick<ProviderRegistry, "instances" | "access">;
   startTurn: (botId: string, text: string, input: { threadId: string; requestId: string;
@@ -103,14 +103,15 @@ export async function openProductionCodingRuntime(options: {
   };
   const turn = createCodingStartTurnPort({
     store,
-    approvalMode(requestId) {
+    onTaskCreated: options.onTaskCreated,
+    assertActiveRun(requestId) {
       const origin = originForRequest(requestId);
       const run = origin && routines.runForThread(origin.threadId);
       if (!run || run.id !== origin.runId || run.botId !== origin.botId || run.status !== "running" ||
         (run.triggerSource !== "schedule" && run.triggerSource !== "webhook")) {
         throw new Error("coding run has no active originating routine thread");
       }
-      return run.triggerSource === "webhook" ? "ask" : options.sourceApprovalMode(origin.botId, origin.threadId);
+      return;
     },
     driverKind: options.driverKind,
     modelChain,

@@ -68,7 +68,7 @@ test("credential selection is explicit, unambiguous and names no token value", (
     credential: { kind: "github-app", reference: "installation" } }).success, true);
 });
 
-test("coding bots cannot reach shell or MCP executors and inherit stricter bot selection", () => {
+test("coding bots receive only closed worktree tools, not shell or MCP executors", () => {
   const scope = codingGitToolScope(undefined);
   for (const name of ["bash", "exec", "codemode", "tool_search"])
     assert.equal(allowsTool(scope, { kind: "native", name }), false);
@@ -76,7 +76,8 @@ test("coding bots cannot reach shell or MCP executors and inherit stricter bot s
   assert.equal(allowsTool(scope, { kind: "native", name: "edit" }), true);
   const narrower = codingGitToolScope({ allow: ["native:read"] });
   assert.equal(allowsTool(narrower, { kind: "native", name: "read" }), true);
-  assert.equal(allowsTool(narrower, { kind: "native", name: "edit" }), false);
+  assert.equal(allowsTool(narrower, { kind: "native", name: "edit" }), true);
+  assert.equal(allowsTool(narrower, { kind: "native", name: "coding_command" }), true);
   const config = { repositoryRoot: "fixture", registrations: [{ routineId: "routine", workerBotId: "worker",
     reviewerBotId: "reviewer", developmentRole: "dev", reviewRole: "review", repository,
     ref: "trunk", successCriteria: ["verified"] }] };
