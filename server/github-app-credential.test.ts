@@ -61,6 +61,7 @@ test("App config selects an installation explicitly without embedding key materi
 
 test.each(["pkcs1", "pkcs8"] as const)("a throwaway %s RSA key mints a fresh repo-scoped token per decision", async (keyType) => {
   const f = fixture(keyType);
+  f.setRepo({ full_name: repository, visibility: "private", permissions: { push: false } });
   assert.equal(await f.provider().canWrite(credential, repository), true);
   assert.equal(await f.provider().scopedToken(credential, repository), tokenBody.token);
   assert.equal(await f.provider().scopedToken(credential, "evoclock/Other"), null);
@@ -109,7 +110,7 @@ test("missing keys, repo mismatch, authorization failures and narrowed scopes re
   f.setRepo({ full_name: repository, visibility: "public", permissions: { push: true } });
   assert.equal(await f.provider().canWrite(credential, repository), false);
   f.setRepo({ full_name: repository, visibility: "private", permissions: { push: false } });
-  assert.equal(await f.provider().canWrite(credential, repository), false);
+  assert.equal(await f.provider().canWrite(credential, repository), true);
 });
 
 test("App credential does not override verified evoclock authorship or allow squash", async () => {

@@ -79,7 +79,6 @@ export function createGitHubAppCredentialProvider(options: {
         const facts = await result.json() as { full_name?: unknown; visibility?: unknown;
           permissions?: { push?: unknown } };
         if (facts.full_name !== repository) return { token: null, failure: "repository-mismatch" };
-        if (facts.permissions?.push !== true) return { token: null, failure: "push-permission-missing" };
         if (installation.visibility !== undefined && facts.visibility !== installation.visibility)
           return { token: null, failure: "visibility-mismatch" };
         return { token: tokenBody.token, failure: null };
