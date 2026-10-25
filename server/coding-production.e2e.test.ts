@@ -217,6 +217,8 @@ test.each([
     }>;
     expect(ownerMessages.filter((message) => message.turnId?.startsWith("coding-result:") &&
       message.text?.includes(`Coding run ${expected}:`))).toHaveLength(1);
+    if (mode === "coding") expect(ownerMessages.find((message) => message.turnId?.startsWith("coding-result:"))?.text)
+      .toContain("No authorized Git destination was configured");
     const workerMessages = (await f.api("GET", `/api/threads/${workerTask.threadId}/messages?limit=100`)).messages as Array<{
       role: string; text?: string; turnTerminal?: boolean;
     }>;

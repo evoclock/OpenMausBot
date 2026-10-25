@@ -119,7 +119,7 @@ test("App credential does not override verified evoclock authorship or allow squ
   let authors = [{ name: "github[bot]", email: "bot@users.noreply.github.com" }];
   const port: CodingGitPort = {
     async origin() { return "git@github.com:evoclock/OpenMausBot.git"; },
-    async branch() { return "bot/work"; }, async head() { return "a".repeat(40); },
+    async branch() { return "bot/work"; }, async createBranch() {}, async head() { return "a".repeat(40); },
     async outgoingAuthors() { return authors; },
     async push() { pushes++; }, async pullRequest() { pushes++; }, async recordOwnerMerge() { pushes++; },
   };

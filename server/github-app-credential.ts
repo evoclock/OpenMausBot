@@ -76,8 +76,7 @@ export function createGitHubAppCredentialProvider(options: {
             "x-github-api-version": "2022-11-28" }, signal: AbortSignal.timeout(15_000),
         });
         if (!result.ok) return { token: null, failure: `repo-lookup-${result.status}` };
-        const facts = await result.json() as { full_name?: unknown; visibility?: unknown;
-          permissions?: { push?: unknown } };
+        const facts = await result.json() as { full_name?: unknown; visibility?: unknown };
         if (facts.full_name !== repository) return { token: null, failure: "repository-mismatch" };
         if (installation.visibility !== undefined && facts.visibility !== installation.visibility)
           return { token: null, failure: "visibility-mismatch" };
@@ -85,6 +84,7 @@ export function createGitHubAppCredentialProvider(options: {
       } catch (error) {
         const name = error instanceof Error && /^[A-Za-z][A-Za-z0-9]*$/.test(error.name) ? error.name : "Error";
         return { token: null, failure: `exception-${name}` };
+
       }
   };
   const scopedToken = async (credential: CodingGitCredential, repository: string) =>

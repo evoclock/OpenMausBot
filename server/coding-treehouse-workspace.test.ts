@@ -27,10 +27,17 @@ test("a task reacquires the same verified lease after reopening without a second
   let workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir, executable,
     ...checks });
   const first = await workspace.acquire(contract, "task-1");
-  workspace.close();
+  const runRequestId = `${contract.id}:1`;
   const db = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
-  db.prepare("UPDATE coding_workspaces SET path = NULL, lease_id = NULL WHERE request_id = ?").run("task-1");
+  db.prepare("INSERT INTO coding_workspaces (request_id, contract, path, lease_id, base_sha) VALUES (?, ?, ?, ?, ?)")
+    .run(runRequestId, JSON.stringify(contract), alternate, "fake-lease", "fixture-base");
   db.close();
+  assert.deepEqual(workspace.findForRun(contract.id), { repository: contract.repository, directory: alternate,
+    branch: contract.ref, base: "fixture-base", leaseId: "fake-lease" });
+  workspace.close();
+  const reopenedDb = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
+  reopenedDb.prepare("UPDATE coding_workspaces SET path = NULL, lease_id = NULL WHERE request_id = ?").run("task-1");
+  reopenedDb.close();
   workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir, executable,
     ...checks });
   try {
