@@ -97,7 +97,8 @@ export class CodingTreehouseWorkspace {
       let slot: Slot | undefined = matching[0];
       if (!slot && row.lease_id) throw new Error("recorded workspace lease was lost");
       if (!slot) {
-        const acquired = JSON.parse(this.call("get", "--lease", "--base", contract.ref,
+        const branch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+        const acquired = JSON.parse(this.call("get", "--lease", "--base", contract.ref, "--branch", branch,
           "--lease-holder", holder, "--json")) as { path: string; lease_id: string };
         slot = this.slots().find((candidate) => candidate.path === acquired.path &&
           candidate.lease_id === acquired.lease_id && candidate.lease_holder === holder);
