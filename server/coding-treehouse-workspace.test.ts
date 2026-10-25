@@ -11,8 +11,8 @@ const contract = { id: "00000000-0000-4000-8000-000000000001", botId: "bot", rep
   repositoryClass: "agent-private" as const, successCriteria: ["done"], allowedEffects: ["edit" as const] };
 
 test("a task reacquires the same verified lease after reopening without a second get", async () => {
-  const root = process.cwd();
-  const cache = join(root, "node_modules", ".cache");
+  const root = realpathSync(process.cwd());
+  const cache = join(root, ".omb-scratch", "coding-treehouse-tests");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "coding-treehouse-"));
   const alternate = join(dir, "leased-slot");
