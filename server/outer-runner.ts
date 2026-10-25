@@ -12,9 +12,9 @@ import { openLoopLedger, type IterationEntry, type IterationContextCompactor } f
 import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 
 export type InnerLoopResult =
-  | { kind: "progress"; evidence: string[]; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
-  | { kind: "verified"; evidence: string[]; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
-  | { kind: "blocked"; evidence: string[]; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> };
+  | { kind: "progress"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
+  | { kind: "verified"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
+  | { kind: "blocked"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> };
 
 export interface InnerLoop {
   invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal,
@@ -99,7 +99,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
               : result.kind === "progress" ? "waiting" : "blocked";
             const finished = store.finishIteration(task.input.id, snapshot.iteration, receipt.requestId, state,
-              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd ?? null, result.modelsUsed);
+              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd ?? null, result.modelsUsed, result.hostCheck);
             if (terminalStates.has(finished.state)) reportPending();
             await runtime.commit(() => state === "waiting" ? { status: "running", checkpoint: {
               phase: "iterate", sequence: snapshot.iteration } } :
@@ -191,7 +191,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
               : result.kind === "progress" ? "waiting" : "blocked";
           const finished = store.finishIteration(task.input.id, current.iteration, requestId, state, at,
             [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null,
-            result.modelsUsed);
+            result.modelsUsed, result.hostCheck);
           if (terminalStates.has(finished.state)) reportPending();
           if (state === "waiting") {
             await runtime.commit(() => ({ status: "running", checkpoint: {

@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +103,7 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
   mkdirSync(scratch, { recursive: true });
   const dataDir = mkdtempSync(join(scratch, "coding-trigger-live-"));
   const workerTurns: string[] = [];
+  const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const host = createCodingWorkerHost({
     rolesFilePath,
     roles: new Map([[workspace.repository, { development: "fixture/development", independentReview: "fixture/review",
@@ -124,12 +126,12 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
         throw new Error("fixture worker returned no text");
       }
       workerTurns.push(botId);
-      return { revision: "fixture-revision", evidence: [answer.text], accepted: true, costUsd: 0 };
+      return { revision, evidence: [answer.text], accepted: true, costUsd: 0 };
     } },
     async verify() { return ["fixture verification"]; },
   });
   const template: TriggerTemplate = { botId: "origin", repository: workspace.repository, ref: workspace.branch,
-    repositoryClass: "agent-private", successCriteria: ["respond"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+    repositoryClass: "agent-private", successCriteria: ["respond"], checkCommand: ["node", "-e", "process.exit(0)"], allowedEffects: ["edit"], authorisedExternalWrites: [],
     limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 } };
   const runtime = await openCodingRunRuntime({ dataDir, workerHost: host,
     routines: new Map([["routine", template]]), webhooks: new Map([["hook", template]]), github: new Map() });

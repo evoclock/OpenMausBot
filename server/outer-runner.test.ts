@@ -16,10 +16,15 @@ import type { CodingEffect } from "./coding-effect-reconciliation.ts";
 
 const contract: RunContractInput = {
   id: "33333333-3333-4333-8333-333333333333", botId: "fixture", repository: "fixture/agents", ref: "review",
-  successCriteria: ["pstack verifies completion"], repositoryClass: "agent-private",
+  successCriteria: ["pstack verifies completion"], checkCommand: ["node", "-e", "process.exit(0)"], repositoryClass: "agent-private",
   allowedEffects: ["edit"], authorisedExternalWrites: [],
   limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
+
+function verified(evidence: string[], costUsd: number | null = 0) {
+  return { kind: "verified" as const, evidence, costUsd, hostCheck: { command: ["node", "-e", "process.exit(0)"],
+    exitCode: 0, commitSha: "a".repeat(40), startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" } };
+}
 
 function fixtureDir() {
   const scratch = join(process.cwd(), "node_modules", ".cache");
@@ -29,7 +34,7 @@ function fixtureDir() {
 
 test("backs up the configured SQLite database before reopening, and refuses a failed backup", async () => {
   const dir = fixtureDir();
-  const inner = { async invoke() { return { kind: "verified" as const, evidence: ["complete"], costUsd: 0 }; } };
+  const inner = { async invoke() { return verified(["complete"]); } };
   const first = await openOuterRunner(dir, inner);
   await first.close();
   const backupPath = join(dir, "coding-runs.sqlite.pre-1.4.0.bak");
@@ -49,7 +54,7 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
     async invoke(_contract, iteration, requestId) {
       calls.push(requestId);
       return iteration === 1 ? { kind: "progress", evidence: ["changes persisted"], costUsd: 0 }
-        : { kind: "verified", evidence: ["pstack completion verdict"], costUsd: 0 };
+        : verified(["pstack completion verdict"]);
     },
   });
   try {
@@ -69,7 +74,7 @@ test("ledger persists bounded entries across restart and carries only the preced
     _signal: AbortSignal, _budget?: number, context?: { iteration: number; previous?: { evidence: string[]; verdict: string } }) {
     contexts.push(context!);
     return iteration < 34 ? { kind: "progress" as const, evidence: [`proof ${iteration}`], costUsd: 0 }
-      : { kind: "verified" as const, evidence: ["done"], costUsd: 0 };
+      : verified(["done"]);
   } };
   const first = await openOuterRunner(dir, inner);
   let firstLedger: ReturnType<typeof first.ledger> = [];
@@ -120,7 +125,7 @@ test("restart after a finished mid-run receipt gives the same next carry without
     async invoke(_contract, iteration, _requestId, _signal, _budget, context) {
       observed.push(context?.compactor?.compact(context.history ?? []) ?? "");
       return iteration < 12 ? { kind: "progress", evidence: [`review failed ${iteration}`], costUsd: 0 }
-        : { kind: "verified", evidence: ["complete"], costUsd: 0 };
+        : verified(["complete"]);
     },
   });
   try {
@@ -155,7 +160,7 @@ test("missing preceding receipt blocks dispatch even with a compactor", async ()
   finally { db.close(); }
   let calls = 0;
   const reopened = await openOuterRunner(dir, {
-    async invoke() { calls++; return { kind: "verified", evidence: ["must not dispatch"], costUsd: 0 }; },
+    async invoke() { calls++; return verified(["must not dispatch"]); },
   });
   try {
     await reopened.wait(await reopened.start({ ...contract, maxIterations: 3 }));
@@ -167,7 +172,7 @@ test("missing preceding receipt blocks dispatch even with a compactor", async ()
 
 test("repeated start returns the same durable task identity", async () => {
   const runner = await openOuterRunner(fixtureDir(), {
-    async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; },
+    async invoke() { return verified(["complete"]); },
   });
   try {
     const [first, concurrent] = await Promise.all([runner.start(contract), runner.start(contract)]);
@@ -218,7 +223,7 @@ test("outer loop parks the run as blocked at the contract iteration ceiling", as
 test("report delivery retries after the originating link becomes available", async () => {
   let linked = false;
   const seen: string[] = [];
-  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; } },
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return verified(["complete"]); } },
     { onTerminal: (snapshot) => { if (!linked) return false; seen.push(snapshot.contract.id); return true; } });
   try {
     await runner.wait(await runner.start(contract));
@@ -232,7 +237,7 @@ test("report delivery retries after the originating link becomes available", asy
 
 test("unacknowledged terminal report remains pending until a later restart", async () => {
   const dir = fixtureDir();
-  const first = await openOuterRunner(dir, { async invoke() { return { kind: "verified", evidence: ["complete"], costUsd: 0 }; } },
+  const first = await openOuterRunner(dir, { async invoke() { return verified(["complete"]); } },
     { onTerminal: () => false });
   try {
     await first.wait(await first.start(contract));
@@ -258,7 +263,7 @@ test("terminal report receipt replays after a crash before delivery", async () =
       process.exit(0);
     };
     const runner = await openOuterRunner(${JSON.stringify(dir)}, {
-      async invoke() { return { kind: 'verified', evidence: ['completed'], costUsd: 0 }; }
+      async invoke() { return { kind: 'verified', evidence: ['completed'], costUsd: 0, hostCheck: { command: ['node'], exitCode: 0, commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: '' } }; }
     });
     await runner.start(${JSON.stringify(contract)});
     setInterval(() => {}, 1000);`;
@@ -301,7 +306,7 @@ test("a queued contract survives a crash before the task commit and starts on re
   const reopened = await openOuterRunner(dir, {
     async invoke(_contract, _iteration, requestId) {
       calls.push(requestId);
-      return { kind: "verified", evidence: ["verified after retry"], costUsd: 0 };
+      return verified(["verified after retry"]);
     },
   });
   try {
@@ -342,7 +347,7 @@ test("a committed task without its run-task link is recovered without another ta
   assert.match(child.stdout, /task committed/);
   const calls: string[] = [];
   const runner = await openOuterRunner(dir, {
-    async invoke(_contract, _iteration, requestId) { calls.push(requestId); return { kind: "verified", evidence: ["recovered"] }; },
+    async invoke(_contract, _iteration, requestId) { calls.push(requestId); return verified(["recovered"]); },
   });
   try {
     const taskId = await runner.start(contract);
@@ -375,7 +380,7 @@ test("a finished effect without its task checkpoint resumes at the next step", a
   assert.match(child.stdout, /result stored/);
   const calls: number[] = [];
   const reopened = await openOuterRunner(dir, {
-    async invoke(_contract, iteration) { calls.push(iteration); return { kind: "verified", evidence: ["verified next step"], costUsd: 0 }; },
+    async invoke(_contract, iteration) { calls.push(iteration); return verified(["verified next step"]); },
   });
   try {
     reopened.resume();
@@ -530,7 +535,7 @@ test("an interrupted outward effect is parked after a process crash", async () =
   assert.match(child.stdout, /effect began/);
   let replayed = false;
   const reopened = await openOuterRunner(dir, {
-    async invoke() { replayed = true; return { kind: "verified", evidence: ["invalid"] }; },
+    async invoke() { replayed = true; return verified(["invalid"]); },
   });
   try {
     reopened.resume();
@@ -555,7 +560,7 @@ test("subscription and local runs need no spend cap and persist the actual model
   for (const modelAccess of ["subscription", "local"] as const) {
     const runner = await openOuterRunner(fixtureDir(), { async invoke(_contract, _iteration, _requestId, _signal, remainingUsd) {
       assert.equal(remainingUsd, undefined);
-      return { kind: "verified" as const, evidence: ["checked"], costUsd: null,
+      return { ...verified(["checked"], null),
         modelsUsed: [{ instanceId: "pi", model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }] };
     } });
     try {
@@ -575,7 +580,7 @@ test("API and unknown billing block before dispatch without a spend cap", async 
     let calls = 0;
     const runner = await openOuterRunner(fixtureDir(), { async invoke() {
       calls++;
-      return { kind: "verified" as const, evidence: ["should not run"], costUsd: 0 };
+      return verified(["should not run"]);
     } });
     try {
       await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000, modelAccess } }));
@@ -690,7 +695,8 @@ for (const effect of crashEffects) {
             const receipts = new CodingEffectReceipts(${JSON.stringify(receiptPath)});
             const receipt = receipts.prepare(${JSON.stringify(contract.id)}, 1, 'effect-1', ${JSON.stringify(effect)});
             receipts.saveResult(${JSON.stringify(contract.id)}, 1, ${JSON.stringify(contract.id + ":1")},
-              { kind: 'verified', evidence: ['saved verified result'], costUsd: 0 });
+              { kind: 'verified', evidence: ['saved verified result'], costUsd: 0,
+                hostCheck: { command: ['node', '-e', 'process.exit(0)'], exitCode: 0, commitSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: '' } });
             if (${JSON.stringify(boundary)} !== 'prepared') writeFileSync(${JSON.stringify(marker)}, 'one');
             if (${JSON.stringify(boundary)} === 'confirmed') receipts.confirm(receipt);
             receipts.close();
@@ -768,7 +774,7 @@ test("inconclusive forge inspection holds a crashed run and reports the reason",
   forge.getBranchRef = async () => ({ kind: "inconclusive", reason: "authorization failed" });
   const runner = await openOuterRunner(dir, { async invoke() { throw new Error("must not replay"); } },
     { effectRecovery: { receipts, host: forge,
-      async recoverResult() { return { kind: "verified", evidence: ["saved result"], costUsd: 0 }; },
+      async recoverResult() { return verified(["saved result"]); },
     } });
   try {
     await runner.wait(await runner.start(contract));

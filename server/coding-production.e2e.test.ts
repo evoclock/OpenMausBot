@@ -146,7 +146,7 @@ test.each([
       bots: { [origin.id]: { maxWallTimeMs: 120_000 } }, registrations: [{
       routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
       developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-      successCriteria: ["coding-fixture-result.txt exists"],
+      successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
     }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -293,7 +293,7 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"] }] } }));
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"] }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
     const due = Date.now() - 1000;
@@ -340,7 +340,7 @@ test("webhook coding delivery ends without an approval card", async () => {
       bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
         routineId: created.webhook.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"],
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
       }],
     } }));
     await f.start();
@@ -378,7 +378,7 @@ test("composed server interrupts an active coding turn at its wall-clock ceiling
       bots: { [origin.id]: { maxWallTimeMs: 5_000 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"],
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -434,7 +434,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
       bots: { [owner.id]: { maxWallTimeMs: 600_000, maxIterations: 3 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"],
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
