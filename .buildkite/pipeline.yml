@@ -66,6 +66,10 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "0" }
+    # Buildkite agent v3.32.2 uploads artifact_paths after commands that fail.
+    artifact_paths: &mac-pr-reports
+      - ".omb-scratch/buildkite-reports/vitest-*.json"
+      - ".omb-scratch/buildkite-reports/junit-*.xml"
     command: &mac-pr-tests
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
@@ -73,8 +77,10 @@ steps:
         mkdir -p .omb-scratch/buildkite-reports
         report=".omb-scratch/buildkite-reports/vitest-$$SHARD_INDEX.json"
         status=0
-        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" || status=$$?
+        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --reporter=default --reporter=json --outputFile.json="$$report" --reporter=junit --outputFile.junit=".omb-scratch/buildkite-reports/junit-$$SHARD_INDEX.xml" || status=$$?
         if test -s "$$report"; then
+          kept="$$HOME/.cache/omb-buildkite-reports/$$BUILDKITE_PIPELINE_SLUG/$$BUILDKITE_BUILD_NUMBER"
+          mkdir -p "$$kept" && cp "$$report" "$$kept/vitest-$$SHARD_INDEX.json" || true
           node scripts/testing/update-shard-weights.mjs --durations-json "$$report" > ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
           buildkite-agent artifact upload ".omb-scratch/buildkite-reports/durations-$$SHARD_INDEX.json"
         fi
@@ -85,6 +91,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "1" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 3/8"
     if: build.pull_request.id != null
@@ -92,6 +99,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "2" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 4/8"
     if: build.pull_request.id != null
@@ -99,6 +107,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "3" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 5/8"
     if: build.pull_request.id != null
@@ -106,6 +115,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "4" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 6/8"
     if: build.pull_request.id != null
@@ -113,6 +123,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "5" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 7/8"
     if: build.pull_request.id != null
@@ -120,6 +131,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "6" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "PR Mac tests 8/8"
     if: build.pull_request.id != null
@@ -127,6 +139,7 @@ steps:
     agents: { queue: mac-mini }
     timeout_in_minutes: 30
     env: { SHARD_INDEX: "7" }
+    artifact_paths: *mac-pr-reports
     command: *mac-pr-tests
   - label: "Docs"
     priority: -1
