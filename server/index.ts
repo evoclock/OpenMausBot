@@ -363,13 +363,8 @@ import {
   workspaceDir,
 } from "./workspace.ts";
 import { listMemoryTopics, memoryDate, readMemoryFile, readMemoryTopic, writeMemoryFile, writeMemoryTopic } from "./workspace.ts";
-import {
-  beginMemoryTurn,
-  endMemoryTurn,
-  flushAllMemoryJournals,
-  journalTurnWrite,
-  type MemoryJournalEntry,
-} from "./memory-journal.ts";
+import { reportTaskCheckoutsAtTurnEnd } from "./task-checkout-report.ts";
+import { beginMemoryTurn, endMemoryTurn, flushAllMemoryJournals, journalTurnWrite, type MemoryJournalEntry } from "./memory-journal.ts";
 import {
   readSections,
   sectionContextKey,
@@ -7217,6 +7212,8 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "turn.completed": {
+      reportTaskCheckoutsAtTurnEnd(bot?.id, event.threadId, TASK_WORKSPACES_DIR, (detail) =>
+        pushMessage({ role: "bot", kind: "activity", tool: { name: `notice: ${detail}; report saved in this task's artefacts`, ok: false } }));
       settleWaitingOnPersonChips(event.threadId);
       const internal = isInternalTurn(event.threadId);
       clearInternalTurn(event.threadId);

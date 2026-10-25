@@ -10,6 +10,7 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import * as procs from "../procs.ts";
 import * as envPath from "../env-path.ts";
+import { botGitPath } from "./bot-git-path.ts";
 import * as managedRuntime from "./antigravity-runtime.ts";
 import {
   ANTIGRAVITY_AUTH_PREFIX,
@@ -158,10 +159,8 @@ describe("Antigravity sign-in lifecycle", () => {
     try {
       expect((await instance.snapshot()).state).toBe("available");
       await expect(instance.startAuthentication!()).resolves.toMatchObject({ phase: "succeeded" });
-      expect(authenticate).toHaveBeenCalledWith(
-        expect.objectContaining({ executablePath: executable }),
-        expect.objectContaining({ environment: expect.objectContaining({ PATH: fake.directory }) }),
-      );
+      expect(authenticate.mock.calls[0]?.[0].executablePath).toBe(executable);
+      expect(authenticate.mock.calls[0]?.[1].environment?.PATH).toBe(botGitPath(fake.directory));
     } finally {
       await instance.dispose();
     }

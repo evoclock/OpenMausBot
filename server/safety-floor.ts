@@ -2,7 +2,7 @@
 // letting a command through; words used as data (an echo, a commit message, a heredoc body) are never a command.
 // Security invariant: a line not read to its end is "could not read", never "clear"; a block found before that stands.
 
-export type FloorRule = "delete-root" | "delete-home" | "delete-system-directory" | "format-disk" | "overwrite-disk" | "fork-bomb";
+export type FloorRule = "delete-root" | "delete-home" | "delete-system-directory" | "format-disk" | "overwrite-disk" | "fork-bomb" | "git-checkout-creation";
 
 export interface FloorVerdict {
   /** Which rule matched: a stable name, for the decision log. */
@@ -17,6 +17,7 @@ const DELETE_HOME: FloorVerdict = { rule: "delete-home", label: "recursive delet
 const FORMAT_DISK: FloorVerdict = { rule: "format-disk", label: "formatting a disk" };
 const OVERWRITE_DISK: FloorVerdict = { rule: "overwrite-disk", label: "overwriting a disk device" };
 const FORK_BOMB: FloorVerdict = { rule: "fork-bomb", label: "a fork bomb" };
+const GIT_CHECKOUT_CREATION: FloorVerdict = { rule: "git-checkout-creation", label: "creating an ad hoc Git checkout" };
 const deleteSystem = (name: string): FloorVerdict => ({ rule: "delete-system-directory", label: `recursive delete of ${name}` });
 
 const SYSTEM_DIRECTORIES = [
@@ -580,6 +581,15 @@ function judge(command: Command, source: string, pass: Pass, mode: Mode, depth: 
     return scan(line, pass, as, depth + 1);
   };
 
+  if (program === "git") {
+    let at = 0;
+    while (at < args.length && args[at].startsWith("-")) {
+      const option = args[at++];
+      if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(option)) at++;
+    }
+    const verb = args[at];
+    if (verb === "clone" || verb === "init" || (verb === "worktree" && args[at + 1] === "add")) return GIT_CHECKOUT_CREATION;
+  }
   if (SHELLS.has(program)) return run(inlineScript(args), "posix");
   // PowerShell 7 off Windows: `rm` is the real rm and Remove-Item takes POSIX paths, so its script is read both ways.
   // The outer shell already removed the quotes, so the words after the flag are the script.

@@ -8,15 +8,15 @@ import { join } from "node:path";
 import { PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "../config.ts";
 import { openStartupModelCatalog, writeStartupModelCache } from "../startup-model-catalog.ts";
 import { augmentedPath } from "../env-path.ts";
+import { botGitPath } from "./bot-git-path.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import {
   deletePromptSplitReceipt,
   promptHalves,
   readPromptSplitReceipt,
   splitSessionPrompt,
-  writePromptSplitReceipt,
+  writePromptSplitReceipt, type PromptSplitReceipt,
 } from "./prompt-split.ts";
-import type { PromptSplitReceipt } from "./prompt-split.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 
@@ -495,7 +495,7 @@ interface PiEvent {
 }
 
 export function piEnvironment(source: Record<string, string | undefined>): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...source, PATH: augmentedPath() };
+  const env: Record<string, string | undefined> = { ...source, PATH: botGitPath(augmentedPath()) };
   // pi reads provider keys from its env: an inherited key would flip billing, and workspace
   // credentials are the harness's secrets.
   stripWorkspaceCredentialEnv(env);

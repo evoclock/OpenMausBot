@@ -45,6 +45,8 @@ export function botPersona(bot: { name: string; title?: string; description?: st
     .join(" ");
 }
 
+export const REPO_WORKSPACE_PROMPT = "\nFor repository work, use treehouse get --lease from the registered repository root, or treehouse lease an existing slot. Do not run git clone, git init or git worktree add in a task workspace. Record the lease for the task; salvage uncommitted and ignored files before returning the slot, then prune when safe. If Treehouse or a registered root is unavailable, stop and ask for help.\n";
+
 export function buildSystemPrompt(
   persona: string,
   soul: string,
@@ -59,6 +61,7 @@ export function buildSystemPrompt(
     { id: "tool-bridge", label: "Tool search", text: agentsToolBridged(agents) ? AGENTS_TOOL_BRIDGE_PROMPT : "" },
     { id: "reply-style", label: "Reply style", text: replyStylePrompt(opts?.replyStyle) },
     ...parts,
+    { id: "repo-workspaces", label: "Repository workspaces", text: REPO_WORKSPACE_PROMPT },
   ];
   const sections = ordered
     .filter((part) => part.text.length > 0)

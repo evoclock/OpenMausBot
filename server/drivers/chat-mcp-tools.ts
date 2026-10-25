@@ -5,6 +5,7 @@ import type { ValidateFunction } from "ajv";
 import { stripControlPlaneEnv } from "../config.ts";
 import type { SendTurnInput } from "../contracts.ts";
 import { augmentedPath } from "../env-path.ts";
+import { botGitPath } from "./bot-git-path.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { bridgedCallTarget, unbridgedServer } from "./agents-bridge.ts";
 import { chatImage, type ChatImagePart } from "./chat-images.ts";
@@ -57,7 +58,7 @@ function aborted(): Error { return new Error("MCP operation cancelled"); }
 
 /** A chat-runtime bot's tools never get the operator's control-plane secrets; the entry's own env is applied last. */
 export function chatMcpEnvironment(serverEnv: Record<string, string>, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...source, PATH: augmentedPath() };
+  const env: NodeJS.ProcessEnv = { ...source, PATH: botGitPath(augmentedPath()) };
   stripControlPlaneEnv(env);
   return { ...env, ...serverEnv };
 }
