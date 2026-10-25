@@ -2,6 +2,7 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
 import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
+import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
@@ -121,7 +122,7 @@ import { DataFailure } from "./data/types.ts";
 import { TeamComputers, teamComputerOwner, type TeamComputerRecord } from "./team-computers.ts";
 import { isEffortLevel, type CardAnswerer, type ResolvedSender, type SignInRequestCardData, type SteerQueueReason, type WireBot, type WireGroup, type WireTask } from "../shared/wire.ts";
 import { isPersistentQuestionCard, shouldSettleRequestCard } from "../shared/ask-question.ts";
-import { parseToolScope } from "../shared/tool-scope.ts";
+import { botToolScopeForTurn } from "./bot-tool-scope.ts";
 import type { TeamComputersPayload } from "../shared/team-computer.ts";
 import { boatCreateRecoverySnapshot } from "./boat-create-idempotency.ts";
 import { boatDeletionSnapshot } from "./boat-delete-journal.ts";
@@ -729,6 +730,8 @@ if (CLOUD_HOME && Object.keys(CLOUD_SECRETS).length === 0) {
 }
 const threadStarters = new ThreadStarters(join(DATA_DIR, "thread-starters.json"));
 const sessionStatusFeed = new SessionStatusFeed(join(DATA_DIR, "session-status.sqlite"));
+const codingBoundary = new CodingDenialBoundary(sessionStatusFeed, () => { if (cfg.sessionStatus?.wakeRoutineId) routines?.runNow(cfg.sessionStatus.wakeRoutineId); },
+  (event) => { void registry.get(event.providerInstanceId ?? "")?.adapter.interruptTurn(event.threadId); });
 const commandAllowlist = new CommandAllowlistStore(join(DATA_DIR, "command-allowlist.json"));
 const logins = new LoginStore({ dataDir: DATA_DIR });
 const highlevel = createHighLevelService({ dataDir: DATA_DIR });
@@ -3196,13 +3199,7 @@ const wireBot = (bot: BotRecord): WireBot => {
     avatarUrl: visible.avatarUrl ?? null, ...(tasks ? { tasks: tasks.map((task) => wireTask(task, bot.modelSelection)) } : {}) };
 };
 
-function toolScopeForTurn(botId: string) {
-  const bot = store.bot(botId);
-  if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
-  const parsed = parseToolScope(bot.toolScope);
-  if (!parsed.ok) throw Object.assign(new Error("This bot's tool selection is invalid. Open Access settings and save a valid selection before starting a turn."), { status: 409, code: "tool_scope" });
-  return parsed.scope;
-}
+const toolScopeForTurn = (botId: string) => botToolScopeForTurn(store, botId);
 
 const wireTrustedApprovalBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors: _resumeCursors, tasks, approvalGrant: _approvalGrant, lastProfileRequestId: _lastProfileRequestId, lastTeamSetupReceipt: _lastTeamSetupReceipt, packageBase: _packageBase, assignedSkills: _assignedSkills, ...rest } = bot;
@@ -6823,6 +6820,7 @@ async function localVmInventoryPayload() {
 
 bus.subscribe((event: RuntimeEvent) => {
   if (shouldIgnoreProviderEvent(event)) return;
+  if (codingBoundary.handle(event)) return; else if (event.type === "turn.completed") codingBoundary.forget(event.threadId);
   const localVmTarget = localVmThreadTargets.get(event.threadId);
   if (localVmTarget) {
     localVmLeaseFor(localVmTarget).touch(event.threadId);
@@ -8294,7 +8292,7 @@ async function startTurn(
   }
   const policyRefusal = policyModelRefusal(instance);
   if (policyRefusal) throw Object.assign(new Error(policyRefusal), { status: 409, code: "managed_policy" });
-  const toolScope = codingTurnToolScope(cfg.codingRuns, bot.id, toolScopeForTurn(bot.id));
+  const codingRun = codingBoundary.lookup(threadId), toolScope = codingRun ? codingTurnToolScope(cfg.codingRuns, bot.id, toolScopeForTurn(bot.id)) : toolScopeForTurn(bot.id);
   guestDrivenTurns.delete(threadId);
   const guestConfined = cloudGuestDriven(threadId) || cloudGuestDrivenHandoff(opts?.coordination?.id);
   if (guestConfined && instance.adapter.capabilities.guestTurns !== "confined") {
@@ -9079,7 +9077,8 @@ async function startTurn(
         text: withTurnClock(clock, withRecalled(recalled, dispatchContext.turnText + shareNote.text)),
         ...(recalled ? { recalled } : {}),
         images: dispatchContext.images,
-        approvalMode: approvalModeForTurn(bot, commsDepth > 0, threadId),
+        approvalMode: codingRun ? "full" : approvalModeForTurn(bot, commsDepth > 0, threadId),
+        ...(codingRun ? { codingRun } : {}),
         toolScope,
         ...(guestConfined ? { guestConfined: true, confinedWhy: confinedWhy(threadId) } : {}),
         model,
@@ -10183,7 +10182,8 @@ const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (b
 if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
-    sourceApprovalMode,
+    onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
+      { id: requestId.slice(0, 36), branch: workspace.branch, directory: workspace.directory }),
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
     registry,
     async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {

@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { RunContractStore } from "./run-contract.ts";
+import { SessionStatusFeed } from "./session-status-feed.ts";
 import { scheduledCodingRunId } from "./run-triggers.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -12,7 +13,7 @@ const serverDir = dirname(fileURLToPath(import.meta.url));
 const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
-async function fixture(mode: "coding" | "happy" | "permission" | "drill", localOnly = false) {
+async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied" | "coding-hold" | "drill", localOnly = false) {
   const cache = join(root, "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
@@ -123,6 +124,7 @@ test.each([
   { mode: "coding" as const, expected: "done", released: false, localOnly: true },
   { mode: "happy" as const, expected: "blocked", released: true, localOnly: false },
   { mode: "permission" as const, expected: "blocked", released: true, localOnly: false },
+  { mode: "coding-denied" as const, expected: "blocked", released: true, localOnly: false },
 ])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released, localOnly }) => {
   const f = await fixture(mode, localOnly);
   try {
@@ -132,7 +134,7 @@ test.each([
     const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
     await f.api("PATCH", `/api/bots/${origin.id}`, { approvalMode: "ask" });
     for (const bot of [worker, reviewer]) {
-      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi",
+      await f.api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", modelSelection: { instanceId: "pi",
         model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini" } });
     }
     const routine = (await f.api("POST", "/api/routines", {
@@ -154,27 +156,6 @@ test.each([
     scheduled.nextRunAt = due;
     writeFileSync(routinesFile, JSON.stringify(saved));
     await f.start();
-    if (mode === "permission") {
-      let requestId = "";
-      let requestThreadId = "";
-      await f.until(async () => {
-        const bot = (await f.api("GET", "/api/bots")).bots.find((entry: { id: string }) => entry.id === worker.id);
-        const task = bot?.tasks.find((entry: { title: string }) => entry.title.startsWith("Coding "));
-        if (!task) return false;
-        expect(task.approvalMode).toBe("ask");
-        const messages = (await f.api("GET", `/api/threads/${task.threadId}/messages?limit=100`)).messages as Array<{
-          card?: { requestId?: string; title?: string; answered?: string };
-        }>;
-        const card = messages.find((message) => message.card?.requestId)?.card;
-        if (!card?.requestId) return false;
-        expect(card.answered).toBeUndefined();
-        requestId = card.requestId;
-        requestThreadId = task.threadId;
-        return true;
-      }, "worker permission request");
-      expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(false);
-      await f.api("POST", `/api/threads/${requestThreadId}/respond`, { requestId, behavior: "answer", message: "Deny" });
-    }
     await f.until(async () => {
       const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
       return runs.some((run) => run.routineId === routine.id && ["completed", "failed"].includes(run.status));
@@ -185,13 +166,13 @@ test.each([
     const workers = (await f.api("GET", "/api/bots")).bots;
     const workerTask = workers.find((bot: { id: string }) => bot.id === worker.id).tasks.find((task: { title: string }) => task.title.startsWith("Coding "));
     expect(workerTask?.cwd).toBe(f.leased);
-    expect(workerTask?.approvalMode).toBe("ask");
+    expect(workerTask?.approvalMode).toBe("full");
     expect(workerTask?.autoApprove).toBe(false);
     const reviewTask = workers.find((bot: { id: string }) => bot.id === reviewer.id).tasks
       .find((task: { title: string }) => task.title.startsWith("Coding "));
     if (mode === "coding") {
       expect(reviewTask?.cwd).toBe(f.leased);
-      expect(reviewTask?.approvalMode).toBe("ask");
+      expect(reviewTask?.approvalMode).toBe("full");
       expect(reviewTask?.autoApprove).toBe(false);
     } else {
       expect(reviewTask).toBeUndefined();
@@ -200,10 +181,14 @@ test.each([
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
       mcpConfig?: { toolScope?: { allow?: string[] } };
     }>;
-    if (mode === "permission") expect(turns.some((turn) => turn.uiResponse?.value === "Deny")).toBe(true);
+    if (mode === "permission" || mode === "coding-denied") {
+      expect(turns.some((turn) => turn.uiResponse)).toBe(false);
+      const messages = (await f.api("GET", `/api/threads/${workerTask.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+      expect(messages.some((message) => message.card)).toBe(false);
+    }
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
     for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
-      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit"]);
+      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit", "native:coding_command"]);
     }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);
@@ -235,11 +220,32 @@ test.each([
     const workerMessages = (await f.api("GET", `/api/threads/${workerTask.threadId}/messages?limit=100`)).messages as Array<{
       role: string; text?: string; turnTerminal?: boolean;
     }>;
-    expect(workerMessages.some((message) => message.role === "bot" && message.turnTerminal &&
-      message.text === (mode === "coding" ? "Coding fixture committed" : mode === "permission" ? "Permission denied" : "Hello from pi"))).toBe(true);
-    if (mode === "permission") {
+    if (mode !== "permission" && mode !== "coding-denied") expect(workerMessages.some((message) => message.role === "bot" && message.turnTerminal &&
+      message.text === (mode === "coding" ? "Coding fixture committed" : "Hello from pi"))).toBe(true);
+    if (mode === "permission" || mode === "coding-denied") {
       expect(workerMessages.some((message) => message.text === "ok")).toBe(false);
       expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(false);
+    }
+    if (mode === "permission" || mode === "coding-denied") {
+      const feed = new SessionStatusFeed(join(f.dataDir, "session-status.sqlite"));
+      try {
+        const notices = feed.pendingWakes().filter((wake) => wake.sessionId === scheduledCodingRunId(run));
+        expect(notices).toHaveLength(1);
+        expect(notices[0]?.kind).toBe("completion");
+        expect(notices[0]?.detail).toContain(mode === "permission" ? "Run bash" : "bash");
+        expect(feed.latest().find((record) => record.sessionId === scheduledCodingRunId(run))?.state).toBe("failed");
+      } finally { feed.close(); }
+    }
+    if (mode === "permission") {
+      await f.api("POST", `/api/bots/${worker.id}/messages`, { threadId: worker.threadId, text: "Interactive question" });
+      await f.until(async () => {
+        const messages = (await f.api("GET", `/api/threads/${worker.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+        return messages.some((message) => message.card);
+      }, "interactive chat permission card");
+      const chatTurn = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+        .findLast((item: { isTurnSpawn: boolean; cwd: string }) => item.isTurnSpawn && item.cwd !== f.leased);
+      expect(chatTurn?.mcpConfig?.codingRun).toBeUndefined();
+      expect(chatTurn?.mcpConfig?.approvalMode).toBe("ask");
     }
     if (mode === "coding") {
       const reviewMessages = (await f.api("GET", `/api/threads/${reviewTask.threadId}/messages?limit=100`)).messages as Array<{
@@ -313,8 +319,47 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
   finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);
 
+test("webhook coding delivery ends without an approval card", async () => {
+  const f = await fixture("coding");
+  try {
+    await f.start();
+    const origin = (await f.api("POST", "/api/bots", { name: "Webhook owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Webhook worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Webhook reviewer" })).bot;
+    for (const bot of [worker, reviewer]) await f.api("PATCH", `/api/bots/${bot.id}`, {
+      modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" },
+    });
+    const created = await f.api("POST", "/api/webhooks", {
+      name: "Coding webhook", prompt: "Complete fixture coding task", botId: origin.id, runOn: "maus",
+    });
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: {
+      repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
+      bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
+        routineId: created.webhook.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"],
+      }],
+    } }));
+    await f.start();
+    const delivery = await fetch(created.credential.url, { method: "POST", headers: {
+      "content-type": "application/json", "idempotency-key": "fixture-delivery-1",
+    }, body: JSON.stringify({ task: "fixture" }) });
+    expect(delivery.status).toBe(202);
+    await f.until(async () => ((await f.api("GET", "/api/routines")).runs as Array<{ webhookId: string; status: string }>).some(
+      (run) => run.webhookId === created.webhook.id && run.status === "completed"), "webhook coding completion");
+    const bots = (await f.api("GET", "/api/bots")).bots;
+    for (const bot of [worker, reviewer]) {
+      const task = bots.find((entry: { id: string }) => entry.id === bot.id)?.tasks.find((entry: { title: string }) => entry.title.startsWith("Coding "));
+      expect(task?.approvalMode).toBe("full");
+      const messages = (await f.api("GET", `/api/threads/${task.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+      expect(messages.some((message) => message.card)).toBe(false);
+    }
+  } finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
 test("composed server interrupts an active coding turn at its wall-clock ceiling", async () => {
-  const f = await fixture("permission");
+  const f = await fixture("coding-hold");
   try {
     await f.start();
     const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;

@@ -19,7 +19,7 @@ test("coding turn pins an allowed model and reports the model that completed the
     switchTaskModel(_botId: string, _threadId: string, model: typeof selected) { selected = model; return {}; },
     projectBotForTask: () => ({ modelSelection: selected }),
   } as unknown as Store;
-  const port = createCodingStartTurnPort({ store, approvalMode: () => "ask", driverKind: () => "piAgent",
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
     modelChain: () => [{ instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf" }],
     costForThread: async () => null,
     async startTurn(_botId, _text, { onTurnSettled }) {
@@ -32,14 +32,16 @@ test("coding turn pins an allowed model and reports the model that completed the
   assert.deepEqual(result.modelUsed, { instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf" });
 });
 
-test("normal turn callback gets the originating approval mode and persisted output, then refuses replay", async () => {
+test("coding turn pins closed mode before dispatch and refuses replay", async () => {
   const tasks: Array<{ title: string; threadId: string; cwd?: string }> = [];
   const messages: Array<{ id: string; role: "bot"; kind: "text"; text: string; turnTerminal: boolean }> = [];
   let pinned: unknown;
+  let initialMode: unknown;
   const store = {
     bot: () => ({ id: "worker" }),
     tasks: () => tasks,
-    createTask(_botId: string, title: string) {
+    createTask(_botId: string, title: string, _persistent: boolean, _unused1: unknown, _unused2: unknown, approvalMode: unknown) {
+      initialMode = approvalMode;
       const task = { title, threadId: "thread-1", cwd, createdAt: 1 };
       tasks.push(task);
       return task;
@@ -47,11 +49,12 @@ test("normal turn callback gets the originating approval mode and persisted outp
     patchTask(_botId: string, _threadId: string, patch: unknown) { pinned = patch; return tasks[0]; },
     messagesFor: () => messages,
   } as unknown as Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor">;
-  const port = createCodingStartTurnPort({ store, approvalMode: () => "ask", driverKind: () => "piAgent",
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
     costForThread: async () => 0,
     async startTurn(_botId, _text, { requestId, onTurnSettled }) {
       assert.equal(requestId, "review:1");
-      assert.deepEqual(pinned, { cwd, approvalMode: "ask" });
+      assert.equal(initialMode, "full");
+      assert.deepEqual(pinned, { cwd, approvalMode: "full" });
       messages.push({ id: "answer", role: "bot", kind: "text", text: `ACCEPT ${revision}`, turnTerminal: true });
       onTurnSettled();
     },

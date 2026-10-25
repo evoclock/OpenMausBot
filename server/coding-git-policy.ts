@@ -1,4 +1,4 @@
-import { allowsTool, type ToolScope } from "../shared/tool-scope.ts";
+import type { ToolScope } from "../shared/tool-scope.ts";
 import type { CodingGitCredential, CodingGitDestination, CodingGitGroup, CodingRunConfig } from "./coding-run-config.ts";
 import type { RunContractStore } from "./run-contract.ts";
 
@@ -77,9 +77,8 @@ function branchName(value: string | undefined): value is string {
 function refuse(message: string): never { throw new Error(`Git destination refused: ${message}`); }
 
 /** Coding bots cannot reach a shell or MCP executor outside the checked host Git port. */
-export function codingGitToolScope(existing: ToolScope | undefined): ToolScope {
-  return { allow: ["read", "write", "edit"].filter((name) =>
-    allowsTool(existing, { kind: "native", name })).map((name) => `native:${name}`) };
+export function codingGitToolScope(_existing: ToolScope | undefined): ToolScope {
+  return { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] };
 }
 
 /** Only an exact configured destination and fresh metadata may authorize an outward Git effect. */

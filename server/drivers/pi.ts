@@ -19,6 +19,8 @@ import {
 } from "./prompt-split.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
+import { PiRpcChunks } from "./pi-rpc-chunks.ts";
+export { PiRpcChunks } from "./pi-rpc-chunks.ts";
 
 import type {
   DriverCreateInput,
@@ -173,82 +175,6 @@ export function parsePiCatalog(stdout: string, fallbackDefault = ""): ModelCatal
     if (catalog) return catalog;
   }
   return { default: fallbackDefault, options: [] };
-}
-
-/** omp's RPC v2 splits a frame over 1 MiB into base64 `rpc_chunk` pieces (`chunkId`/`count`/
- *  `byteLength` per frame, sequential `index`, `data` per piece). Any inconsistency drops the sequence. */
-export class PiRpcChunks {
-  /** omp's advertised cap on one reassembled frame. */
-  static readonly MAX_BYTES = 64 * 1024 * 1024;
-  /** omp's cap on one decoded piece, which also bounds the piece count. */
-  static readonly MAX_PIECE_BYTES = 256 * 1024;
-  static readonly MAX_COUNT = PiRpcChunks.MAX_BYTES / PiRpcChunks.MAX_PIECE_BYTES;
-  private chunkId: string | null = null;
-  private count = 0;
-  private byteLength = 0;
-  private bytes = 0;
-  private parts: Buffer[] = [];
-
-  accept(message: Record<string, unknown>): Record<string, unknown> | null {
-    const { chunkId, index, count, byteLength, data } = message;
-    if (
-      typeof chunkId !== "string" || chunkId.length === 0 || typeof data !== "string" ||
-      data.length === 0 || data.length > Math.ceil(PiRpcChunks.MAX_PIECE_BYTES / 3) * 4 ||
-      !Number.isInteger(index) || !Number.isInteger(count) || !Number.isInteger(byteLength) ||
-      (index as number) < 0 || (count as number) < 2 || (count as number) > PiRpcChunks.MAX_COUNT ||
-      (index as number) >= (count as number) ||
-      (byteLength as number) < 0 || (byteLength as number) > PiRpcChunks.MAX_BYTES
-    ) {
-      this.reset();
-      return null;
-    }
-    if (chunkId !== this.chunkId) {
-      if (index !== 0) {
-        this.reset();
-        return null;
-      }
-      this.chunkId = chunkId;
-      this.count = count as number;
-      this.byteLength = byteLength as number;
-      this.parts = [];
-      this.bytes = 0;
-    } else if (count !== this.count || byteLength !== this.byteLength) {
-      this.reset();
-      return null;
-    }
-    const part = Buffer.from(data, "base64");
-    // An empty piece would let a sequence grow without approaching `byteLength`.
-    if (
-      index !== this.parts.length || part.length === 0 || part.length > PiRpcChunks.MAX_PIECE_BYTES ||
-      this.bytes + part.length > this.byteLength
-    ) {
-      this.reset();
-      return null;
-    }
-    this.parts.push(part);
-    this.bytes += part.length;
-    if (this.parts.length < this.count) return null;
-    const complete = this.bytes === this.byteLength;
-    const text = Buffer.concat(this.parts).toString("utf8");
-    this.reset();
-    if (!complete) return null;
-    try {
-      const frame = JSON.parse(text) as unknown;
-      return frame && typeof frame === "object" && !Array.isArray(frame)
-        ? frame as Record<string, unknown>
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private reset(): void {
-    this.chunkId = null;
-    this.count = 0;
-    this.byteLength = 0;
-    this.bytes = 0;
-    this.parts = [];
-  }
 }
 
 export function decodePiFrame(line: string, chunks: PiRpcChunks): Record<string, unknown> | null {
@@ -579,6 +505,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       const selection = parseToolScope(turn.toolScope);
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;
+      const codingRun = turn.codingRun;
+      if (codingRun && (turn.approvalMode !== "full" || !toolScope || JSON.stringify(toolScope.allow) !== JSON.stringify(["native:read", "native:write", "native:edit", "native:coding_command"]))) {
+        throw new Error("Coding run denied: invalid closed tool selection");
+      }
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       const pending = new Map<string, (decision: { behavior: "allow" | "deny" | "answer"; message?: string }) => void>();
@@ -597,8 +527,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
 
       // The MCP config carries credentials: a 0600 temp file removed at settle, never argv.
       // Written on every turn: the extension also carries ask_user.
-      const mcpServers = buildMcpServers(turn);
-      const askUser = toolScope === undefined || allowsTool(toolScope, { kind: "native", name: ASK_USER_TOOL });
+      const mcpServers = codingRun ? null : buildMcpServers(turn);
+      const askUser = !codingRun && (toolScope === undefined || allowsTool(toolScope, { kind: "native", name: ASK_USER_TOOL }));
       const mcpTempDir = mkdtempSync(join(tmpdir(), "omb-pi-mcp-"));
       const scopeReadyPath = toolScope !== undefined ? join(mcpTempDir, "scope-ready.json") : undefined;
       try {
@@ -607,6 +537,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           toolScope,
           scopeReadyPath,
           approvalMode: turn.approvalMode,
+          ...(codingRun ? { codingRun } : {}),
           automatedLocalComputer: turn.approvalMode === "full", askUser,
         }), { mode: 0o600 });
       } catch (err) {
@@ -616,7 +547,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
         throw err;
       }
-      const childArgs = [...PI_ARGS, "-e", SPAWNED_PROXIES.piMcpExtension];
+      const childArgs = [...PI_ARGS, ...(codingRun ? ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files"] : []), "-e", SPAWNED_PROXIES.piMcpExtension];
 
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
@@ -748,6 +679,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       active.set(threadId, { stop, turnId, pending, child, steer: steerActiveTurn });
 
       const onEvent = (evt: PiEvent) => {
+        if (codingRun && settled) return;
         appendNative(threadId, { dir: "in", source: "pi.rpc", msg: evt });
         switch (evt.type) {
           case "response": {
@@ -773,6 +705,11 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             return;
           }
           case "tool_execution_start": {
+            if (codingRun && !["read", "write", "edit", "coding_command"].includes(String(evt.toolName))) {
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: `Coding run ${codingRun.id} denied ${String(evt.toolName ?? "unknown")}: tool is outside the envelope` });
+              settle(false);
+              return;
+            }
             flushAssistantText();
             emit({
               ...base(threadId, turnId),
@@ -786,6 +723,12 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             return;
           }
           case "tool_execution_end": {
+            if (codingRun && evt.isError && /Coding (?:run|command) denied:/.test(JSON.stringify(evt.result ?? ""))) {
+              const action = String(evt.toolName ?? "tool");
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: `Coding run ${codingRun.id} denied ${action}: action is outside the envelope` });
+              settle(false);
+              return;
+            }
             emit({
               ...base(threadId, turnId),
               type: "item.completed",
@@ -797,6 +740,11 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             return;
           }
           case "extension_ui_request": {
+            if (codingRun && !["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(evt.method ?? "")) {
+              emit({ ...base(threadId, turnId), type: "runtime.error", message: `Coding run ${codingRun.id} denied ${String(evt.title ?? evt.method)}: interactive request is outside the envelope` });
+              settle(false);
+              return;
+            }
             // pi floods setWidget/setStatus; only select/confirm/input wait for an answer.
             if (evt.method === "select" || evt.method === "confirm" || evt.method === "input") {
               flushAssistantText();
