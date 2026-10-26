@@ -273,13 +273,16 @@ describe("Pi MCP startup budgets", () => {
 describe("Pi MCP extension registration", () => {
   const scopedApi = (initial: string[]) => {
     let active = initial;
+    let activeToolApiCalls = 0;
     const tools: RegisteredTool[] = [];
     const handlers = new Map<string, (event?: any) => any>();
-    return { tools, handlers, current: () => active, restore: (names: string[]) => { active = names; }, api: {
-      registerTool(tool: RegisteredTool) { tools.push(tool); },
-      on(event: string, handler: (event?: any) => any) { handlers.set(event, handler); },
-      getActiveTools: () => [...active], setActiveTools: (names: string[]) => { active = names; },
-    } };
+    return { tools, handlers, current: () => active, actionCalls: () => activeToolApiCalls,
+      restore: (names: string[]) => { active = names; }, api: {
+        registerTool(tool: RegisteredTool) { tools.push(tool); },
+        on(event: string, handler: (event?: any) => any) { handlers.set(event, handler); },
+        getActiveTools: () => { activeToolApiCalls += 1; return [...active]; },
+        setActiveTools: (names: string[]) => { activeToolApiCalls += 1; active = names; },
+      } };
   };
   const scopeConfig = (toolScope: unknown, other = {}) => {
     const dir = tempDir();
@@ -287,6 +290,31 @@ describe("Pi MCP extension registration", () => {
     writeFileSync(process.env.OMB_MCP_CONFIG, JSON.stringify({ toolScope, ...other }));
     return dir;
   };
+
+  it("registers the reviewer scope before runtime and enforces it before the provider request", async () => {
+    const toolScope = { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] };
+    const readyPath = join(tempDir(), "ready.json");
+    scopeConfig(toolScope, {
+      approvalMode: "full",
+      askUser: false,
+      codingRun: { id: "reviewer-run", branch: "fix/reviewer", directory: process.cwd() },
+      scopeReadyPath: readyPath,
+    });
+    const f = scopedApi(["read", "write", "edit", "coding_command", "bash", "ask_user"]);
+
+    await extension(f.api);
+
+    expect(f.current()).toEqual(["read", "write", "edit", "coding_command", "bash", "ask_user"]);
+    expect(f.actionCalls()).toBe(0);
+    expect(JSON.parse(readFileSync(readyPath, "utf8"))).toEqual({ status: "registered", toolScope });
+
+    const payload = { tools: f.current().map((name) => ({ name })) };
+    await f.handlers.get("before_provider_request")?.({ payload });
+
+    expect(f.current()).toEqual(["read", "write", "edit", "coding_command"]);
+    expect(payload.tools.map((tool: { name: string }) => tool.name)).toEqual(["read", "write", "edit", "coding_command"]);
+    expect(JSON.parse(readFileSync(readyPath, "utf8"))).toEqual({ status: "enforced", toolScope });
+  });
 
   it("closes coding turns before provider dispatch and refuses any question or unlisted tool", async () => {
     scopeConfig({ allow: ["native:read", "native:write", "native:edit", "native:coding_command"] }, {
@@ -358,7 +386,7 @@ describe("Pi MCP extension registration", () => {
     refused.api.setActiveTools = () => {};
     await extension(refused.api);
     expect(() => refused.handlers.get("session_start")?.({})).toThrow(/enforcement/i);
-    expect(JSON.parse(readFileSync(readyPath, "utf8"))).toEqual({ ok: false });
+    expect(JSON.parse(readFileSync(readyPath, "utf8"))).toEqual({ status: "failed" });
     const f = scopedApi(["write"]);
     await extension(f.api);
     const payload = { tools: ["read", "write"].map((name) => ({ name, input_schema: { type: "object" } })) };

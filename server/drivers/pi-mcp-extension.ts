@@ -620,12 +620,12 @@ export default async function (pi: PiExtensionApi): Promise<void> {
         pi.setActiveTools!([...requested]);
         const selected = pi.getActiveTools!();
         if (!Array.isArray(selected) || selected.some((name) => !requested.has(name))) throw new Error("Pi tool selection enforcement did not apply the active-tool restriction");
-        if (config.scopeReadyPath) writeFileSync(config.scopeReadyPath, JSON.stringify({ ok: true, toolScope: scope }), { mode: 0o600 });
+        if (config.scopeReadyPath) writeFileSync(config.scopeReadyPath, JSON.stringify({ status: "enforced", toolScope: scope }), { mode: 0o600 });
         return selected;
       } catch (error) {
         enforcementFailed = true;
         if (config.scopeReadyPath) {
-          try { writeFileSync(config.scopeReadyPath, JSON.stringify({ ok: false }), { mode: 0o600 }); } catch { /* A failed receipt cannot grant access. */ }
+          try { writeFileSync(config.scopeReadyPath, JSON.stringify({ status: "failed" }), { mode: 0o600 }); } catch { /* A failed receipt cannot grant access. */ }
         }
         throw error;
       }
@@ -778,4 +778,8 @@ export default async function (pi: PiExtensionApi): Promise<void> {
     for (const c of clients) c.dispose();
     clients.length = 0;
   });
+
+  if (scope !== undefined && config.scopeReadyPath) {
+    writeFileSync(config.scopeReadyPath, JSON.stringify({ status: "registered", toolScope: scope }), { mode: 0o600 });
+  }
 }
