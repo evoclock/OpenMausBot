@@ -925,8 +925,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         let ready = false;
         try {
           const receipt = JSON.parse(readFileSync(scopeReadyPath, "utf8")) as { status?: unknown; toolScope?: unknown };
-          ready = (receipt.status === "registered" || receipt.status === "enforced") &&
-            JSON.stringify(receipt.toolScope) === JSON.stringify(toolScope);
+          ready = (receipt.status === "registered" || receipt.status === "enforced") && JSON.stringify(receipt.toolScope) === JSON.stringify(toolScope);
         } catch { /* Missing or malformed readiness is never a grant. */ }
         if (!ready) {
           const message = "Pi tool selection enforcement is unavailable. Update Pi and check the OpenMausBot extension before retrying.";
