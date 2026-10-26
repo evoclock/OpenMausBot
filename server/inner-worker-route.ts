@@ -1,6 +1,7 @@
 import type { HostCheckRecord, RunContractInput } from "./run-contract.ts";
 import { codingPlaybookPrompt } from "./coding-playbook-prompt.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
+import { execFileSync } from "node:child_process";
 
 export interface WorkerRoles {
   development: string;
@@ -90,7 +91,24 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
-        if (!report.revision || !report.progress) return blocked("worker made no verified progress");
+        if (!report.revision || !report.progress) {
+          let dirty = "";
+          try {
+            dirty = execFileSync("git", ["status", "--porcelain"], {
+              cwd: workspace.directory, encoding: "utf8", timeout: 30_000,
+            }).trim();
+          } catch { /* treat as clean */ }
+          if (dirty) {
+            retainLease = true;
+            return {
+              kind: "progress",
+              evidence: [...report.evidence, "worker left uncommitted changes; continue"],
+              costUsd: spentUsd,
+              ...(modelsUsed.length ? { modelsUsed } : {}),
+            };
+          }
+          return blocked("worker made no verified progress");
+        }
         const review = await host.review(workspace, roles.independentReview, report.revision, signal);
         if (review.modelUsed) modelsUsed.push(review.modelUsed);
         if (!charge(review.costUsd)) return blocked(spentUsd === null
