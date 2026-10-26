@@ -30,7 +30,7 @@ if (process.env.FAKE_PI_SCOPE_ACK === "1" && argv[0] === "--mode" && process.env
     const allowed = config.toolScope?.allow;
     const ok = Array.isArray(allowed) && allowed.length === (config.codingRun ? 4 : 3) &&
       ["native:read", "native:write", "native:edit", ...(config.codingRun ? ["native:coding_command"] : [])].every((name) => allowed.includes(name));
-    writeFileSync(config.scopeReadyPath, JSON.stringify({ ok, toolScope: config.toolScope }), { mode: 0o600 });
+    writeFileSync(config.scopeReadyPath, JSON.stringify({ status: ok ? "registered" : "failed", toolScope: config.toolScope }), { mode: 0o600 });
   }
 }
 

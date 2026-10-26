@@ -1,16 +1,19 @@
 // Official Pi CLI, disposable HOME, synthetic loopback provider and MCP tools.
 // This verifies the CLI contract; it is not a real-local-model benchmark.
 import assert from "node:assert/strict";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const cli = resolve(process.argv[2] ?? "node_modules/.bin/pi");
-const home = mkdtempSync(join(tmpdir(), "omb-pi-selection-"));
+const home = realpathSync(mkdtempSync(join(tmpdir(), "omb-pi-selection-")));
+symlinkSync(resolve("node_modules"), join(home, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+const agentDir = join(home, ".pi", "agent");
 process.env.HOME = home;
 process.env.USERPROFILE = home;
+process.env.PI_CODING_AGENT_DIR = agentDir;
 process.env.OMB_DATA_DIR = join(home, "data");
 const { PiDriver } = await import("../server/drivers/pi.ts");
 const { ensureDirs } = await import("../server/config.ts");
@@ -49,7 +52,10 @@ const provider = createServer(async (req, res) => {
 });
 await new Promise<void>((done) => provider.listen(0, "127.0.0.1", done));
 const port = (provider.address() as { port: number }).port;
-const agentDir = join(home, ".pi", "agent"); mkdirSync(agentDir, { recursive: true });
+mkdirSync(agentDir, { recursive: true });
+const skillDir = join(agentDir, "skills", "poteto-mode-pi");
+mkdirSync(skillDir, { recursive: true });
+writeFileSync(join(skillDir, "SKILL.md"), "---\nname: poteto-mode-pi\ndescription: Isolated fixture skill for the Pi tool-scope contract.\n---\n");
 writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fixture: {
   baseUrl: `http://127.0.0.1:${port}/v1`, api: "openai-completions", apiKey: "synthetic-fixture-key",
   models: [{ id: "fixture", name: "Synthetic contract fixture", reasoning: false, input: ["text"], contextWindow: 8192, maxTokens: 512, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
@@ -84,9 +90,11 @@ instance.adapter.onEvent((event) => {
   }
 });
 const evidence: unknown[] = [];
-async function turn(kind: string, toolScope: { allow: string[] }, resumeCursor?: string) {
+async function turn(kind: string, toolScope: { allow: string[] }, resumeCursor?: string, codingRun = false) {
   scenario = kind; round = 0; const before = payloads.length; const eventStart = events.length;
-  const { turnId } = await instance.adapter.sendTurn({ threadId: "scope-contract", text: "Complete only the selected disposable fixture tools.", cwd: home, model: "fixture/fixture", approvalMode: "ask", toolScope, resumeCursor,
+  const { turnId } = await instance.adapter.sendTurn({ threadId: "scope-contract", text: "Complete only the selected disposable fixture tools.", cwd: home, model: "fixture/fixture",
+    approvalMode: codingRun ? "full" : "ask", toolScope, resumeCursor,
+    ...(codingRun ? { codingRun: { id: "reviewer-run", branch: "fix/reviewer", directory: home } } : {}),
     integrations: { custom: { mail: { command: process.execPath, args: [mail], env: { RECEIPT: receipt } } } },
   });
   const deadline = Date.now() + 30_000;
@@ -99,6 +107,8 @@ async function turn(kind: string, toolScope: { allow: string[] }, resumeCursor?:
   return { names, cursor: events.slice(eventStart).find((event) => event.type === "session.started")?.sessionId as string | undefined };
 }
 try {
+  const reviewer = await turn("reviewer", { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] }, undefined, true);
+  assert.deepEqual([...reviewer.names].sort(), ["coding_command", "edit", "read", "write"]);
   const native = await turn("native", { allow: ["native:read", "native:edit", "native:write"] });
   assert.deepEqual([...native.names].sort(), ["edit", "read", "write"]);
   assert.equal(readFileSync(artifact, "utf8"), "verified drafting");
