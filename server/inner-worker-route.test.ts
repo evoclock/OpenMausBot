@@ -54,6 +54,21 @@ test("worker goal carries iteration number and the preceding receipt", async () 
   assert.match(goal, /first proof/);
 });
 
+test("worker receives the leased workspace and host-owned Git boundary without extra tools", async () => {
+  const route = host();
+  let goal = "";
+  route.runPlaybook = async (_workspace, _role, received) => {
+    goal = received;
+    return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 };
+  };
+  await createWorkerRoute(route).invoke(contract, 1, "run:workspace", signal);
+  assert.match(goal, /Treehouse workspace is already leased at isolated/);
+  assert.match(goal, /omb\/coding-fixture/);
+  assert.match(goal, /read, write, edit, and coding_command/);
+  assert.match(goal, /Git push and draft PR are handled by the host after verification/);
+  assert.match(goal, /Do not acquire another workspace or call GitHub tools/);
+});
+
 test("a long receipt history reaches the goal within the configured carry cap", async () => {
   const route = host();
   let goal = "";

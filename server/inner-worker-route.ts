@@ -86,7 +86,8 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           !workspace.branch || !workspace.base || !workspace.directory || !workspace.leaseId) {
           return blocked("isolated workspace does not match the run contract");
         }
-        const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
+        const workspaceGoal = `${goal}\nTreehouse workspace is already leased at ${workspace.directory} on ${workspace.branch}. Work only there. Use read, write, edit, and coding_command for scoped files, checks, add, and commit. Git push and draft PR are handled by the host after verification. Do not acquire another workspace or call GitHub tools.`;
+        const report = await host.runPlaybook(workspace, roles.development, workspaceGoal, requestId, signal);
         if (report.modelUsed) modelsUsed.push(report.modelUsed);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
