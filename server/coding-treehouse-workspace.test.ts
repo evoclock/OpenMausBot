@@ -242,7 +242,9 @@ if (args[0] === 'status') {
     assert.equal(acquired.branch, expectedBranch);
     assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.remote`), "origin");
     assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.merge`), `refs/heads/${expectedBranch}`);
-    assert.throws(() => { git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); });
+    assert.equal(git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"),
+      `origin/${expectedBranch}`);
+    assert.equal(git(slot, "merge-base", "--is-ancestor", "HEAD", "@{upstream}"), "");
     assert.deepEqual(workspace.findForRun(contract.id), acquired);
   } finally {
     workspace?.close();
