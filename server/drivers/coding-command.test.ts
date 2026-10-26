@@ -20,6 +20,8 @@ test("coding command permits only fixed local git verbs on a feature worktree", 
     git("add", "file.txt");
     git("-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com", "commit", "-m", "base");
     git("switch", "-c", "feat/closed");
+    assert.match(executeCodingCommand(home, "status", [], "", "feat/closed"), /feat\/closed/);
+    assert.throws(() => executeCodingCommand(home, "status", [], "", "main"), /worktree branch changed/i);
     writeFileSync(join(home, "file.txt"), "changed\n");
     assert.match(executeCodingCommand(home, "status"), /file.txt/);
     assert.match(executeCodingCommand(home, "diff"), /\+changed/);
@@ -32,6 +34,8 @@ test("coding command permits only fixed local git verbs on a feature worktree", 
     assert.throws(() => executeCodingCommand(home, "status", [], "--exec"), /denied/i);
     git("switch", "main");
     assert.throws(() => executeCodingCommand(home, "status"), /denied/i);
+    git("switch", "--detach", "HEAD");
+    assert.throws(() => executeCodingCommand(home, "status"));
   } finally { await removeTempDir(home); }
 });
 

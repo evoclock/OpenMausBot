@@ -12,7 +12,7 @@ export async function publishVerifiedCodingRun(input: {
   const { snapshot, workspace } = input;
   if (snapshot.state !== "done" || !input.hasDestination || !snapshot.evidence.some((line) => line.trim()) ||
     !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr") ||
-    workspace.repository !== snapshot.contract.repository || workspace.branch !== snapshot.contract.ref) return null;
+    workspace.repository !== snapshot.contract.repository || workspace.baseBranch !== snapshot.contract.ref) return null;
   const branch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
   await input.createBranch(workspace.directory, branch, snapshot.contract.ref);
   const common = { botId: snapshot.contract.botId, repository: snapshot.contract.repository,

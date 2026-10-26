@@ -5,51 +5,82 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileS
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "vitest";
+import { removeTempDir } from "./testing/cleanup.ts";
 import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 
 const contract = { id: "00000000-0000-4000-8000-000000000001", botId: "bot", repository: "fixture/agents", ref: "main",
-  repositoryClass: "agent-private" as const, successCriteria: ["done"], allowedEffects: ["edit" as const] };
+  repositoryClass: "agent-private" as const, successCriteria: ["done"], allowedEffects: ["edit" as const, "push" as const] };
 
-test("a task reacquires the same verified lease after reopening without a second get", async () => {
+test("a task reacquires its lease without another get or pushing recovered commits", async () => {
   const root = realpathSync(process.cwd());
   const cache = join(root, ".omb-scratch", "coding-treehouse-tests");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "coding-treehouse-"));
   const alternate = join(dir, "leased-slot");
+  const bare = join(dir, "origin.git");
   mkdirSync(alternate);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args,
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  git(dir, "init", "--bare", "--initial-branch=main", bare);
+  git(alternate, "init", "-b", "main");
+  git(alternate, "remote", "add", "origin", bare);
+  git(alternate, "config", "user.name", "evoclock");
+  git(alternate, "config", "user.email", "52983349+evoclock@users.noreply.github.com");
+  writeFileSync(join(alternate, "base.txt"), "base\n");
+  git(alternate, "add", "base.txt");
+  git(alternate, "commit", "-m", "base");
+  git(alternate, "push", "--set-upstream", "origin", "main");
+  git(alternate, "checkout", "--detach", "main");
   const executable = join(dir, "fake-treehouse.mjs");
   const state = join(dir, "state.json");
   const log = join(dir, "gets.log");
   const branchFile = join(dir, "branch.txt");
   writeFileSync(executable, `#!/usr/bin/env node\nimport { existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';\nconst path = ${JSON.stringify(alternate)};\nconst state = ${JSON.stringify(state)};\nconst log = ${JSON.stringify(log)};\nconst branchFile = ${JSON.stringify(branchFile)};\nconst args = process.argv.slice(2);\nif (args[0] === 'status') {\n const holder = existsSync(state) ? JSON.parse(readFileSync(state, 'utf8')).holder : null;\n console.log(JSON.stringify(holder ? [{ path, status: 'leased', lease_id: 'fake-lease', lease_holder: holder }] : []));\n} else if (args[0] === 'get') {\n const holder = args[args.indexOf('--lease-holder') + 1];\n const branchIndex = args.indexOf('--branch');\n writeFileSync(branchFile, branchIndex < 0 ? '' : args[branchIndex + 1]);\n appendFileSync(log, 'get\\n');\n writeFileSync(state, JSON.stringify({ holder }));\n console.log(JSON.stringify({ path, lease_id: 'fake-lease' }));\n} else if (args[0] === 'return') {\n if (args[args.indexOf('--if-lease-id') + 1] !== 'fake-lease') process.exit(2);\n writeFileSync(state, JSON.stringify({ holder: null }));\n} else process.exit(1);\n`);
   chmodSync(executable, 0o755);
+  const pushCalls: string[] = [];
   const checks = { verifyRepository: () => true, verifySlot: () => true,
-    readRevision: () => "fixture-base", readStatus: () => "" };
+    readRevision: (path: string, ref: string) => git(path, "rev-parse", ref),
+    readStatus: (path: string) => git(path, "status", "--porcelain", "--untracked-files=all"),
+    async pushWorkspaceBranch({ directory, branch }: { directory: string; branch: string }) {
+      pushCalls.push(branch);
+      git(directory, "push", "--set-upstream", "origin", branch);
+    } };
+  const requestId = `${contract.id}:1`;
+  const expectedBranch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
   let workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir, executable,
     ...checks });
-  const first = await workspace.acquire(contract, "task-1");
-  const runRequestId = `${contract.id}:1`;
-  const db = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
-  db.prepare("INSERT INTO coding_workspaces (request_id, contract, path, lease_id, base_sha) VALUES (?, ?, ?, ?, ?)")
-    .run(runRequestId, JSON.stringify(contract), alternate, "fake-lease", "fixture-base");
-  db.close();
+  const first = await workspace.acquire(contract, requestId);
+  const base = git(alternate, "rev-parse", "HEAD");
   assert.deepEqual(workspace.findForRun(contract.id), { repository: contract.repository, directory: alternate,
-    branch: contract.ref, base: "fixture-base", leaseId: "fake-lease" });
+    branch: expectedBranch, baseBranch: contract.ref, base, leaseId: "fake-lease" });
   workspace.close();
   const reopenedDb = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
-  reopenedDb.prepare("UPDATE coding_workspaces SET path = NULL, lease_id = NULL WHERE request_id = ?").run("task-1");
+  reopenedDb.prepare("UPDATE coding_workspaces SET path = NULL, lease_id = NULL WHERE request_id = ?").run(requestId);
   reopenedDb.close();
   workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir, executable,
     ...checks });
   try {
-    assert.deepEqual(await workspace.acquire(contract, "task-1"), first);
-    assert.equal(readFileSync(branchFile, "utf8"), `omb/coding-${createHash("sha256").update("task-1").digest("hex").slice(0, 24)}`);
+    assert.deepEqual(await workspace.acquire(contract, requestId), first);
+    assert.equal(readFileSync(branchFile, "utf8"), expectedBranch);
     await assert.rejects(workspace.acquire({ ...contract, ref: "--worktree-path" }, "task-2"), /not approved/);
     assert.equal(readFileSync(log, "utf8"), "get\n");
-    await assert.rejects(workspace.acquire({ ...contract, ref: "other" }, "task-1"), /conflicts/);
+    await assert.rejects(workspace.acquire({ ...contract, ref: "other" }, requestId), /conflicts/);
+    writeFileSync(join(alternate, "progress.txt"), "unpublished\n");
+    git(alternate, "add", "progress.txt");
+    git(alternate, "commit", "-m", "unpublished");
+    git(alternate, "branch", "--unset-upstream");
+    workspace.close();
+    const retryDb = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
+    retryDb.prepare("UPDATE coding_workspaces SET path = NULL, lease_id = NULL WHERE request_id = ?").run(requestId);
+    retryDb.close();
+    workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir, executable,
+      ...checks });
+    await assert.rejects(workspace.acquire(contract, requestId), /unpublished commits/);
+    assert.deepEqual(pushCalls, [expectedBranch]);
+    assert.equal(git(bare, "rev-parse", `refs/heads/${expectedBranch}`), base);
     await assert.rejects(workspace.release("unknown-lease"), /cannot be verified/);
     const db2 = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
-    db2.prepare("UPDATE coding_workspaces SET lease_id = ? WHERE request_id = ?").run("different-lease", "task-1");
+    db2.prepare("UPDATE coding_workspaces SET lease_id = ? WHERE request_id = ?").run("different-lease", requestId);
     db2.close();
     await assert.rejects(workspace.release("fake-lease"), /does not belong/);
   } finally { workspace.close(); }
@@ -94,4 +125,66 @@ else if(a[0]==='ls-files' && ${JSON.stringify(condition === "ignored" || conditi
       assert.match(readFileSync(join(dir, "salvage", "INDEX.md"), "utf8"), /openai-work\/fixture/);
     }
   } finally { workspace.close(); }
+});
+
+test("acquire creates and pushes a named upstream branch when Treehouse returns a detached slot", async () => {
+  const cache = join(process.cwd(), ".omb-scratch", "coding-treehouse-tests");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "coding-branch-"));
+  const root = join(dir, "root");
+  const bare = join(dir, "origin.git");
+  const slot = join(dir, "slot");
+  mkdirSync(root);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args,
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  let workspace: CodingTreehouseWorkspace | undefined;
+  try {
+    git(dir, "init", "--bare", "--initial-branch=main", bare);
+    git(root, "init", "-b", "main");
+    git(root, "remote", "add", "origin", bare);
+    writeFileSync(join(root, "TASKS.md"), "base\n");
+    git(root, "add", "TASKS.md");
+    git(root, "-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com", "commit", "-m", "base");
+    git(root, "push", "--set-upstream", "origin", "main");
+    git(dir, "clone", "--branch", "main", bare, slot);
+    git(slot, "checkout", "--detach", "main");
+    const state = join(dir, "state.json");
+    const executable = join(dir, "fake-treehouse.mjs");
+    const pushCalls: string[] = [];
+    writeFileSync(executable, `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const path = ${JSON.stringify(slot)};
+const state = ${JSON.stringify(state)};
+const args = process.argv.slice(2);
+if (args[0] === 'status') {
+ const holder = existsSync(state) ? JSON.parse(readFileSync(state, 'utf8')).holder : null;
+ console.log(JSON.stringify(holder ? [{ path, status: 'leased', lease_id: 'coding-lease', lease_holder: holder }] : []));
+} else if (args[0] === 'get') {
+ const holder = args[args.indexOf('--lease-holder') + 1];
+ writeFileSync(state, JSON.stringify({ holder }));
+ console.log(JSON.stringify({ path, lease_id: 'coding-lease' }));
+} else process.exit(1);
+`, { mode: 0o755 });
+    workspace = new CodingTreehouseWorkspace({
+      repository: contract.repository, root, dataDir: join(dir, "data"), executable,
+      verifyRepository: () => true, verifySlot: () => true,
+      pushWorkspaceBranch: async ({ directory, branch }) => {
+        pushCalls.push(branch);
+        git(directory, "push", "--set-upstream", "origin", branch);
+      },
+    });
+    const requestId = `${contract.id}:1`;
+    const expectedBranch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+    const acquired = await workspace.acquire(contract, requestId);
+    assert.equal(acquired.branch, expectedBranch);
+    assert.equal(acquired.baseBranch, contract.ref);
+    assert.equal(git(slot, "branch", "--show-current"), expectedBranch);
+    assert.equal(git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"), `origin/${expectedBranch}`);
+    assert.equal(git(bare, "rev-parse", `refs/heads/${expectedBranch}`), git(slot, "rev-parse", "HEAD"));
+    assert.deepEqual(pushCalls, [expectedBranch]);
+    assert.deepEqual(workspace.findForRun(contract.id), acquired);
+  } finally {
+    workspace?.close();
+    await removeTempDir(dir);
+  }
 });

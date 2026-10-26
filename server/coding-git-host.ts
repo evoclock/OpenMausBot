@@ -118,11 +118,24 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
         const output = await git(["log", "@{upstream}..HEAD", "--format=%an%x00%ae"], workspace, process.env);
         return output ? output.split("\n").map((line) => { const [name, email] = line.split("\0"); return { name: name ?? "", email: email ?? "" }; }) : [];
       },
-      async push(workspace, remote, revision, destination, credential, repository) {
+      async push(workspace, remote, revision, destination, credential, repository, options) {
+        const setUpstream = options?.setUpstream === true;
+        let source = revision;
+        let pushRemote = remote;
+        if (setUpstream) {
+          const branch = await git(["branch", "--show-current"], workspace, process.env);
+          const head = await git(["rev-parse", "HEAD"], workspace, process.env);
+          const origin = await git(["remote", "get-url", "origin"], workspace, process.env);
+          if (!branch || destination !== `refs/heads/${branch}` || head !== revision || origin !== remote) {
+            throw new Error("workspace branch or origin changed before upstream push");
+          }
+          source = branch;
+          pushRemote = "origin";
+        }
         const token = await tokenFor(credential, repository);
         await withToken(token, (env) => git(["-c", "url.https://github.com/.insteadOf=git@github.com:",
-          "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/", "push", remote,
-          `${revision}:${destination}`], workspace, env));
+          "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/", "push",
+          ...(setUpstream ? ["--set-upstream"] : []), pushRemote, `${source}:${destination}`], workspace, env));
       },
       async pullRequest(action, repository, base, head, credential, options) {
         const token = await tokenFor(credential, repository);

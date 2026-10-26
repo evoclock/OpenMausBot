@@ -28,7 +28,7 @@ export interface CodingGitPort {
   head(workspace: string): Promise<string>;
   outgoingAuthors(workspace: string, remoteUrl: string, branch: string): Promise<Array<{ name: string; email: string }>>;
   push(workspace: string, remoteUrl: string, revision: string, destination: string,
-    credential: ResolvedCredential, repository: string): Promise<void>;
+    credential: ResolvedCredential, repository: string, options?: { setUpstream?: boolean }): Promise<void>;
   pullRequest(action: "pr-open" | "pr-update" | "pr-ready", repository: string, base: string, head: string,
     credential: ResolvedCredential, options: { draft: true; prNumber?: number }): Promise<void>;
   /** A bot cannot execute the merge; the run receipt records only owner eligibility. */

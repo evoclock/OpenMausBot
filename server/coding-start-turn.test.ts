@@ -7,7 +7,8 @@ import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 
 const cwd = process.cwd();
 const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim();
-const workspace: IsolatedWorkspace = { repository: "fixture/agents", directory: cwd, branch: "main", base: "main", leaseId: "lease" };
+const workspace: IsolatedWorkspace = { repository: "fixture/agents", directory: cwd, branch: "omb/coding-fixture",
+  baseBranch: "main", base: "main", leaseId: "lease" };
 
 test("coding turn pins an allowed model and reports the model that completed the turn", async () => {
   let selected = { instanceId: "pi", model: "openai-codex/gpt-6-luna" };

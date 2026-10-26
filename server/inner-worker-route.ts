@@ -11,6 +11,7 @@ export interface IsolatedWorkspace {
   repository: string;
   directory: string;
   branch: string;
+  baseBranch: string;
   base: string;
   leaseId: string;
 }
@@ -72,8 +73,8 @@ export function createWorkerRoute(host: WorkerHost): InnerLoop {
         return { kind: "blocked", evidence: blockedEvidence, costUsd: spentUsd, ...(modelsUsed.length ? { modelsUsed } : {}) };
       };
       try {
-        if (workspace.repository !== contract.repository || workspace.branch !== contract.ref ||
-          !workspace.base || !workspace.directory || !workspace.leaseId) {
+        if (workspace.repository !== contract.repository || workspace.baseBranch !== contract.ref ||
+          !workspace.branch || !workspace.base || !workspace.directory || !workspace.leaseId) {
           return blocked("isolated workspace does not match the run contract");
         }
         const prior = context?.previous;

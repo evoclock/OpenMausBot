@@ -18,7 +18,7 @@ function host(): WorkerHost & { calls: string[] } {
     calls,
     async roles() { return { development: "worker", independentReview: "reviewer" }; },
     async acquire() { calls.push("acquire"); return { repository: contract.repository,
-      directory: "isolated", branch: "review", base: "base", leaseId: "lease" }; },
+      directory: "isolated", branch: "omb/coding-fixture", baseBranch: contract.ref, base: "base", leaseId: "lease" }; },
     async release(leaseId, reason) { calls.push(`release:${leaseId}:${reason}`); },
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["separate review"], costUsd: 0 }; },
@@ -82,10 +82,11 @@ test("missing or same role blocks work before workspace allocation", async () =>
   assert.deepEqual(route.calls, []);
 });
 
-test("a workspace on another branch blocks before dispatch", async () => {
+test("a workspace with another base ref blocks before dispatch", async () => {
   const route = host();
   route.acquire = async () => { route.calls.push("acquire"); return {
-    repository: contract.repository, directory: "isolated", branch: "unapproved", base: "base", leaseId: "lease",
+    repository: contract.repository, directory: "isolated", branch: "omb/coding-fixture",
+    baseBranch: "unapproved", base: "base", leaseId: "lease",
   }; };
   assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
   assert.deepEqual(route.calls, ["acquire", "release:lease:isolated workspace does not match the run contract"]);
@@ -94,7 +95,8 @@ test("a workspace on another branch blocks before dispatch", async () => {
 test("a workspace in another repository blocks and releases before dispatch", async () => {
   const route = host();
   route.acquire = async () => { route.calls.push("acquire"); return {
-    repository: "other/agents", directory: "isolated", branch: contract.ref, base: "base", leaseId: "lease",
+    repository: "other/agents", directory: "isolated", branch: "omb/coding-fixture",
+    baseBranch: contract.ref, base: "base", leaseId: "lease",
   }; };
   assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
   assert.deepEqual(route.calls, ["acquire", "release:lease:isolated workspace does not match the run contract"]);

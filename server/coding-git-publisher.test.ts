@@ -8,8 +8,8 @@ const snapshot: RunSnapshot = { contract: { id: "11111111-1111-4111-8111-1111111
   repositoryClass: "agent-private", allowedEffects: ["edit", "commit", "push", "draft-pr"],
   maxIterations: 8, authorisedExternalWrites: [] }, state: "done", iteration: 1, updatedAt: 3,
   spentUsd: 0, elapsedMs: 1, spendUncertain: false, evidence: ["documentation verified"] };
-const workspace = { repository: "evoclock/docs", directory: "/fixture/worktree", branch: "main",
-  base: "a".repeat(40), leaseId: "lease" };
+const workspace = { repository: "evoclock/docs", directory: "/fixture/worktree", branch: "omb/coding-fixture",
+  baseBranch: "main", base: "a".repeat(40), leaseId: "lease" };
 
 test("verified terminal coding runs publish one checked push then a draft PR", async () => {
   const actions: unknown[] = [];

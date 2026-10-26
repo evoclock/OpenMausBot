@@ -7,6 +7,7 @@ import { test } from "vitest";
 import { ensureDirs } from "./config.ts";
 import { PiDriver } from "./drivers/pi.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
+import { codingWorkspaceBranch } from "./coding-treehouse-workspace.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import type { TriggerTemplate } from "./run-triggers.ts";
 import type { RuntimeEvent } from "./contracts.ts";
@@ -50,14 +51,15 @@ test("worker route launches the existing fake process with the scoped approval m
   chmodSync(cli, 0o755);
   const instance = await PiDriver.create({ instanceId: "coding-fixture", displayName: "fixture",
     environment: {}, enabled: true, config: { cli, fullAuto: false } });
-  const workspace = { repository: "fixture/agents", directory: process.cwd(), branch: "main", base: "main", leaseId: "fixture-lease" };
+  const workspace = { repository: "fixture/agents", directory: process.cwd(), branch: codingWorkspaceBranch("request"),
+    baseBranch: "main", base: "main", leaseId: "fixture-lease" };
   const seen: RuntimeEvent[] = [];
   const unsubscribe = instance.adapter.onEvent((event) => { seen.push(event); });
   const host = createCodingWorkerHost({
     rolesFilePath,
     roles: new Map([[workspace.repository, { development: "fixture/development", independentReview: "fixture/review",
       developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
-    workspace: { async acquire() { return workspace; }, async release() {} },
+    workspace: { async acquire(_contract, requestId) { return { ...workspace, branch: codingWorkspaceBranch(requestId) }; }, async release() {} },
     turn: { async run({ botId, prompt, requestId, signal }) {
       assert.ok(["worker", "reviewer"].includes(botId));
       assert.equal(signal.aborted, false);
@@ -78,7 +80,7 @@ test("worker route launches the existing fake process with the scoped approval m
   });
   try {
     const contract = { id: "00000000-0000-4000-8000-000000000001", botId: "origin", repository: workspace.repository,
-      ref: workspace.branch, repositoryClass: "agent-private" as const, successCriteria: ["respond"], allowedEffects: ["edit" as const] };
+      ref: workspace.baseBranch, repositoryClass: "agent-private" as const, successCriteria: ["respond"], allowedEffects: ["edit" as const] };
     const acquired = await host.acquire(contract, "request");
     const report = await host.runPlaybook(acquired, "fixture/development", "respond", "request", new AbortController().signal);
     assert.deepEqual(report.evidence, ["Hello from pi"]);
@@ -97,8 +99,8 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
   chmodSync(cli, 0o755);
   const instance = await PiDriver.create({ instanceId: "coding-trigger-fixture", displayName: "fixture",
     environment: {}, enabled: true, config: { cli, fullAuto: false } });
-  const workspace = { repository: "fixture/agents", directory: process.cwd(), branch: "main",
-    base: "main", leaseId: "trigger-lease" };
+  const workspace = { repository: "fixture/agents", directory: process.cwd(), branch: codingWorkspaceBranch("fixture"),
+    baseBranch: "main", base: "main", leaseId: "trigger-lease" };
   const scratch = join(process.cwd(), "node_modules", ".cache");
   mkdirSync(scratch, { recursive: true });
   const dataDir = mkdtempSync(join(scratch, "coding-trigger-live-"));
@@ -108,7 +110,7 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
     rolesFilePath,
     roles: new Map([[workspace.repository, { development: "fixture/development", independentReview: "fixture/review",
       developmentBotId: "worker", reviewerBotId: "reviewer" }]]),
-    workspace: { async acquire() { return workspace; }, async release() {} },
+    workspace: { async acquire(_contract, requestId) { return { ...workspace, branch: codingWorkspaceBranch(requestId) }; }, async release() {} },
     turn: { async run({ botId, prompt, requestId }) {
       const threadId = `${botId}:${requestId}`;
       const events: RuntimeEvent[] = [];
@@ -130,7 +132,7 @@ test("a schedule and a webhook delivery reach the real WorkerHost and settle in 
     } },
     async verify() { return ["fixture verification"]; },
   });
-  const template: TriggerTemplate = { botId: "origin", repository: workspace.repository, ref: workspace.branch,
+  const template: TriggerTemplate = { botId: "origin", repository: workspace.repository, ref: workspace.baseBranch,
     repositoryClass: "agent-private", successCriteria: ["respond"], checkCommand: ["node", "-e", "process.exit(0)"], allowedEffects: ["edit"], authorisedExternalWrites: [],
     limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 } };
   const runtime = await openCodingRunRuntime({ dataDir, workerHost: host,

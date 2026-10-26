@@ -308,6 +308,27 @@ describe("Pi MCP extension registration", () => {
     expect(payload.tools.map((tool) => tool.name)).toEqual(["coding_command"]);
   });
 
+  it("accepts serialized in-envelope command and file arguments", async () => {
+    scopeConfig({ allow: ["native:read", "native:write", "native:edit", "native:coding_command"] }, {
+      approvalMode: "full", askUser: false, codingRun: { id: "run-1", branch: "omb/coding-fixture", directory: process.cwd() },
+    });
+    const f = scopedApi(["read", "write", "edit", "coding_command"]);
+    await extension(f.api);
+    await f.handlers.get("session_start")?.({});
+    expect(await f.handlers.get("tool_call")?.({
+      toolName: "coding_command", input: JSON.stringify({ command: "status" }),
+    })).toBeUndefined();
+    expect(await f.handlers.get("tool_call")?.({
+      toolName: "read", input: JSON.stringify({ path: join(process.cwd(), "package.json") }),
+    })).toBeUndefined();
+    expect(await f.handlers.get("tool_call")?.({
+      toolName: "coding_command", input: JSON.stringify({ command: "push" }),
+    })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({
+      toolName: "read", input: JSON.stringify({ path: "/etc/passwd" }),
+    })).toMatchObject({ block: true });
+  });
+
   it("intersects native and package tools before the first turn and after restoration", async () => {
     scopeConfig({ allow: ["native:read", "native:edit", "native:write"] });
     const f = scopedApi(["read", "write", "bash", "package_tool"]);
