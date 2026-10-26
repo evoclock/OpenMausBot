@@ -179,7 +179,8 @@ if (args[0] === 'status') {
     assert.equal(acquired.branch, expectedBranch);
     assert.equal(acquired.baseBranch, contract.ref);
     assert.equal(git(slot, "branch", "--show-current"), expectedBranch);
-    assert.equal(git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"), `origin/${expectedBranch}`);
+    assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.remote`), "origin");
+    assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.merge`), `refs/heads/${expectedBranch}`);
     assert.equal(git(bare, "rev-parse", `refs/heads/${expectedBranch}`), git(slot, "rev-parse", "HEAD"));
     assert.deepEqual(pushCalls, [expectedBranch]);
     assert.deepEqual(workspace.findForRun(contract.id), acquired);
@@ -188,3 +189,62 @@ if (args[0] === 'status') {
     await removeTempDir(dir);
   }
 });
+
+test("acquire binds upstream when remote.origin.fetch only tracks main", async () => {
+  const cache = join(process.cwd(), ".omb-scratch", "coding-treehouse-tests");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "coding-narrow-fetch-"));
+  const root = join(dir, "root");
+  const bare = join(dir, "origin.git");
+  const slot = join(dir, "slot");
+  mkdirSync(root);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args,
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  let workspace: CodingTreehouseWorkspace | undefined;
+  try {
+    git(dir, "init", "--bare", "--initial-branch=main", bare);
+    git(root, "init", "-b", "main");
+    git(root, "remote", "add", "origin", bare);
+    writeFileSync(join(root, "TASKS.md"), "base\n");
+    git(root, "add", "TASKS.md");
+    git(root, "-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com", "commit", "-m", "base");
+    git(root, "push", "--set-upstream", "origin", "main");
+    git(dir, "clone", "--branch", "main", bare, slot);
+    git(slot, "checkout", "--detach", "main");
+    git(slot, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main");
+    const state = join(dir, "state.json");
+    const executable = join(dir, "fake-treehouse.mjs");
+    writeFileSync(executable, `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const path = ${JSON.stringify(slot)};
+const state = ${JSON.stringify(state)};
+const args = process.argv.slice(2);
+if (args[0] === 'status') {
+ const holder = existsSync(state) ? JSON.parse(readFileSync(state, 'utf8')).holder : null;
+ console.log(JSON.stringify(holder ? [{ path, status: 'leased', lease_id: 'coding-lease', lease_holder: holder }] : []));
+} else if (args[0] === 'get') {
+ const holder = args[args.indexOf('--lease-holder') + 1];
+ writeFileSync(state, JSON.stringify({ holder }));
+ console.log(JSON.stringify({ path, lease_id: 'coding-lease' }));
+} else process.exit(1);
+`, { mode: 0o755 });
+    workspace = new CodingTreehouseWorkspace({
+      repository: contract.repository, root, dataDir: join(dir, "data"), executable,
+      verifyRepository: () => true, verifySlot: () => true,
+      pushWorkspaceBranch: async ({ directory, branch }) => {
+        git(directory, "push", "--set-upstream", "origin", branch);
+      },
+    });
+    const requestId = `${contract.id}:narrow-fetch`;
+    const expectedBranch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+    const acquired = await workspace.acquire(contract, requestId);
+    assert.equal(acquired.branch, expectedBranch);
+    assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.remote`), "origin");
+    assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.merge`), `refs/heads/${expectedBranch}`);
+    assert.throws(() => { git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); });
+  } finally {
+    workspace?.close();
+    await removeTempDir(dir);
+  }
+});
+
