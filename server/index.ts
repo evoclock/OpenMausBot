@@ -2,7 +2,6 @@
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
 import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
-import { requireDriverRunApi } from "./driver-run-api.ts";
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
@@ -10184,10 +10183,6 @@ const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (b
 if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
-    driverFactory: process.env.NODE_ENV === "test" && process.env.OMB_TEST_DRIVER_RUN_API_MODULE
-      ? async (directory) => (await requireDriverRunApi(process.env.OMB_TEST_DRIVER_RUN_API_MODULE!))
-        .openDurableDriver({ directory })
-      : undefined,
     onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
       { id: requestId.slice(0, 36), branch: workspace.branch, directory: workspace.directory }),
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },

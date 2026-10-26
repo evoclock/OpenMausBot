@@ -65,9 +65,10 @@ export async function openProductionCodingRuntime(options: {
   const loadDriver = async () => {
     mkdirSync(driverDir, { recursive: true, mode: 0o700 });
     const directory = realpathSync(driverDir);
+    const testModule = process.env.NODE_ENV === "test" ? process.env.OMB_TEST_DRIVER_RUN_API_MODULE : undefined;
     const driver = options.driverFactory
       ? await options.driverFactory(directory)
-      : await (await requireDriverRunApi()).openDurableDriver({ directory });
+      : await (await requireDriverRunApi(testModule)).openDurableDriver({ directory });
     if (typeof driver.invokeWorker !== "function" || typeof driver.status !== "function" ||
       typeof driver.reconcile !== "function") {
       await driver.close();
