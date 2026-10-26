@@ -164,11 +164,20 @@ export class CodingTreehouseWorkspace {
       else git("switch", "-c", branch);
     }
     if (git("branch", "--show-current") !== branch) throw new Error("Treehouse workspace is not on its request branch");
-    const readUpstream = () => {
-      try { return git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); } catch { return ""; }
+    // Treehouse roots often narrow remote.origin.fetch to main only. In that
+    // case @{upstream} stays unresolved even after a successful push -u, so
+    // treat origin + refs/heads/<branch> branch config as the bound upstream.
+    const upstreamBound = () => {
+      try {
+        const remote = git("config", "--get", `branch.${branch}.remote`);
+        const merge = git("config", "--get", `branch.${branch}.merge`);
+        if (remote === "origin" && merge === `refs/heads/${branch}`) return true;
+      } catch { /* fall through */ }
+      try {
+        return git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") === `origin/${branch}`;
+      } catch { return false; }
     };
-    const expectedUpstream = `origin/${branch}`;
-    if (readUpstream() !== expectedUpstream) {
+    if (!upstreamBound()) {
       if (recordedBase !== null && currentHead !== recordedBase) {
         throw new Error("coding workspace has unpublished commits and cannot be bootstrapped");
       }
@@ -177,7 +186,7 @@ export class CodingTreehouseWorkspace {
       await this.pushWorkspaceBranch({ botId: contract.botId, repository: contract.repository, directory: path,
         branch, baseBranch: contract.ref, requestId });
     }
-    if (readUpstream() !== expectedUpstream) throw new Error("coding workspace upstream does not match its branch");
+    if (!upstreamBound()) throw new Error("coding workspace upstream does not match its branch");
   }
   private gitCommonDir(path: string): string {
     const output = execFileSync(this.gitExecutable, ["rev-parse", "--path-format=absolute", "--git-common-dir"],

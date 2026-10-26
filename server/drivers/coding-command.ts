@@ -70,7 +70,12 @@ export function executeCodingCommand(cwd: string, command: CodingCommand, paths:
       if (["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit"].some((name) =>
         existsSync(resolve(root, hookDir, name)))) throw new Error("Coding command denied: executable commit hook");
       return git(["commit", "-m", message]);
-    case "typecheck": case "lint": case "test":
+    case "test":
+      // Declared host checks (including package test suites) run after commit via
+      // checkCommand. Mid-loop "test" is a cheap tree hygiene check so workers do
+      // not block docs-only runs on a missing vitest install in the lease.
+      return git(["diff", "--check"]);
+    case "typecheck": case "lint":
       return execFileSync("pnpm", [...CHECKS[command]], { cwd: root, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 256 * 1024 }).trim();
     default: throw new Error("Coding command denied: command is outside the envelope");
   }

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { codingGitToolScope, createCodingGitPolicy, createCodingGitRunPolicy, type CodingGitPort, type CodingGitRequest, type RepositoryFacts } from "./coding-git-policy.ts";
@@ -62,6 +62,17 @@ test("production Git host resolves an App installation and creates the checked p
   }, { credentials: { async canWrite() { return true; } }, scopedToken: async () => "fixture-token",
     runGit: async (args, cwd, env) => {
       gitInvocation = { args, cwd, env };
+      if (args.includes("push")) {
+        const askpass = env.GIT_ASKPASS ?? "";
+        assert.ok(askpass.startsWith("/"), "GIT_ASKPASS must be one absolute executable path");
+        assert.equal(askpass.includes("'"), false);
+        assert.equal(/\s/.test(askpass), false);
+        assert.ok(existsSync(askpass), "askpass wrapper must exist while git runs");
+        assert.ok((statSync(askpass).mode & 0o111) !== 0, "askpass wrapper must be executable");
+        assert.equal(execFileSync(askpass, ["Username for 'https://github.com'"], {
+          encoding: "utf8", env: { ...process.env, ...env },
+        }).trim(), "x-access-token");
+      }
       if (args[0] === "branch" && args[1] === "--show-current") return "omb/coding-fixture";
       if (args[0] === "rev-parse" && args[1] === "HEAD") return "a".repeat(40);
       if (args[0] === "remote" && args[1] === "get-url" && args[2] === "origin") return `https://github.com/${repository}.git`;
