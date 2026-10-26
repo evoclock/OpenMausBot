@@ -188,7 +188,23 @@ export class CodingTreehouseWorkspace {
       await this.pushWorkspaceBranch({ botId: contract.botId, repository: contract.repository, directory: path,
         branch, baseBranch: contract.ref, requestId });
     }
-    if (!upstreamBound()) throw new Error("coding workspace upstream does not match its branch");
+    const branchRef = `refs/heads/${branch}`;
+    const trackingRef = `refs/remotes/origin/${branch}`;
+    const fetchRefspecs = (() => {
+      try { return git("config", "--get-all", "remote.origin.fetch").split(/\r?\n/); }
+      catch { return []; }
+    })();
+    const tracksBranch = fetchRefspecs.some((refspec) => {
+      const [source, destination] = refspec.replace(/^\+/, "").split(":", 2);
+      return (source === branchRef && destination === trackingRef) ||
+        (source === "refs/heads/*" && destination === "refs/remotes/origin/*");
+    });
+    if (!tracksBranch) git("config", "--add", "remote.origin.fetch", `+${branchRef}:${trackingRef}`);
+    const upstream = (() => {
+      try { return git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); }
+      catch { return ""; }
+    })();
+    if (upstream !== `origin/${branch}`) throw new Error("coding workspace upstream does not resolve to its remote-tracking branch");
   }
   private gitCommonDir(path: string): string {
     const output = execFileSync(this.gitExecutable, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
