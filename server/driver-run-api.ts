@@ -2,12 +2,26 @@ const moduleName = "@evoclock/pi-agentic-driver/scripts/enforcement/durable_driv
 const protocol = "agentic-driver.run.v1";
 const unavailable = "installed driver-run API is unavailable: expected agentic-driver.run.v1 from @evoclock/pi-agentic-driver";
 
-export async function requireDriverRunApi(): Promise<{
-  openDurableDriver: (options: { directory: string }) => Promise<unknown>;
-}> {
+export interface InstalledWorkerDriver {
+  status(runId: string): Promise<{ state: string; steps: Array<{ id: string; requestKey: string;
+    state: string; receipt?: { reference: string } }> } | null>;
+  resume(runId: string): Promise<{ state: string; steps: Array<{ id: string; requestKey: string; state: string }> }>;
+  reconcile(runId: string, evidence: { stepId: string; requestKey: string; verified: boolean; reference?: string }): Promise<unknown>;
+  invokeWorker(input: { requestId: string; goal: string; signal: AbortSignal;
+    transport: { invoke(): Promise<{ result: import("./outer-runner.ts").InnerLoopResult; verified: true; reference: string }> } }):
+    Promise<{ runId: string; state: string; result?: import("./outer-runner.ts").InnerLoopResult;
+      step?: { receipt?: { reference: string } } }>;
+  close(): Promise<void>;
+}
+
+export interface DriverRunApi {
+  openDurableDriver: (options: { directory: string }) => Promise<InstalledWorkerDriver>;
+}
+
+export async function requireDriverRunApi(moduleSpecifier = moduleName): Promise<DriverRunApi> {
   let loaded: unknown;
   try {
-    loaded = await import(moduleName);
+    loaded = await import(moduleSpecifier);
   } catch {
     throw new Error(unavailable);
   }
@@ -17,6 +31,6 @@ export async function requireDriverRunApi(): Promise<{
     throw new Error(unavailable);
   }
   return { openDurableDriver: (loaded as {
-    openDurableDriver: (options: { directory: string }) => Promise<unknown>;
+    openDurableDriver: (options: { directory: string }) => Promise<InstalledWorkerDriver>;
   }).openDurableDriver };
 }

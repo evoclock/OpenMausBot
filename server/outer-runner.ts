@@ -30,7 +30,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   restartLimit?: number;
   effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
     /** Only read a durably saved result and priced usage; never restart a worker turn. */
-    recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null> };
+    recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null>;
+    confirmInvocation?: (requestId: string, result: InnerLoopResult) => Promise<boolean> };
   contextCompactor?: IterationContextCompactor;
 } = {}) {
   const durablePath = join(dataDir, "coding-runs.sqlite");
@@ -94,7 +95,12 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             (!requiresSpendCap(snapshot.contract.limits) || snapshot.spentUsd + (result?.costUsd ?? Infinity) < snapshot.contract.limits.maxSpendUsd!);
           const checked = withinLimits && receipt && recovery
             ? await reconcilePreparedEffects(recovery.receipts, recovery.host, task.input.id, snapshot.iteration) : null;
-          if (checked?.status === "reconciled" && result && receipt &&
+          let driverConfirmed = true;
+          if (checked?.status === "reconciled" && result && receipt && recovery?.confirmInvocation) {
+            try { driverConfirmed = await recovery.confirmInvocation(receipt.requestId, result); }
+            catch { driverConfirmed = false; }
+          }
+          if (checked?.status === "reconciled" && result && receipt && driverConfirmed &&
             Date.now() - snapshot.startedAt! < snapshot.contract.limits!.maxWallTimeMs) {
             const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
               : result.kind === "progress" ? "waiting" : "blocked";
@@ -107,8 +113,9 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             return;
           }
           transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
-            checked?.evidence ?? [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required`
-              : "interrupted iteration has no effect receipt; owner review required"]);
+            driverConfirmed ? checked?.evidence ?? [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required`
+              : "interrupted iteration has no effect receipt; owner review required"]
+              : ["driver reconciliation failed; owner review required"]);
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
           return;
         }

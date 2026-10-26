@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
@@ -12,6 +13,7 @@ import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
 import { codingWorkspaceBranch, CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
+import { requireDriverRunApi, type InstalledWorkerDriver } from "./driver-run-api.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
@@ -40,6 +42,7 @@ export async function openProductionCodingRuntime(options: {
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   gitHost?: CodingGitHost;
+  driverFactory?: (directory: string) => Promise<InstalledWorkerDriver>;
 }) {
   const { config, dataDir, store, routines } = options;
   const gitHost = options.gitHost ?? createProductionCodingGitHost(config);
@@ -58,6 +61,21 @@ export async function openProductionCodingRuntime(options: {
     throw new Error("coding registrations require one repository and distinct worker and reviewer routes");
   }
   const codingDir = join(dataDir, "coding-run");
+  const driverDir = join(codingDir, "durable-driver");
+  const loadDriver = async () => {
+    mkdirSync(driverDir, { recursive: true, mode: 0o700 });
+    const directory = realpathSync(driverDir);
+    const testModule = process.env.NODE_ENV === "test" ? process.env.OMB_TEST_DRIVER_RUN_API_MODULE : undefined;
+    const driver = options.driverFactory
+      ? await options.driverFactory(directory)
+      : await (await requireDriverRunApi(testModule)).openDurableDriver({ directory });
+    if (typeof driver.invokeWorker !== "function" || typeof driver.status !== "function" ||
+      typeof driver.reconcile !== "function") {
+      await driver.close();
+      throw new Error("installed driver lacks the durable worker transport");
+    }
+    return driver;
+  };
   const workspaceManager = new CodingTreehouseWorkspace({
     repository, root: config.repositoryRoot, dataDir: codingDir,
     async pushWorkspaceBranch({ botId, repository: target, directory, branch, requestId }) {
@@ -222,7 +240,7 @@ export async function openProductionCodingRuntime(options: {
   };
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
     contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
-    routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver });
+    routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver, loadDriver });
   reportPending = runtime.reportPending;
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;
