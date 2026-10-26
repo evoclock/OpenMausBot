@@ -11,7 +11,7 @@ import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
-import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
+import { codingWorkspaceBranch, CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
 import { requireDriverRunApi, type InstalledWorkerDriver } from "./driver-run-api.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
@@ -76,7 +76,32 @@ export async function openProductionCodingRuntime(options: {
     }
     return driver;
   };
-  const workspaceManager = new CodingTreehouseWorkspace({ repository, root: config.repositoryRoot, dataDir: codingDir });
+  const workspaceManager = new CodingTreehouseWorkspace({
+    repository, root: config.repositoryRoot, dataDir: codingDir,
+    async pushWorkspaceBranch({ botId, repository: target, directory, branch, requestId }) {
+      if (target !== repository || branch !== codingWorkspaceBranch(requestId)) {
+        throw new Error("coding workspace branch is not bound to this request");
+      }
+      const matches = (config.gitDestinations?.[botId] ?? []).filter((grant) => grant.repository === target);
+      const [grant] = matches;
+      if (matches.length !== 1 || !grant || grant.credential.kind !== "github-app" || grant.visibility === "public") {
+        throw new Error("coding workspace push requires one private GitHub App destination");
+      }
+      const facts = await gitHost.inspect(target);
+      const remote = await gitHost.port.origin(directory);
+      if (facts.nameWithOwner !== target || facts.visibility !== "private" ||
+        !["WRITE", "MAINTAIN", "ADMIN"].includes(facts.viewerPermission) || !facts.remoteUrls.includes(remote) ||
+        facts.defaultBranch === branch || facts.protectedBranches.includes(branch)) {
+        throw new Error("coding workspace destination is not verified");
+      }
+      if (!(await gitHost.credentials.canWrite(grant.credential, target))) {
+        throw new Error("coding workspace App destination is read-only");
+      }
+      const revision = await gitHost.port.head(directory);
+      await gitHost.port.push(directory, remote, revision, `refs/heads/${branch}`, grant.credential, target,
+        { setUpstream: true });
+    },
+  });
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
   delivery.replay();

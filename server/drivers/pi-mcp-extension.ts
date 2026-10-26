@@ -49,6 +49,11 @@ interface McpImageContent {
 
 type PiToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
+function parseToolInput(input: unknown): unknown {
+  if (typeof input !== "string") return input;
+  try { return JSON.parse(input) as unknown; } catch { return undefined; }
+}
+
 interface PiToolContext {
   ui: {
     confirm(title: string, message: string): Promise<boolean>;
@@ -626,10 +631,14 @@ export default async function (pi: PiExtensionApi): Promise<void> {
       }
     };
     for (const event of ["session_start", "session_switch", "model_select", "before_agent_start", "context"]) pi.on(event, () => { intersect(); });
-    pi.on("tool_call", (event) => !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName) &&
-      (!closed || (event.toolName === "coding_command" ? codingCommandAllowed(event.input)
-        : !["read", "write", "edit"].includes(event.toolName) || codingFileAllowed(process.cwd(), event.input)))
-      ? undefined : { block: true, reason: closed ? `Coding run denied: ${String(event?.toolName ?? "unknown")} is outside the envelope` : "Tool selection excludes this tool" });
+    pi.on("tool_call", (event) => {
+      const input = parseToolInput(event?.input);
+      const permitted = !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName) &&
+        (!closed || (event.toolName === "coding_command" ? codingCommandAllowed(input)
+          : !["read", "write", "edit"].includes(event.toolName) || codingFileAllowed(process.cwd(), input)));
+      return permitted ? undefined : { block: true,
+        reason: closed ? `Coding run denied: ${String(event?.toolName ?? "unknown")} is outside the envelope` : "Tool selection excludes this tool" };
+    });
     // Providers serialize tools before this hook, so the final payload is filtered too.
     pi.on("before_provider_request", (event, context) => {
       let selected = new Set<string>();

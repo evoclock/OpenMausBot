@@ -3,6 +3,7 @@ import { runHostCheck } from "./coding-host-check.ts";
 import { parsePiRoles } from "./pi-readiness.ts";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace, WorkerHost, WorkerRoles } from "./inner-worker-route.ts";
+import { codingWorkspaceBranch } from "./coding-treehouse-workspace.ts";
 
 export interface CodingTurnResult {
   revision: string;
@@ -42,7 +43,8 @@ export function createCodingWorkerHost(options: {
     },
     async acquire(contract, requestId) {
       const workspace = await options.workspace.acquire(contract, requestId);
-      if (workspace.repository !== contract.repository || workspace.branch !== contract.ref) {
+      if (workspace.repository !== contract.repository || workspace.baseBranch !== contract.ref ||
+        workspace.branch !== codingWorkspaceBranch(requestId)) {
         throw new Error("workspace does not match coding contract");
       }
       requests.set(requestId, { botId: contract.botId, repository: contract.repository });

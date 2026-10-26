@@ -60,7 +60,13 @@ test("production Git host resolves an App installation and creates the checked p
     gitAppInstallations: { app: { appId: 1, installationId: 2, privateKeyPath: "/fixture/key.pem",
       repositories: [repository], visibility: "private" } },
   }, { credentials: { async canWrite() { return true; } }, scopedToken: async () => "fixture-token",
-    runGit: async (args, cwd, env) => { gitInvocation = { args, cwd, env }; return ""; },
+    runGit: async (args, cwd, env) => {
+      gitInvocation = { args, cwd, env };
+      if (args[0] === "branch" && args[1] === "--show-current") return "omb/coding-fixture";
+      if (args[0] === "rev-parse" && args[1] === "HEAD") return "a".repeat(40);
+      if (args[0] === "remote" && args[1] === "get-url" && args[2] === "origin") return `https://github.com/${repository}.git`;
+      return "";
+    },
     gitHubRequest: (async (input, init) => {
       const url = new URL(String(input)); calls.push(`${init?.method ?? "GET"}:${url.pathname}`);
       if (url.pathname.endsWith("/pulls/77")) return new Response(JSON.stringify({ number: 77,
@@ -82,6 +88,10 @@ test("production Git host resolves an App installation and creates the checked p
   assert.equal(gitInvocation?.cwd, "/fixture");
   assert.deepEqual(gitInvocation?.args.slice(-3), ["push", `https://github.com/${repository}.git`,
     `${"a".repeat(40)}:refs/heads/bot/review`]);
+  await host.port.push("/fixture", `https://github.com/${repository}.git`, "a".repeat(40),
+    "refs/heads/omb/coding-fixture", { kind: "github-app", reference: "app" }, repository, { setUpstream: true });
+  assert.deepEqual(gitInvocation?.args.slice(-4), ["push", "--set-upstream", "origin",
+    "omb/coding-fixture:refs/heads/omb/coding-fixture"]);
   assert.equal(Object.values(gitInvocation?.env ?? {}).includes("fixture-token"), false);
   assert.equal(typeof host.credentials.canWrite, "function");
   assert.equal(typeof host.port.push, "function");

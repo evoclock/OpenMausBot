@@ -7,6 +7,19 @@ import { DatabaseSync } from "node:sqlite";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 
+type PushWorkspaceBranch = (input: {
+  botId: string;
+  repository: string;
+  directory: string;
+  branch: string;
+  baseBranch: string;
+  requestId: string;
+}) => Promise<void>;
+
+export function codingWorkspaceBranch(requestId: string): string {
+  return `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+}
+
 interface Slot {
   path: string;
   status: string;
@@ -22,7 +35,8 @@ export class CodingTreehouseWorkspace {
     verifyRepository?: (repository: string, root: string) => boolean;
     verifySlot?: (path: string) => boolean;
     readRevision?: (path: string, ref: string) => string;
-    readStatus?: (path: string) => string }) {
+    readStatus?: (path: string) => string;
+    pushWorkspaceBranch?: PushWorkspaceBranch }) {
     this.repository = options.repository;
     this.root = realpathSync(options.root);
     this.executable = options.executable ?? "treehouse";
@@ -33,6 +47,7 @@ export class CodingTreehouseWorkspace {
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim());
     this.readStatus = options.readStatus ?? ((path) => execFileSync(this.gitExecutable, ["status", "--porcelain", "--untracked-files=all"],
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim());
+    this.pushWorkspaceBranch = options.pushWorkspaceBranch;
     this.verifyRepository = options.verifyRepository ?? ((repository, root) => {
       const result = JSON.parse(execFileSync("gh", ["repo", "view", repository,
         "--json", "nameWithOwner,isPrivate,viewerPermission"],
@@ -58,6 +73,7 @@ export class CodingTreehouseWorkspace {
   private readonly verifySlot: (path: string) => boolean;
   private readonly readRevision: (path: string, ref: string) => string;
   private readonly readStatus: (path: string) => string;
+  private readonly pushWorkspaceBranch?: PushWorkspaceBranch;
   close() { this.db.close(); }
   findForRun(runId: string): IsolatedWorkspace | undefined {
     const rows = this.db.prepare("SELECT request_id, contract, path, lease_id, base_sha FROM coding_workspaces WHERE request_id LIKE ? ORDER BY rowid DESC")
@@ -66,10 +82,15 @@ export class CodingTreehouseWorkspace {
     if (!row?.path || !row.lease_id || !row.base_sha) return undefined;
     const contract = JSON.parse(row.contract) as RunContractInput;
     if (contract.id !== runId || contract.repository !== this.repository) return undefined;
+    const branch = codingWorkspaceBranch(row.request_id);
     try {
-      if (realpathSync(row.path) !== row.path || !this.verifySlot(row.path)) return undefined;
+      const git = (...args: string[]) => execFileSync(this.gitExecutable, args,
+        { cwd: row.path!, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      if (realpathSync(row.path) !== row.path || !this.verifySlot(row.path) ||
+        git("branch", "--show-current") !== branch ||
+        git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") !== `origin/${branch}`) return undefined;
     } catch { return undefined; }
-    return { repository: contract.repository, directory: row.path, branch: contract.ref,
+    return { repository: contract.repository, directory: row.path, branch, baseBranch: contract.ref,
       base: row.base_sha, leaseId: row.lease_id };
   }
   private call(...args: string[]): string {
@@ -85,7 +106,8 @@ export class CodingTreehouseWorkspace {
     }
     if (!this.verifyRepository(this.repository, this.root)) throw new Error("private coding repository is not verified");
     const identity = JSON.stringify(contract);
-    const holder = `omb-coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+    const branch = codingWorkspaceBranch(requestId);
+    const holder = `omb-coding-${branch.slice("omb/coding-".length)}`;
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare("INSERT OR IGNORE INTO coding_workspaces (request_id, contract) VALUES (?, ?)").run(requestId, identity);
@@ -97,7 +119,6 @@ export class CodingTreehouseWorkspace {
       let slot: Slot | undefined = matching[0];
       if (!slot && row.lease_id) throw new Error("recorded workspace lease was lost");
       if (!slot) {
-        const branch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
         const acquired = JSON.parse(this.call("get", "--lease", "--base", contract.ref, "--branch", branch,
           "--lease-holder", holder, "--json")) as { path: string; lease_id: string };
         slot = this.slots().find((candidate) => candidate.path === acquired.path &&
@@ -111,19 +132,52 @@ export class CodingTreehouseWorkspace {
         throw new Error("workspace lease changed for the same request");
       }
       const currentHead = this.readRevision(slot.path, "HEAD");
-      if (!row.base_sha && (this.readStatus(slot.path) || currentHead !== this.readRevision(slot.path, contract.ref))) {
+      const currentStatus = this.readStatus(slot.path);
+      if (!row.base_sha && (currentStatus || currentHead !== this.readRevision(slot.path, contract.ref))) {
         throw new Error("workspace base cannot be recovered after uncertain work");
       }
       const base = row.base_sha ?? currentHead;
+      await this.ensureWorkspaceBranch(slot.path, contract, requestId, branch, currentHead, row.base_sha, currentStatus);
       this.db.prepare("UPDATE coding_workspaces SET path = ?, lease_id = ?, base_sha = ? WHERE request_id = ?")
         .run(slot.path, slot.lease_id, base, requestId);
       this.db.exec("COMMIT");
-      return { repository: contract.repository, directory: slot.path, branch: contract.ref,
+      return { repository: contract.repository, directory: slot.path, branch, baseBranch: contract.ref,
         base, leaseId: slot.lease_id };
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+  private async ensureWorkspaceBranch(path: string, contract: RunContractInput, requestId: string, branch: string,
+    currentHead: string, recordedBase: string | null, currentStatus: string): Promise<void> {
+    const git = (...args: string[]) => execFileSync(this.gitExecutable, args,
+      { cwd: path, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const currentBranch = git("branch", "--show-current");
+    if (currentBranch !== branch) {
+      let branchHead = "";
+      try { branchHead = git("rev-parse", "--verify", `refs/heads/${branch}`); } catch {}
+      const baseHead = recordedBase ?? this.readRevision(path, contract.ref);
+      const canCreate = (currentBranch === "" || currentBranch === contract.ref) &&
+        (branchHead ? branchHead === currentHead : currentHead === baseHead && (recordedBase !== null || !currentStatus));
+      if (!canCreate) throw new Error("Treehouse workspace is not on its request branch");
+      if (branchHead) git("switch", branch);
+      else git("switch", "-c", branch);
+    }
+    if (git("branch", "--show-current") !== branch) throw new Error("Treehouse workspace is not on its request branch");
+    const readUpstream = () => {
+      try { return git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); } catch { return ""; }
+    };
+    const expectedUpstream = `origin/${branch}`;
+    if (readUpstream() !== expectedUpstream) {
+      if (recordedBase !== null && currentHead !== recordedBase) {
+        throw new Error("coding workspace has unpublished commits and cannot be bootstrapped");
+      }
+      if (!contract.allowedEffects.includes("push")) throw new Error("coding workspace upstream requires push permission");
+      if (!this.pushWorkspaceBranch) throw new Error("coding workspace branch has no approved upstream publisher");
+      await this.pushWorkspaceBranch({ botId: contract.botId, repository: contract.repository, directory: path,
+        branch, baseBranch: contract.ref, requestId });
+    }
+    if (readUpstream() !== expectedUpstream) throw new Error("coding workspace upstream does not match its branch");
   }
   private gitCommonDir(path: string): string {
     const output = execFileSync(this.gitExecutable, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
