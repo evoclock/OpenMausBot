@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { createHmac } from "node:crypto";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { test } from "vitest";
+import { expect, test } from "vitest";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { CodingEffectReceipts } from "./coding-effect-receipts.ts";
 import type { WorkerHost } from "./inner-worker-route.ts";
@@ -10,7 +10,7 @@ import { webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
-  successCriteria: ["pstack verifies the goal"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+  successCriteria: ["pstack verifies the goal"], checkCommand: ["node", "-e", "process.exit(0)"], allowedEffects: ["edit"], authorisedExternalWrites: [],
   limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
 
@@ -29,6 +29,7 @@ function host(calls: string[]): WorkerHost {
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
+    async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
 
@@ -55,8 +56,9 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     assert.equal(await settled(runtime, scheduled.id), "done");
     const receipts = new CodingEffectReceipts(join(dataDir, "effect-receipts.sqlite"));
     try {
-      assert.deepEqual(receipts.savedResult(scheduled.id, 1, `${scheduled.id}:1`),
-        { kind: "verified", evidence: ["work", "review", "verified"], costUsd: 0 });
+      expect(receipts.savedResult(scheduled.id, 1, `${scheduled.id}:1`)).toMatchObject({
+        kind: "verified", evidence: ["work", "review", "verified"], costUsd: 0, hostCheck: { exitCode: 0 },
+      });
     } finally { receipts.close(); }
     assert.equal((await runtime.scheduled(run)).status, "existing");
     const nextOccurrence = await runtime.scheduled({ ...run, id: "next-occurrence", scheduledFor: 200 });
@@ -72,9 +74,9 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
     if (!("id" in received)) throw new Error("missing webhook id");
     assert.equal(await settled(runtime, received.id), "done");
     assert.equal((await runtime.github("registration", input)).status, "existing");
-    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
-      "development-role", "review-role", "pstack-check",
-      "development-role", "review-role", "pstack-check"]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check",
+      "development-role", "review-role", "pstack-check", "host-check",
+      "development-role", "review-role", "pstack-check", "host-check"]);
     await assert.rejects(runtime.github("registration", { ...input, raw: Buffer.from("changed") }), /authentication/);
   } finally { await runtime.close(); }
 });
@@ -106,6 +108,22 @@ test("the outer invocation hands one opaque goal to the durable transport", asyn
   } finally { await runtime.close(); }
 });
 
+test("failed host check blocks completion and persists its record", async () => {
+  const calls: string[] = [];
+  const workerHost = host(calls);
+  workerHost.runHostCheck = async (_workspace, _command, revision) => ({ command: ["node", "-e", "process.exit(1)"], exitCode: 1,
+    commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "failed" });
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost,
+    routines: new Map([["routine", template]]), github: new Map() });
+  try {
+    const accepted = await runtime.scheduled({ id: "failed-check", routineId: "routine", botId: "fixture",
+      scheduledFor: 100, triggerSource: "schedule", status: "running" });
+    if (!("id" in accepted)) throw new Error("missing run id");
+    expect(await settled(runtime, accepted.id)).toBe("blocked");
+    expect(runtime.get(accepted.id)).toMatchObject({ state: "blocked", hostCheck: { exitCode: 1, outputTail: "failed" } });
+  } finally { await runtime.close(); }
+});
+
 test("concurrent re-fire does not start two workers for one occurrence", async () => {
   const calls: string[] = [];
   const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
@@ -119,7 +137,7 @@ test("concurrent re-fire does not start two workers for one occurrence", async (
     assert.ok(ids[0]);
     assert.equal(ids[0], ids[1]);
     assert.equal(await settled(runtime, ids[0]), "done");
-    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check"]);
   } finally { await runtime.close(); }
 });
 
@@ -144,7 +162,7 @@ test("verified webhook delivery runs once and survives restart replay", async ()
   const replay = await openCodingRunRuntime(options);
   try {
     assert.equal((await replay.webhook(run)).status, "existing");
-    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check"]);
   } finally { await replay.close(); }
 });
 
@@ -170,7 +188,7 @@ test("restart replay retains both trigger identities without starting another wo
   try {
     assert.equal((await replay.scheduled(occurrence)).status, "existing");
     assert.equal((await replay.github("registration", event)).status, "existing");
-    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check",
-      "development-role", "review-role", "pstack-check"]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check",
+      "development-role", "review-role", "pstack-check", "host-check"]);
   } finally { await replay.close(); }
 });

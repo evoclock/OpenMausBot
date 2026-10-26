@@ -5,7 +5,8 @@ import { z } from "zod";
 
 export const codingRunLimitsSchema = z.object({
   maxWallTimeMs: z.number().int().positive().max(2_147_483_647),
-  maxSpendUsd: z.number().finite().positive(),
+  maxSpendUsd: z.number().finite().positive().optional(),
+  modelAccess: z.enum(["subscription", "local", "api"]).optional(),
   allowedFallbackModels: z.array(z.object({ instanceId: z.string().min(1), model: z.string().min(1) }).strict()).default([]),
   allowedFallbackDataRoutes: z.array(z.string().min(1)).default([]),
 }).strict();
@@ -16,6 +17,7 @@ export const runContractSchema = z.object({
   repository: z.string().min(1),
   ref: z.string().min(1),
   successCriteria: z.array(z.string().min(1)).min(1),
+  checkCommand: z.array(z.string().min(1)).min(1).optional(),
   repositoryClass: z.enum(["agent-private", "external"]),
   allowedEffects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])),
   maxIterations: z.number().int().positive().default(8),
@@ -37,6 +39,7 @@ export type RunContract = z.infer<typeof runContractSchema>;
 export type RunContractInput = z.input<typeof runContractSchema>;
 export const runStateSchema = z.enum(["queued", "running", "waiting", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
+export type HostCheckRecord = { command: string[]; exitCode: number | null; commitSha: string; startedAt: number; durationMs: number; timedOut: boolean; outputTail: string };
 export const runSnapshotSchema = z.object({
   contract: runContractSchema,
   state: runStateSchema,
@@ -46,7 +49,9 @@ export const runSnapshotSchema = z.object({
   elapsedMs: z.number().int().nonnegative().default(0),
   spentUsd: z.number().finite().nonnegative().default(0),
   spendUncertain: z.boolean().default(false),
+  modelsUsed: z.array(z.object({ iteration: z.number().int().positive(), instanceId: z.string().min(1), model: z.string().min(1) }).strict()).optional(),
   evidence: z.array(z.string()),
+  hostCheck: z.object({ command: z.array(z.string()), exitCode: z.number().int().nullable(), commitSha: z.string(), startedAt: z.number().int(), durationMs: z.number().int().nonnegative(), timedOut: z.boolean(), outputTail: z.string() }).strict().optional(),
 }).strict();
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 
@@ -63,7 +68,8 @@ export function advanceRun(current: RunSnapshot, next: RunState, at: number, evi
   const snapshot = runSnapshotSchema.parse(current);
   if (!edges[snapshot.state].includes(next)) throw new Error("invalid run transition");
   if (!Number.isSafeInteger(at) || at <= snapshot.updatedAt) throw new Error("run time must advance");
-  if (next === "done" && !evidence.some((item) => item.trim())) throw new Error("completion requires verification evidence");
+  if (next === "done" && (!evidence.some((item) => item.trim()) || !snapshot.contract.checkCommand ||
+    snapshot.hostCheck?.exitCode !== 0 || !snapshot.hostCheck.commitSha)) throw new Error("completion requires a passing host check and verification evidence");
   const iteration = snapshot.iteration + (next === "running" ? 1 : 0);
   return runSnapshotSchema.parse({ ...snapshot, state: next, iteration, updatedAt: at,
     elapsedMs: snapshot.startedAt ? Math.max(snapshot.elapsedMs, at - snapshot.startedAt) : snapshot.elapsedMs,
@@ -194,7 +200,8 @@ export class RunContractStore {
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   finishIteration(id: string, sequence: number, requestId: string, nextState: RunState,
-    at: number, evidence: string[], costUsd: number | null = null): RunSnapshot {
+    at: number, evidence: string[], costUsd: number | null = null,
+    modelsUsed: Array<{ instanceId: string; model: string }> = [], hostCheck?: RunSnapshot["hostCheck"]): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const current = this.get(id);
@@ -202,9 +209,12 @@ export class RunContractStore {
       if (!current || current.state !== "running" || current.iteration !== sequence ||
         step?.status !== "prepared" || step.requestId !== requestId) throw new Error("iteration receipt does not match running attempt");
       if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd < 0)) throw new Error("invalid run spend");
-      const advanced = advanceRun(current, nextState, at, evidence);
+      const checkedCurrent = hostCheck ? runSnapshotSchema.parse({ ...current, hostCheck }) : current;
+      const advanced = advanceRun(checkedCurrent, nextState, at, evidence);
       const next = runSnapshotSchema.parse({ ...advanced, spentUsd: current.spentUsd + (costUsd ?? 0),
-        spendUncertain: current.spendUncertain || costUsd === null });
+        modelsUsed: [...(current.modelsUsed ?? []), ...modelsUsed.map((selection) => ({ ...selection, iteration: sequence }))],
+        spendUncertain: current.spendUncertain || (current.contract.limits?.modelAccess !== "local" &&
+          current.contract.limits?.modelAccess !== "subscription" && costUsd === null) });
       this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
         .run(JSON.stringify(next), id);
       this.db.prepare("UPDATE coding_run_steps SET status = 'finished', result = ? WHERE run_id = ? AND sequence = ?")
@@ -216,13 +226,13 @@ export class RunContractStore {
       return next;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  transition(id: string, next: RunState, at: number, evidence: string[] = []): RunSnapshot {
+  transition(id: string, next: RunState, at: number, evidence: string[] = [], hostCheck?: RunSnapshot["hostCheck"]): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.db.prepare("SELECT version, snapshot FROM coding_runs WHERE id = ?").get(id) as { version: number; snapshot: string } | undefined;
       if (!row) throw new Error("run not found");
       const current = runSnapshotSchema.parse(JSON.parse(row.snapshot));
-      const advanced = advanceRun(current, next, at, evidence);
+      const advanced = advanceRun(hostCheck ? runSnapshotSchema.parse({ ...current, hostCheck }) : current, next, at, evidence);
       const snapshot = next === "blocked" && current.state === "running"
         ? runSnapshotSchema.parse({ ...advanced, spendUncertain: true }) : advanced;
       this.db.prepare("UPDATE coding_runs SET version = ?, snapshot = ? WHERE id = ? AND version = ?")

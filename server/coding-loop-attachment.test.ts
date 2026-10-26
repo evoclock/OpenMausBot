@@ -10,7 +10,7 @@ import type { TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", repositoryClass: "agent-private",
-  successCriteria: ["pstack verifies the goal"], allowedEffects: ["edit"], authorisedExternalWrites: [],
+  successCriteria: ["pstack verifies the goal"], checkCommand: ["node", "-e", "process.exit(0)"], allowedEffects: ["edit"], authorisedExternalWrites: [],
   limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
 
@@ -34,6 +34,7 @@ function host(calls: string[]): WorkerHost {
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
+    async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
 

@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
+import { appendFileSync, copyFileSync, lstatSync, mkdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
@@ -59,6 +59,19 @@ export class CodingTreehouseWorkspace {
   private readonly readRevision: (path: string, ref: string) => string;
   private readonly readStatus: (path: string) => string;
   close() { this.db.close(); }
+  findForRun(runId: string): IsolatedWorkspace | undefined {
+    const rows = this.db.prepare("SELECT request_id, contract, path, lease_id, base_sha FROM coding_workspaces WHERE request_id LIKE ? ORDER BY rowid DESC")
+      .all(`${runId}:%`) as Array<{ request_id: string; contract: string; path: string | null; lease_id: string | null; base_sha: string | null }>;
+    const row = rows.find((candidate) => candidate.request_id.startsWith(`${runId}:`) && candidate.path && candidate.lease_id && candidate.base_sha);
+    if (!row?.path || !row.lease_id || !row.base_sha) return undefined;
+    const contract = JSON.parse(row.contract) as RunContractInput;
+    if (contract.id !== runId || contract.repository !== this.repository) return undefined;
+    try {
+      if (realpathSync(row.path) !== row.path || !this.verifySlot(row.path)) return undefined;
+    } catch { return undefined; }
+    return { repository: contract.repository, directory: row.path, branch: contract.ref,
+      base: row.base_sha, leaseId: row.lease_id };
+  }
   private call(...args: string[]): string {
     return execFileSync(this.executable, args, { cwd: this.root, encoding: "utf8", timeout: 30_000,
       maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
@@ -84,7 +97,8 @@ export class CodingTreehouseWorkspace {
       let slot: Slot | undefined = matching[0];
       if (!slot && row.lease_id) throw new Error("recorded workspace lease was lost");
       if (!slot) {
-        const acquired = JSON.parse(this.call("get", "--lease", "--base", contract.ref,
+        const branch = `omb/coding-${createHash("sha256").update(requestId).digest("hex").slice(0, 24)}`;
+        const acquired = JSON.parse(this.call("get", "--lease", "--base", contract.ref, "--branch", branch,
           "--lease-holder", holder, "--json")) as { path: string; lease_id: string };
         slot = this.slots().find((candidate) => candidate.path === acquired.path &&
           candidate.lease_id === acquired.lease_id && candidate.lease_holder === holder);
@@ -156,6 +170,26 @@ export class CodingTreehouseWorkspace {
       appendFileSync(join(dir, "INDEX.md"), `- ${activeBranch} | ${bundle} | ${slot.path}\n`);
     }
     if (git("status", "--porcelain", "--untracked-files=all")) throw new Error("workspace changed during reconciliation");
+    const ignored = execFileSync(this.gitExecutable, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+      { cwd: slot.path, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }).toString("utf8").split("\0").filter(Boolean);
+    if (ignored.length > 10_000) throw new Error("Too many ignored files to salvage; lease retained");
+    if (ignored.length) {
+      const target = join(this.salvageDir, `ignored-${suffix}-${randomUUID()}`);
+      let bytes = 0;
+      for (const name of ignored) {
+        if (name.startsWith("/") || name.split("/").includes("..")) throw new Error("Unsafe ignored path; lease retained");
+        const source = join(slot.path, name);
+        const stat = lstatSync(source);
+        bytes += stat.size;
+        if (bytes > 1024 * 1024 * 1024) throw new Error("Ignored files exceed salvage budget; lease retained");
+        const output = join(target, name);
+        mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
+        if (stat.isSymbolicLink()) writeFileSync(`${output}.symlink.txt`, readlinkSync(source), { flag: "wx", mode: 0o600 });
+        else if (stat.isFile()) copyFileSync(source, output);
+        else throw new Error("Unsupported ignored file; lease retained");
+      }
+      appendFileSync(join(this.salvageDir, "INDEX.md"), `- ignored files | ${target} | ${slot.path}\n`);
+    }
     this.call("return", slot.path, "--if-lease-id", leaseId, "--if-lease-holder", slot.lease_holder);
     this.db.prepare("DELETE FROM coding_workspaces WHERE path = ? AND lease_id = ?").run(slot.path, leaseId);
   }

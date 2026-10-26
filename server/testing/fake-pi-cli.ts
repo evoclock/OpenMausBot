@@ -24,12 +24,12 @@ const argv = process.argv.slice(2);
 
 if (process.env.FAKE_PI_SCOPE_ACK === "1" && argv[0] === "--mode" && process.env.OMB_MCP_CONFIG) {
   const config = JSON.parse(readFileSync(process.env.OMB_MCP_CONFIG, "utf8")) as {
-    scopeReadyPath?: string; toolScope?: { allow?: unknown };
+    scopeReadyPath?: string; toolScope?: { allow?: unknown }; codingRun?: { id: string };
   };
   if (config.scopeReadyPath) {
     const allowed = config.toolScope?.allow;
-    const ok = Array.isArray(allowed) && allowed.length === 3 &&
-      ["native:read", "native:write", "native:edit"].every((name) => allowed.includes(name));
+    const ok = Array.isArray(allowed) && allowed.length === (config.codingRun ? 4 : 3) &&
+      ["native:read", "native:write", "native:edit", ...(config.codingRun ? ["native:coding_command"] : [])].every((name) => allowed.includes(name));
     writeFileSync(config.scopeReadyPath, JSON.stringify({ ok, toolScope: config.toolScope }), { mode: 0o600 });
   }
 }
@@ -360,6 +360,12 @@ function handle(cmd: any) {
       send({ type: "response", command: "prompt", success: true });
       if (mode === "tooluse") streamToolTurn();
       else if (mode === "permission") streamPermissionTurn();
+      else if (mode === "coding-hold") { send({ type: "agent_start" }); send({ type: "turn_start" }); }
+      else if (mode === "coding-denied") {
+        send({ type: "agent_start" }); send({ type: "turn_start" });
+        send({ type: "tool_execution_end", toolCallId: "forbidden", toolName: "bash", isError: true,
+          result: { content: [{ type: "text", text: "Coding run denied: bash is outside the envelope" }] } });
+      }
       else if (mode === "question-select") streamQuestionSelectTurn();
       else if (mode === "question-input") streamQuestionInputTurn();
       else if (mode === "interleave") streamInterleaveTurn();

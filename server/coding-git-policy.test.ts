@@ -8,6 +8,7 @@ import { codingTurnToolScope } from "./coding-production.ts";
 import { allowsTool } from "../shared/tool-scope.ts";
 import { codingGitDestinationSchema, type CodingGitCredential, type CodingGitDestination } from "./coding-run-config.ts";
 import { RunContractStore } from "./run-contract.ts";
+import { createProductionCodingGitHost } from "./coding-git-host.ts";
 
 const repository = "evoclock/fixture";
 const author = { name: "evoclock", email: "52983349+evoclock@users.noreply.github.com" };
@@ -29,7 +30,7 @@ function harness() {
   const actions: string[] = [];
   const prOptions: Array<{ draft: true; prNumber?: number }> = [];
   const port: CodingGitPort = {
-    async origin() { return remote; }, async branch() { return branch; },
+    async origin() { return remote; }, async branch() { return branch; }, async createBranch() {},
     async head() { return "a".repeat(40); }, async outgoingAuthors() { return authors; },
     async push(_workspace, _remote, _revision, ref) { actions.push(`push:${ref}`); },
     async pullRequest(action, _repo, _base, _head, _credential, options) { actions.push(action); prOptions.push(options); },
@@ -51,6 +52,42 @@ async function denied(h: ReturnType<typeof harness>, input: CodingGitRequest, pa
   assert.deepEqual(h.actions, before);
 }
 
+test("production Git host resolves an App installation and creates the checked port", async () => {
+  const calls: string[] = [];
+  let gitInvocation: { args: string[]; cwd: string; env: NodeJS.ProcessEnv } | undefined;
+  const host = createProductionCodingGitHost({ repositoryRoot: "fixture", registrations: [],
+    gitDestinations: { worker: [{ ...grant, credential: { kind: "github-app", reference: "app" } }] },
+    gitAppInstallations: { app: { appId: 1, installationId: 2, privateKeyPath: "/fixture/key.pem",
+      repositories: [repository], visibility: "private" } },
+  }, { credentials: { async canWrite() { return true; } }, scopedToken: async () => "fixture-token",
+    runGit: async (args, cwd, env) => { gitInvocation = { args, cwd, env }; return ""; },
+    gitHubRequest: (async (input, init) => {
+      const url = new URL(String(input)); calls.push(`${init?.method ?? "GET"}:${url.pathname}`);
+      if (url.pathname.endsWith("/pulls/77")) return new Response(JSON.stringify({ number: 77,
+        base: { ref: "trunk" }, head: { ref: "bot/review" }, draft: true }), { status: 200 });
+      if (url.pathname.endsWith("/ready_for_review")) return new Response(null, { status: 204 });
+      return new Response(JSON.stringify(url.pathname.endsWith("/branches")
+        ? [{ name: "trunk", protected: true }] : { full_name: repository, private: true,
+          default_branch: "trunk", permissions: { push: false } }), { status: 200 });
+    }) as typeof fetch });
+  const facts = await host.inspect(repository);
+  assert.equal(facts.viewerPermission, "WRITE");
+  assert.deepEqual(facts.protectedBranches, ["trunk"]);
+  assert.deepEqual(calls, [`GET:/repos/${repository}`, `GET:/repos/${repository}/branches`]);
+  await host.port.pullRequest("pr-ready", repository, "trunk", "bot/review",
+    { kind: "github-app", reference: "app" }, { draft: true, prNumber: 77 });
+  assert.deepEqual(calls.slice(-2), [`GET:/repos/${repository}/pulls/77`, `POST:/repos/${repository}/pulls/77/ready_for_review`]);
+  await host.port.push("/fixture", `https://github.com/${repository}.git`, "a".repeat(40),
+    "refs/heads/bot/review", { kind: "github-app", reference: "app" }, repository);
+  assert.equal(gitInvocation?.cwd, "/fixture");
+  assert.deepEqual(gitInvocation?.args.slice(-3), ["push", `https://github.com/${repository}.git`,
+    `${"a".repeat(40)}:refs/heads/bot/review`]);
+  assert.equal(Object.values(gitInvocation?.env ?? {}).includes("fixture-token"), false);
+  assert.equal(typeof host.credentials.canWrite, "function");
+  assert.equal(typeof host.port.push, "function");
+  assert.equal(typeof host.port.pullRequest, "function");
+});
+
 test("configured mixed-case evoclock repositories are allowed without widening the owner", async () => {
   const h = harness();
   const realName = "evoclock/OpenMausBot";
@@ -68,7 +105,7 @@ test("credential selection is explicit, unambiguous and names no token value", (
     credential: { kind: "github-app", reference: "installation" } }).success, true);
 });
 
-test("coding bots cannot reach shell or MCP executors and inherit stricter bot selection", () => {
+test("coding bots receive only closed worktree tools, not shell or MCP executors", () => {
   const scope = codingGitToolScope(undefined);
   for (const name of ["bash", "exec", "codemode", "tool_search"])
     assert.equal(allowsTool(scope, { kind: "native", name }), false);
@@ -76,10 +113,11 @@ test("coding bots cannot reach shell or MCP executors and inherit stricter bot s
   assert.equal(allowsTool(scope, { kind: "native", name: "edit" }), true);
   const narrower = codingGitToolScope({ allow: ["native:read"] });
   assert.equal(allowsTool(narrower, { kind: "native", name: "read" }), true);
-  assert.equal(allowsTool(narrower, { kind: "native", name: "edit" }), false);
+  assert.equal(allowsTool(narrower, { kind: "native", name: "edit" }), true);
+  assert.equal(allowsTool(narrower, { kind: "native", name: "coding_command" }), true);
   const config = { repositoryRoot: "fixture", registrations: [{ routineId: "routine", workerBotId: "worker",
     reviewerBotId: "reviewer", developmentRole: "dev", reviewRole: "review", repository,
-    ref: "trunk", successCriteria: ["verified"] }] };
+    ref: "trunk", successCriteria: ["verified"], checkCommand: ["node", "-e", "process.exit(0)"] }] };
   assert.equal(codingTurnToolScope(config, "other", undefined), undefined);
   assert.equal(allowsTool(codingTurnToolScope(config, "worker", undefined), { kind: "native", name: "bash" }), false);
   assert.equal(allowsTool(codingTurnToolScope(config, "reviewer", undefined), { kind: "native", name: "bash" }), false);
@@ -185,10 +223,11 @@ test("a private merge eligibility reason is stored on the verified coding run", 
   const store = new RunContractStore(path);
   const runId = "11111111-1111-4111-8111-111111111111";
   store.create({ id: runId, botId: "worker", repository, ref: "bot/review",
-    successCriteria: ["verified"], repositoryClass: "agent-private", allowedEffects: ["edit"],
+    successCriteria: ["verified"], checkCommand: ["node", "-e", "process.exit(0)"], repositoryClass: "agent-private", allowedEffects: ["edit"],
     authorisedExternalWrites: [] }, 1);
   store.transition(runId, "running", 2);
-  store.transition(runId, "done", 3, ["review verified"]);
+  store.transition(runId, "done", 3, ["review verified"], { command: ["node", "-e", "process.exit(0)"], exitCode: 0,
+    commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   const h = harness();
   const { recordOwnerMerge: _unused, ...port } = h.port;
   const policy = createCodingGitRunPolicy({ repositoryRoot: "fixture", registrations: [],
@@ -232,7 +271,7 @@ test("checked push reaches a real local bare repository with a canonical ref", a
   git(work, "-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--allow-empty", "-m", "fixture change");
   const port: CodingGitPort = {
     async origin(cwd) { return git(cwd, "remote", "get-url", "origin"); },
-    async branch(cwd) { return git(cwd, "branch", "--show-current"); },
+    async branch(cwd) { return git(cwd, "branch", "--show-current"); }, async createBranch() {},
     async head(cwd) { return git(cwd, "rev-parse", "HEAD"); },
     async outgoingAuthors(cwd) { return git(cwd, "log", "trunk..HEAD", "--format=%an%x00%ae").split("\n")
       .map((line) => { const [name, email] = line.split("\0"); return { name, email }; }); },

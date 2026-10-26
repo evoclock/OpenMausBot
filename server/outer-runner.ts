@@ -9,18 +9,21 @@ import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run
 import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
 import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 
 export type InnerLoopResult =
-  | { kind: "progress"; evidence: string[]; costUsd?: number | null }
-  | { kind: "verified"; evidence: string[]; costUsd?: number | null }
-  | { kind: "blocked"; evidence: string[]; costUsd?: number | null };
+  | { kind: "progress"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
+  | { kind: "verified"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> }
+  | { kind: "blocked"; evidence: string[]; hostCheck?: import("./run-contract.ts").HostCheckRecord; costUsd?: number | null; modelsUsed?: Array<{ instanceId: string; model: string }> };
 
 export interface InnerLoop {
   invoke(contract: RunContractInput, iteration: number, requestId: string, signal: AbortSignal,
-    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
+    remainingUsd?: number, context?: { iteration: number; previous?: IterationEntry; history?: IterationEntry[]; compactor?: IterationContextCompactor }): Promise<InnerLoopResult>;
 }
 
 const terminalStates = new Set(["done", "failed", "cancelled", "blocked"]);
+const requiresSpendCap = (limits: RunSnapshot["contract"]["limits"]) =>
+  limits?.modelAccess !== "subscription" && limits?.modelAccess !== "local";
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
@@ -85,10 +88,11 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             try { result = await recovery.recoverResult(snapshot.contract, snapshot.iteration, receipt.requestId); }
             catch { result = null; }
           }
-          const knownCost = result?.costUsd != null && Number.isFinite(result.costUsd) && result.costUsd >= 0;
+          const knownCost = !requiresSpendCap(snapshot.contract.limits) ||
+            (result?.costUsd != null && Number.isFinite(result.costUsd) && result.costUsd >= 0);
           const withinLimits = snapshot.contract.limits && snapshot.startedAt && !snapshot.spendUncertain && knownCost &&
             Date.now() - snapshot.startedAt < snapshot.contract.limits.maxWallTimeMs &&
-            snapshot.spentUsd + (result?.costUsd ?? Infinity) < snapshot.contract.limits.maxSpendUsd;
+            (!requiresSpendCap(snapshot.contract.limits) || snapshot.spentUsd + (result?.costUsd ?? Infinity) < snapshot.contract.limits.maxSpendUsd!);
           const checked = withinLimits && receipt && recovery
             ? await reconcilePreparedEffects(recovery.receipts, recovery.host, task.input.id, snapshot.iteration) : null;
           let driverConfirmed = true;
@@ -101,7 +105,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
               : result.kind === "progress" ? "waiting" : "blocked";
             const finished = store.finishIteration(task.input.id, snapshot.iteration, receipt.requestId, state,
-              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd!);
+              Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd ?? null, result.modelsUsed, result.hostCheck);
             if (terminalStates.has(finished.state)) reportPending();
             await runtime.commit(() => state === "waiting" ? { status: "running", checkpoint: {
               phase: "iterate", sequence: snapshot.iteration } } :
@@ -136,11 +140,12 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         }
         const limits = snapshot.contract.limits;
         const elapsed = snapshot.startedAt ? Math.max(snapshot.elapsedMs, Date.now() - snapshot.startedAt) : snapshot.elapsedMs;
-        const reason = !limits ? "coding run refused: configure this bot's wall-clock and spend ceilings"
+        const reason = !limits ? "coding run refused: configure this bot's wall-clock ceiling"
+          : requiresSpendCap(limits) && !limits.maxSpendUsd ? "coding run refused: API or unknown billing requires a spend ceiling"
           : !snapshot.startedAt ? "coding run start time is uncertain; owner review required"
             : snapshot.spendUncertain ? "coding run spend is uncertain; owner review required"
             : elapsed >= limits.maxWallTimeMs ? `wall-clock ceiling reached (${limits.maxWallTimeMs} ms)`
-              : snapshot.spentUsd >= limits.maxSpendUsd ? `spend ceiling reached (${limits.maxSpendUsd} USD)`
+              : requiresSpendCap(limits) && snapshot.spentUsd >= limits.maxSpendUsd! ? `spend ceiling reached (${limits.maxSpendUsd} USD)`
                 : snapshot.iteration >= snapshot.contract.maxIterations ? "iteration ceiling reached; owner review required" : null;
         if (reason) {
           transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1), [reason]);
@@ -170,17 +175,20 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         const timer = setTimeout(() => deadline.abort(), remaining);
         try {
           const result = await inner.invoke(current.contract, current.iteration, requestId,
-            AbortSignal.any([runtime.signal, deadline.signal]), current.contract.limits!.maxSpendUsd - current.spentUsd,
-            { iteration: current.iteration, previous, compactor: options.contextCompactor });
-          const at = Math.max(Date.now(), current.updatedAt + 1);
+            AbortSignal.any([runtime.signal, deadline.signal]), requiresSpendCap(current.contract.limits)
+              ? current.contract.limits!.maxSpendUsd! - current.spentUsd : undefined,
+            { iteration: current.iteration, previous, history: ledger.entries(task.input.id),
+              compactor: options.contextCompactor ?? createIterationContextCompactor() });
+          const at = Math.max(Date.now(), current.updatedAt + 1,
+            deadline.signal.aborted ? current.startedAt! + current.contract.limits!.maxWallTimeMs : 0);
           const costUsd = result.costUsd ?? null;
           const reasons = [
             Math.max(current.elapsedMs, at - current.startedAt!) >= current.contract.limits!.maxWallTimeMs
               ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)` : null,
-            costUsd === null || !Number.isFinite(costUsd) || costUsd < 0
+            requiresSpendCap(current.contract.limits) && (costUsd === null || !Number.isFinite(costUsd) || costUsd < 0)
               ? "coding run spend is uncertain; owner review required" : null,
             costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 &&
-              current.spentUsd + costUsd >= current.contract.limits!.maxSpendUsd
+              requiresSpendCap(current.contract.limits) && current.spentUsd + costUsd >= current.contract.limits!.maxSpendUsd!
               ? `spend ceiling reached (${current.contract.limits!.maxSpendUsd} USD)` : null,
             result.kind === "progress" && current.iteration >= current.contract.maxIterations
               ? `iteration ceiling reached (${current.contract.maxIterations})` : null,
@@ -189,7 +197,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             : result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
               : result.kind === "progress" ? "waiting" : "blocked";
           const finished = store.finishIteration(task.input.id, current.iteration, requestId, state, at,
-            [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null);
+            [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null,
+            result.modelsUsed, result.hostCheck);
           if (terminalStates.has(finished.state)) reportPending();
           if (state === "waiting") {
             await runtime.commit(() => ({ status: "running", checkpoint: {
@@ -201,7 +210,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
         } catch (error) {
           const latest = store.get(task.input.id);
           if (latest?.state === "running") {
-            transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1),
+            transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1,
+              deadline.signal.aborted ? current.startedAt! + current.contract.limits!.maxWallTimeMs : 0),
               [deadline.signal.aborted ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)`
                 : error instanceof Error ? error.message : "inner loop failed"]);
           }

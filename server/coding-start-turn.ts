@@ -1,17 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { ApprovalMode } from "../shared/approval-mode.ts";
 import type { Store } from "./store.ts";
 import type { CodingTurnPort, CodingTurnResult } from "./coding-worker-host.ts";
+import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 
 interface CodingStartTurnOptions {
-  store: Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor">;
-  approvalMode: (requestId: string) => ApprovalMode;
+  store: Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor"> &
+    Partial<Pick<Store, "switchTaskModel" | "projectBotForTask">>;
+  assertActiveRun: (requestId: string) => void;
+  onTaskCreated?: (botId: string, threadId: string, requestId: string, workspace: IsolatedWorkspace) => void;
   /** The server's normal turn entry, not ProviderInstance.adapter.sendTurn. */
   startTurn: (botId: string, text: string, options: { threadId: string; requestId: string;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   driverKind: (botId: string) => string | undefined;
+  modelChain?: (botId: string) => Array<{ instanceId: string; model: string }>;
   costForThread: (botId: string, threadId: string, since: number) => Promise<number | null>;
 }
 
@@ -23,10 +26,10 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
   return {
     async run({ botId, workspace, role, prompt, requestId, signal }): Promise<CodingTurnResult> {
       if (signal.aborted) throw new Error("coding turn cancelled");
-      if (options.driverKind(botId) !== "piAgent" || !options.store.bot(botId)) {
+      if ((!options.modelChain && options.driverKind(botId) !== "piAgent") || !options.store.bot(botId)) {
         throw new Error("coding role requires a configured Pi bot");
       }
-      const approvalMode = options.approvalMode(requestId);
+      options.assertActiveRun(requestId);
       const title = `Coding ${createHash("sha256").update(requestId).digest("hex")}`;
       const existing = options.store.tasks(botId).filter((task) => task.title === title);
       if (existing.length > 1) throw new Error("ambiguous coding turn task");
@@ -36,11 +39,16 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
       }
       if (existing.length) throw new Error("coding turn may have started; reconcile before replay");
       const task = options.store.createTask(botId, title, false, undefined, undefined,
-        "ask", undefined, workspace.directory);
+        "full", undefined, workspace.directory);
       if (!task) throw new Error("coding turn task could not be created");
-      if (!options.store.patchTask(botId, task.threadId, { cwd: workspace.directory, approvalMode })) {
+      if (!options.store.patchTask(botId, task.threadId, { cwd: workspace.directory, approvalMode: "full" })) {
         throw new Error("coding turn permission could not be pinned");
       }
+      const chain = options.modelChain?.(botId);
+      if (chain && (!chain.length || !options.store.switchTaskModel?.(botId, task.threadId, chain[0]!, false, false))) {
+        throw new Error("coding run has no allowed subscription or local model; owner review required");
+      }
+      options.onTaskCreated?.(botId, task.threadId, requestId, workspace);
       const before = revision(workspace.directory);
       let settle!: () => void;
       let fail!: (error: Error) => void;
@@ -58,7 +66,8 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
         const after = revision(workspace.directory);
         return { revision: after === before && role !== "review" ? "" : after,
           evidence: [answer.text], accepted: role === "review" && answer.text.includes(`ACCEPT ${after}`),
-          costUsd: await options.costForThread(botId, task.threadId, task.createdAt) };
+          costUsd: await options.costForThread(botId, task.threadId, task.createdAt),
+          ...(chain ? { modelUsed: options.store.projectBotForTask?.(botId, task.threadId)?.modelSelection } : {}) };
       } finally {
         signal.removeEventListener("abort", abort);
       }

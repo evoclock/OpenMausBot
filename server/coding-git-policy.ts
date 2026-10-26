@@ -1,4 +1,4 @@
-import { allowsTool, type ToolScope } from "../shared/tool-scope.ts";
+import type { ToolScope } from "../shared/tool-scope.ts";
 import type { CodingGitCredential, CodingGitDestination, CodingGitGroup, CodingRunConfig } from "./coding-run-config.ts";
 import type { RunContractStore } from "./run-contract.ts";
 
@@ -24,10 +24,11 @@ export interface CodingGitCredentialProvider {
 export interface CodingGitPort {
   origin(workspace: string): Promise<string>;
   branch(workspace: string): Promise<string>;
+  createBranch(workspace: string, branch: string, base: string): Promise<void>;
   head(workspace: string): Promise<string>;
   outgoingAuthors(workspace: string, remoteUrl: string, branch: string): Promise<Array<{ name: string; email: string }>>;
   push(workspace: string, remoteUrl: string, revision: string, destination: string,
-    credential: ResolvedCredential): Promise<void>;
+    credential: ResolvedCredential, repository: string): Promise<void>;
   pullRequest(action: "pr-open" | "pr-update" | "pr-ready", repository: string, base: string, head: string,
     credential: ResolvedCredential, options: { draft: true; prNumber?: number }): Promise<void>;
   /** A bot cannot execute the merge; the run receipt records only owner eligibility. */
@@ -35,7 +36,7 @@ export interface CodingGitPort {
 }
 
 export interface CodingGitHost {
-  inspect(repository: string): Promise<RepositoryFacts>;
+  inspect(repository: string, request?: CodingGitRequest): Promise<RepositoryFacts>;
   credentials: CodingGitCredentialProvider;
   port: Omit<CodingGitPort, "recordOwnerMerge">;
 }
@@ -43,7 +44,7 @@ export interface CodingGitHost {
 export function createCodingGitRunPolicy(config: CodingRunConfig, store: Pick<RunContractStore, "recordOwnerMerge">,
   host: CodingGitHost) {
   return createCodingGitPolicy({ destinations: config.gitDestinations ?? {}, groups: config.gitCredentialGroups,
-    inspect: host.inspect, credentials: host.credentials,
+    inspect: (repository, request) => host.inspect(repository, request), credentials: host.credentials,
     port: { ...host.port, async recordOwnerMerge(id, repository, reason, method) {
       store.recordOwnerMerge(id, repository, reason, method);
     } },
@@ -77,16 +78,15 @@ function branchName(value: string | undefined): value is string {
 function refuse(message: string): never { throw new Error(`Git destination refused: ${message}`); }
 
 /** Coding bots cannot reach a shell or MCP executor outside the checked host Git port. */
-export function codingGitToolScope(existing: ToolScope | undefined): ToolScope {
-  return { allow: ["read", "write", "edit"].filter((name) =>
-    allowsTool(existing, { kind: "native", name })).map((name) => `native:${name}`) };
+export function codingGitToolScope(_existing: ToolScope | undefined): ToolScope {
+  return { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] };
 }
 
 /** Only an exact configured destination and fresh metadata may authorize an outward Git effect. */
 export function createCodingGitPolicy(options: {
   destinations: Readonly<Record<string, readonly CodingGitDestination[]>>;
   groups?: Readonly<Record<string, CodingGitGroup>>;
-  inspect(repository: string): Promise<RepositoryFacts>;
+  inspect(repository: string, request?: CodingGitRequest): Promise<RepositoryFacts>;
   credentials: CodingGitCredentialProvider;
   port: CodingGitPort;
 }) {
@@ -100,7 +100,7 @@ export function createCodingGitPolicy(options: {
       request.branch.startsWith(entry.branchPrefix)) : undefined;
     if (matches?.length !== 1) refuse("this bot has no unambiguous destination grant");
     const grant = matches[0]!;
-    const facts = await options.inspect(request.repository);
+    const facts = await options.inspect(request.repository, request);
     if (facts.nameWithOwner !== request.repository || !["public", "private"].includes(facts.visibility) ||
       (grant.visibility && facts.visibility !== grant.visibility) ||
       !["WRITE", "MAINTAIN", "ADMIN"].includes(facts.viewerPermission) ||
@@ -134,7 +134,7 @@ export function createCodingGitPolicy(options: {
       refuse("every outgoing commit must use Julen's verified Git author");
     }
     if (request.action === "push") {
-      await options.port.push(request.workspace, remote, revision, `refs/heads/${request.branch}`, credential);
+      await options.port.push(request.workspace, remote, revision, `refs/heads/${request.branch}`, credential, request.repository);
       return "applied";
     }
     if (!branchName(request.base) || !facts.protectedBranches.includes(request.base)) {

@@ -288,6 +288,26 @@ describe("Pi MCP extension registration", () => {
     return dir;
   };
 
+  it("closes coding turns before provider dispatch and refuses any question or unlisted tool", async () => {
+    scopeConfig({ allow: ["native:read", "native:write", "native:edit", "native:coding_command"] }, {
+      approvalMode: "full", askUser: false, codingRun: { id: "run-1", branch: "feat/closed", directory: process.cwd() },
+    });
+    const f = scopedApi(["read", "write", "edit", "coding_command", "bash", "ask_user"]);
+    await extension(f.api);
+    expect(f.tools.map((tool) => tool.name)).toEqual(["coding_command"]);
+    await f.handlers.get("session_start")?.({});
+    expect(f.current()).toEqual(["read", "write", "edit", "coding_command"]);
+    expect(await f.handlers.get("tool_call")?.({ toolName: "bash" })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({ toolName: "ask_user" })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({ toolName: "coding_command", input: { command: "push" } })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({ toolName: "write", input: { path: "../secrets" } })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({ toolName: "coding_command", input: { command: "status" } })).toBeUndefined();
+    f.restore(["bash", "coding_command", "ask_user"]);
+    const payload = { tools: ["bash", "coding_command", "ask_user"].map((name) => ({ name })) };
+    await f.handlers.get("before_provider_request")?.({ payload });
+    expect(payload.tools.map((tool) => tool.name)).toEqual(["coding_command"]);
+  });
+
   it("intersects native and package tools before the first turn and after restoration", async () => {
     scopeConfig({ allow: ["native:read", "native:edit", "native:write"] });
     const f = scopedApi(["read", "write", "bash", "package_tool"]);

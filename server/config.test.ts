@@ -58,7 +58,7 @@ describe("configuration boundaries", () => {
     const codingRuns = { repositoryRoot: "/fixture/private", rolesFilePath: "/fixture/private/.pi/pstack-model-roles.v1.json", registrations: [{
       routineId: "scheduled", workerBotId: "worker", reviewerBotId: "reviewer",
       developmentRole: "worker-role", reviewRole: "review-role", repository: "fixture/agents",
-      ref: "main", successCriteria: ["verified result"],
+      ref: "main", successCriteria: ["verified result"], checkCommand: ["node", "-e", "process.exit(0)"],
     }] };
     expect(parseStoredConfig({}).codingRuns).toBeUndefined();
     expect(parseStoredConfig({ codingRuns }).codingRuns).toEqual(codingRuns);
@@ -68,7 +68,9 @@ describe("configuration boundaries", () => {
     expect(() => parseStoredConfig({ codingRuns: { ...codingRuns, registrations: [] } })).toThrow();
     const bots = { origin: { maxWallTimeMs: 60_000, maxSpendUsd: 1 } };
     expect(parseStoredConfig({ codingRuns: { ...codingRuns, bots } }).codingRuns?.bots?.origin)
-      .toEqual({ ...bots.origin, allowedFallbackModels: [], allowedFallbackDataRoutes: [] });
+      .toEqual({ ...bots.origin, maxIterations: 8, allowedFallbackModels: [], allowedFallbackDataRoutes: [] });
+    expect(parseStoredConfig({ codingRuns: { ...codingRuns, bots: { origin: {} } } }).codingRuns?.bots?.origin)
+      .toMatchObject({ maxWallTimeMs: 45 * 60_000, maxIterations: 8 });
     expect(() => parseStoredConfig({ codingRuns: { ...codingRuns,
       bots: { origin: { maxWallTimeMs: 0, maxSpendUsd: 1 } } } })).toThrow();
     expect(() => parseStoredConfig({ codingRuns: { ...codingRuns,

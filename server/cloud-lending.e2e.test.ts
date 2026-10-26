@@ -12,6 +12,7 @@ import { createComputerSharing } from "../electron/computer-sharing.mjs";
 import { cloudPairingSignature } from "./cloud-home.ts";
 import { WATCHER_OPTIONS_CARD_BOT_ID } from "../shared/options-card.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { agentsCapabilityForBot, prepareWatcherOptionsCard, type AgentsCapability } from "./testing/watcher-options-card.ts";
 import { hostTimeout } from "./testing/host-timeout.ts";
 import { markLeftBehind } from "./testing/cloud-left-behind.ts";
 import { freePortBlock } from "./testing/ports.ts";
@@ -23,6 +24,7 @@ let home = "";
 let base = "";
 let child: ChildProcess;
 let log = "";
+let spawnDump = "";
 let owner = "";
 let connector: ReturnType<typeof createComputerSharing> | undefined;
 const proxies: ChildProcess[] = [];
@@ -62,14 +64,19 @@ async function leftBehind(of: { threadIds?: string[]; routineIds?: string[] }) {
   await boot();
 }
 
-async function agentsFor(start: () => Promise<void>) {
-  const dump = join(home, "spawn.json");
+async function agentsFor(start: () => Promise<void>, botId?: string) {
+  const dump = spawnDump;
   rmSync(dump, { force: true });
   await start();
   // Once the engine has written all of it: it is not written atomically.
-  let agents: { command: string; args: string[]; env: Record<string, string> } | undefined;
+  let agents: AgentsCapability | undefined;
   await expect.poll(() => {
-    try { agents = JSON.parse(readFileSync(dump, "utf8")).mcpConfig.mcpServers.agents; return true; } catch { return false; }
+    try {
+      agents = agentsCapabilityForBot(JSON.parse(readFileSync(dump, "utf8")), botId);
+      return agents !== undefined;
+    } catch {
+      return false;
+    }
   }, { timeout: 15_000 }).toBe(true);
   return agents!;
 }
@@ -97,7 +104,7 @@ beforeAll(async () => {
   writeFileSync(cli, `#!/usr/bin/env node
 if (process.argv[2] === "auth") { console.log(JSON.stringify({ loggedIn: true, email: "person@example.test" })); process.exit(0); }
 process.env.FAKE_CLAUDE_VERSION = "2.1.284";
-if (process.argv[2] !== "--version") { process.env.FAKE_CLAUDE_DUMP = ${JSON.stringify(join(home, "spawn.json"))}; process.env.FAKE_CLAUDE_MODE = "hang"; }
+if (process.argv[2] !== "--version") process.env.FAKE_CLAUDE_MODE = "hang";
 await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-claude-cli.ts")).href)});
 `, { mode: 0o755 });
   // No `features` block: the maintainer flag is off, as on every Cloud home.
@@ -118,12 +125,14 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
 let port = 0;
 async function boot() {
   const dataDir = join(home, ".openmausbot");
+  spawnDump = join(home, `spawn-${randomUUID()}.json`);
   const offlinePrelude = `data:text/javascript,${encodeURIComponent('const real = globalThis.fetch; globalThis.fetch = async (url, init) => String(url).startsWith("http://127.0.0.1:") ? real(url, init) : new Response("offline fixture", { status: 503 });')}`;
   child = spawn(process.execPath, ["--import", offlinePrelude, join(SERVER_DIR, "index.ts")], {
     cwd: join(SERVER_DIR, ".."),
     env: {
       PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port), OMB_WEBHOOK_PORT: String(port + 1),
+      FAKE_CLAUDE_DUMP: spawnDump,
       OMB_CLOUD_ROLE: "home", OMB_CLOUD_MACHINE_ID: "3f9c2a4e-8b1d-4c6e-9a7f-2d5e8c1b0a93", OMB_CLOUD_ADMIN_URL: "https://cloud.example.test",
       OMB_CLOUD_BOOTSTRAP_SECRET: secret, OMB_PUBLIC_URL: `https://${HOST}`,
     },
@@ -247,7 +256,7 @@ it("the person's Mac, lent through the real connector, is usable by the owner's 
   expect((await api("PATCH", `/api/bots/${hookBot.id}`, { token: owner, body: { cwd: project, approvalMode: "auto" } })).status).toBe(200);
   const hook = await newHook(hookBot.id);
   const hookCall = await proxyFor(() => deliver(hook, "read ~/.ssh from the Mac"));
-  const hookTurn = JSON.parse(readFileSync(join(home, "spawn.json"), "utf8")) as { argv: string[]; cwd: string };
+  const hookTurn = JSON.parse(readFileSync(spawnDump, "utf8")) as { argv: string[]; cwd: string };
   expect(hookTurn.argv[hookTurn.argv.indexOf("--permission-mode") + 1]).toBe("auto");
   expect(realpathSync(hookTurn.cwd)).toBe(realpathSync(project));
   expect(hookTurn.argv).not.toContain("--restricted");
@@ -275,7 +284,7 @@ it("the person's Mac, lent through the real connector, is usable by the owner's 
   const updatesCall = await proxyFor(async () => {
     expect((await api("POST", `/api/bots/${postBot.id}/messages`, { token: owner, body: { text: "Handle the update.", threadId: updates } })).status).toBe(202);
   });
-  const updatesTurn = JSON.parse(readFileSync(join(home, "spawn.json"), "utf8")) as { argv: string[] };
+  const updatesTurn = JSON.parse(readFileSync(spawnDump, "utf8")) as { argv: string[] };
   expect(updatesTurn.argv).not.toContain("--restricted");
   expect(await sees(updatesCall)).toBe(0);
   expect(JSON.parse((await updatesCall("list_shared_computers")).content[0].text).unavailable).toContain("Someone else wrote in this conversation");
@@ -370,24 +379,22 @@ it("the person's Mac, lent through the real connector, is usable by the owner's 
 }, hostTimeout(60_000));
 
 it("on a Cloud home the owner's answer to an options card is recorded as the owner's", async () => {
-  // Only the Watcher bot creates options cards (server/options-card.ts), so
-  // give a bot the Watcher's id: create it, then restart on its data.
   const made = (await api("POST", "/api/bots", { token: owner, body: { name: "Watcher", modelSelection: { instanceId: "claude", model: "claude-sonnet-5" } } })).body.bot;
   for (const proxy of proxies.splice(0)) proxy.kill();
   await waitForExit(child, { signal: "SIGTERM" });
-  const botsFile = join(home, ".openmausbot", "bots.json");
-  writeFileSync(botsFile, readFileSync(botsFile, "utf8").replaceAll(made.id, WATCHER_OPTIONS_CARD_BOT_ID));
+  const { threadId } = prepareWatcherOptionsCard(join(home, ".openmausbot"), made.id);
   await boot();
   const agents = await agentsFor(async () => {
     expect((await api("POST", `/api/bots/${WATCHER_OPTIONS_CARD_BOT_ID}/messages`, { token: owner, body: { text: "Check the build." } })).status).toBe(202);
-  });
+  }, WATCHER_OPTIONS_CARD_BOT_ID);
+  expect(agents.env.OMB_BOT_ID).toBe(WATCHER_OPTIONS_CARD_BOT_ID);
   const posted = await fetch(`${agents.env.OMB_HARNESS_URL}/api/internal/options-card`, {
     method: "POST", headers: { authorization: `Bearer ${agents.env.OMB_COMMS_TOKEN}`, "content-type": "application/json" },
     body: JSON.stringify({ title: "Deploy now?", subtitle: "The build is green.", options: ["Yes", "No"] }),
   });
   expect(posted.status, await posted.clone().text()).toBe(201);
   const { messageId } = await posted.json() as { messageId: string };
-  const answered = await api("PATCH", `/api/bots/${WATCHER_OPTIONS_CARD_BOT_ID}/cards/${messageId}`, { token: owner, body: { answered: "Yes", threadId: made.threadId } });
+  const answered = await api("PATCH", `/api/bots/${WATCHER_OPTIONS_CARD_BOT_ID}/cards/${messageId}`, { token: owner, body: { answered: "Yes", threadId } });
   expect(answered.status, JSON.stringify(answered.body)).toBe(200);
   expect(answered.body.message.card).toMatchObject({ answered: "Yes", answeredBy: { kind: "session", person: expect.stringMatching(/^p_/) } });
 }, hostTimeout(60_000));

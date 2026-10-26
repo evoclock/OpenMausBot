@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
 import type { InnerLoopResult } from "./outer-runner.ts";
 import { openOuterRunner } from "./outer-runner.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
 import { startGithubCodingRun, startScheduledCodingRun, startWebhookCodingRun, type TriggerTemplate } from "./run-triggers.ts";
@@ -15,6 +16,7 @@ interface GithubRegistration {
 export async function openCodingRunRuntime(options: {
   dataDir: string;
   restartLimit?: number;
+  contextCarryMaxBytes?: number;
   workerHost: WorkerHost;
   routines: ReadonlyMap<string, TriggerTemplate>;
   github: ReadonlyMap<string, GithubRegistration>;
@@ -66,6 +68,7 @@ export async function openCodingRunRuntime(options: {
       }
       return result;
     } }, { onTerminal: options.onTerminal, restartLimit: options.restartLimit,
+      contextCompactor: createIterationContextCompactor(options.contextCarryMaxBytes),
       ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
         async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
         async confirmInvocation(requestId, result) {

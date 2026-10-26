@@ -17,12 +17,12 @@ const LISTED_FROM = 1000;
 // Baselines below include growth already present on fork/main (store and four UI panels);
 // branch-owned host changes were moved into smaller modules before lowering their limits.
 const LINES: Record<string, number> = {
-  "server/index.ts": 17296,
+  "server/index.ts": 17295,
   "src/state/store.tsx": 3604,
   "electron/main.mjs": 3470,
   "server/store.ts": 2476,
   "src/components/Sidebar.tsx": 2340,
-  "server/drivers/claude.ts": 2168,
+  "server/drivers/claude.ts": 2163,
   "server/drivers/acp/core.ts": 2009,
   "server/drivers/codex.ts": 1872,
   "server/routines.ts": 1839,
@@ -39,7 +39,7 @@ const LINES: Record<string, number> = {
   "server/vps-computer.ts": 1369,
   "scripts/mcp-server.ts": 1487,
   "server/boat.ts": 1258,
-  "server/drivers/pi.ts": 1138,
+  "server/drivers/pi.ts": 1086,
   "server/container-computer.ts": 1249,
   "src/components/Composer.tsx": 1155,
   "src/components/ModelPicker.tsx": 1205,

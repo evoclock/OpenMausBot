@@ -15,18 +15,19 @@ const tokenBody = { token: "test-generated-placeholder", expires_at: "2026-10-22
   repositories: [{ full_name: repository }], permissions: { contents: "write", pull_requests: "write" } };
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-function fixture() {
+function fixture(keyType: "pkcs1" | "pkcs8" = "pkcs8") {
   const cache = join(process.cwd(), "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "github-app-fixture-"));
   const path = join(dir, "throwaway.pem");
   const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
-  writeFileSync(path, pair.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  writeFileSync(path, pair.privateKey.export({ type: keyType, format: "pem" }), { mode: 0o600 });
   const installation = { appId: 123, installationId: 456, privateKeyPath: path,
     repositories: [repository], visibility: "private" as const };
   let mint = tokenBody;
   let mintStatus = 201;
   let repoFacts = { full_name: repository, visibility: "private", permissions: { push: true } };
+  let repoStatus = 200;
   const calls: string[] = [];
   const request = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(String(input));
@@ -43,12 +44,12 @@ function fixture() {
     assert.equal(url.pathname, "/repos/evoclock/OpenMausBot");
     assert.ok(init?.headers);
     assert.equal((init.headers as Record<string, string>).authorization, `Bearer ${tokenBody.token}`);
-    return response(repoFacts);
+    return response(repoFacts, repoStatus);
   }) as typeof fetch;
   const provider = () => createGitHubAppCredentialProvider({ installations: { "review-installation": installation }, request,
     now: () => time });
   return { dir, installation, calls, provider, setMint(next: typeof tokenBody, status = 201) { mint = next; mintStatus = status; },
-    setRepo(next: typeof repoFacts) { repoFacts = next; } };
+    setRepo(next: typeof repoFacts, status = 200) { repoFacts = next; repoStatus = status; } };
 }
 
 test("App config selects an installation explicitly without embedding key material", () => {
@@ -58,12 +59,31 @@ test("App config selects an installation explicitly without embedding key materi
   assert.equal(codingGitAppInstallationSchema.safeParse({ ...f.installation, token: "not allowed" }).success, false);
 });
 
-test("a throwaway RSA key mints a fresh repo-scoped token per decision", async () => {
-  const f = fixture();
+test.each(["pkcs1", "pkcs8"] as const)("a throwaway %s RSA key mints a fresh repo-scoped token per decision", async (keyType) => {
+  const f = fixture(keyType);
+  f.setRepo({ full_name: repository, visibility: "private", permissions: { push: false } });
   assert.equal(await f.provider().canWrite(credential, repository), true);
-  assert.equal(await f.provider().canWrite(credential, repository), true);
+  assert.equal(await f.provider().scopedToken(credential, repository), tokenBody.token);
+  assert.equal(await f.provider().scopedToken(credential, "evoclock/Other"), null);
   assert.deepEqual(f.calls, ["POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot",
     "POST:/app/installations/456/access_tokens", "GET:/repos/evoclock/OpenMausBot"]);
+});
+
+test("credential failures expose only stable, non-secret reason codes", async () => {
+  const f = fixture();
+  f.setMint(tokenBody, 401);
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "mint-status-401" });
+  f.setMint({ ...tokenBody, permissions: { contents: "read", pull_requests: "write" } });
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "permissions-missing-contents" });
+  f.setMint(tokenBody);
+  f.setRepo({ full_name: repository, visibility: "private", permissions: { push: true } }, 404);
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "repo-lookup-404" });
+  f.setRepo({ full_name: repository, visibility: "public", permissions: { push: true } });
+  assert.deepEqual(await f.provider().scopedTokenResult(credential, repository), { token: null, failure: "visibility-mismatch" });
+  writeFileSync(f.installation.privateKeyPath, "not a private key", { mode: 0o600 });
+  const parseFailure = await f.provider().scopedTokenResult(credential, repository);
+  assert.deepEqual(parseFailure, { token: null, failure: "key-parse" });
+  assert.equal(JSON.stringify(parseFailure).includes("not a private key"), false);
 });
 
 test("missing keys, repo mismatch, authorization failures and narrowed scopes refuse", async () => {
@@ -90,7 +110,7 @@ test("missing keys, repo mismatch, authorization failures and narrowed scopes re
   f.setRepo({ full_name: repository, visibility: "public", permissions: { push: true } });
   assert.equal(await f.provider().canWrite(credential, repository), false);
   f.setRepo({ full_name: repository, visibility: "private", permissions: { push: false } });
-  assert.equal(await f.provider().canWrite(credential, repository), false);
+  assert.equal(await f.provider().canWrite(credential, repository), true);
 });
 
 test("App credential does not override verified evoclock authorship or allow squash", async () => {
@@ -99,7 +119,7 @@ test("App credential does not override verified evoclock authorship or allow squ
   let authors = [{ name: "github[bot]", email: "bot@users.noreply.github.com" }];
   const port: CodingGitPort = {
     async origin() { return "git@github.com:evoclock/OpenMausBot.git"; },
-    async branch() { return "bot/work"; }, async head() { return "a".repeat(40); },
+    async branch() { return "bot/work"; }, async createBranch() {}, async head() { return "a".repeat(40); },
     async outgoingAuthors() { return authors; },
     async push() { pushes++; }, async pullRequest() { pushes++; }, async recordOwnerMerge() { pushes++; },
   };

@@ -87,7 +87,7 @@ export async function checkPiReadiness(options: {
   const runtimeEnv = agentDir ? { ...env, PI_CODING_AGENT_DIR: resolve(agentDir) } : env;
   try {
     const data = await probe(cli, runtimeEnv, cwd, "get_commands") as { commands?: Array<{ name?: string; source?: string }> };
-    if (data?.commands?.some((entry) => entry.name === "poteto-mode-pi" && entry.source === "skill")) {
+    if (data?.commands?.some((entry) => reportsPiSkill(entry, "poteto-mode-pi"))) {
       result.skill = { ready: true, action: "" };
     } else result.skill.action = "Pi did not load poteto-mode-pi. Check the selected agent directory and its reviewed skill package.";
   } catch {
@@ -121,4 +121,11 @@ export async function checkPiReadiness(options: {
     }
   }
   return result;
+}
+
+// Pi CLI 1.x with enableSkillCommands reports skill commands as `skill:<name>`.
+function reportsPiSkill(entry: { name?: string; source?: string }, skill: string): boolean {
+  if (entry.source !== "skill" || typeof entry.name !== "string") return false;
+  const name = entry.name.startsWith("skill:") ? entry.name.slice("skill:".length) : entry.name;
+  return name === skill;
 }

@@ -28,10 +28,15 @@ further development it unblocks. `RunContractStore.recordOwnerMerge` persists
 that reason once for a verified run and rejects a changed record. Squash and
 public merges refuse. Only Julen executes merges.
 
-Configured coding bots are restricted to native read, write and edit tools;
-Pi's tool gate rejects shell and MCP execution, including tools restored later.
-The existing fake-Pi fixture checks that the real server sends this selection;
-the extension's own tests check the execution gate. Until an owner-configured
+Coding *turns* use a closed profile rather than inheriting the bot's chat permissions.
+It permits native read, write and edit within the leased worktree and one bounded
+`coding_command` tool: Git status, whitespace diff, explicit-path add and commit
+on the leased branch, or the pipeline's typecheck, lint and test commands with
+timeouts. It does not expose a shell, MCP executor or question tool. Pi loads
+only the server's extension for these turns. An unexpected dialog or denied tool
+stops the turn and records one denial in the session-status feed. Interactive
+chat turns, including chat with the same bot, retain their normal permissions.
+The composed-server fixture checks the actual turn dispatch and no-card boundary. Until an owner-configured
 credential provider, repository inspector and host Git port are connected,
 the production runtime's `gitAction` refuses every request. Once those trusted
 inputs are supplied, `gitAction` binds configured destinations to the run's

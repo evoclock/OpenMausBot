@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { RunContractStore } from "./run-contract.ts";
 import { requireDriverRunApi } from "./driver-run-api.ts";
+import { SessionStatusFeed } from "./session-status-feed.ts";
 import { scheduledCodingRunId } from "./run-triggers.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -14,7 +15,7 @@ const serverDir = dirname(fileURLToPath(import.meta.url));
 const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
-async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
+async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied" | "coding-hold" | "drill", localOnly = false) {
   const cache = join(root, "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
@@ -50,7 +51,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "drill") {
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: "openai/gpt-5.4-mini",
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-luna",
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
@@ -121,11 +122,13 @@ test("parallel composed fixtures bind distinct OS-assigned listener ports", asyn
 }, 90_000);
 
 test.each([
-  { mode: "coding" as const, expected: "done", released: false },
-  { mode: "happy" as const, expected: "blocked", released: true },
-  { mode: "permission" as const, expected: "blocked", released: true },
-])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released }) => {
-  const f = await fixture(mode);
+  { mode: "coding" as const, expected: "done", released: false, localOnly: false },
+  { mode: "coding" as const, expected: "done", released: false, localOnly: true },
+  { mode: "happy" as const, expected: "blocked", released: true, localOnly: false },
+  { mode: "permission" as const, expected: "blocked", released: true, localOnly: false },
+  { mode: "coding-denied" as const, expected: "blocked", released: true, localOnly: false },
+])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released, localOnly }) => {
+  const f = await fixture(mode, localOnly);
   try {
     await f.start();
     const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
@@ -133,7 +136,8 @@ test.each([
     const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
     await f.api("PATCH", `/api/bots/${origin.id}`, { approvalMode: "ask" });
     for (const bot of [worker, reviewer]) {
-      await f.api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" } });
+      await f.api("PATCH", `/api/bots/${bot.id}`, { approvalMode: "ask", modelSelection: { instanceId: "pi",
+        model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini" } });
     }
     const routine = (await f.api("POST", "/api/routines", {
       name: "Scheduled coding fixture", prompt: "Complete fixture coding task", botId: origin.id,
@@ -141,10 +145,10 @@ test.each([
     })).routine;
     await f.stop();
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
-      bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
+      bots: { [origin.id]: { maxWallTimeMs: 120_000 } }, registrations: [{
       routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
       developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-      successCriteria: ["coding-fixture-result.txt exists"],
+      successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
     }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -154,27 +158,6 @@ test.each([
     scheduled.nextRunAt = due;
     writeFileSync(routinesFile, JSON.stringify(saved));
     await f.start();
-    if (mode === "permission") {
-      let requestId = "";
-      let requestThreadId = "";
-      await f.until(async () => {
-        const bot = (await f.api("GET", "/api/bots")).bots.find((entry: { id: string }) => entry.id === worker.id);
-        const task = bot?.tasks.find((entry: { title: string }) => entry.title.startsWith("Coding "));
-        if (!task) return false;
-        expect(task.approvalMode).toBe("ask");
-        const messages = (await f.api("GET", `/api/threads/${task.threadId}/messages?limit=100`)).messages as Array<{
-          card?: { requestId?: string; title?: string; answered?: string };
-        }>;
-        const card = messages.find((message) => message.card?.requestId)?.card;
-        if (!card?.requestId) return false;
-        expect(card.answered).toBeUndefined();
-        requestId = card.requestId;
-        requestThreadId = task.threadId;
-        return true;
-      }, "worker permission request");
-      expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(false);
-      await f.api("POST", `/api/threads/${requestThreadId}/respond`, { requestId, behavior: "answer", message: "Deny" });
-    }
     await f.until(async () => {
       const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
       return runs.some((run) => run.routineId === routine.id && ["completed", "failed"].includes(run.status));
@@ -185,13 +168,13 @@ test.each([
     const workers = (await f.api("GET", "/api/bots")).bots;
     const workerTask = workers.find((bot: { id: string }) => bot.id === worker.id).tasks.find((task: { title: string }) => task.title.startsWith("Coding "));
     expect(workerTask?.cwd).toBe(f.leased);
-    expect(workerTask?.approvalMode).toBe("ask");
+    expect(workerTask?.approvalMode).toBe("full");
     expect(workerTask?.autoApprove).toBe(false);
     const reviewTask = workers.find((bot: { id: string }) => bot.id === reviewer.id).tasks
       .find((task: { title: string }) => task.title.startsWith("Coding "));
     if (mode === "coding") {
       expect(reviewTask?.cwd).toBe(f.leased);
-      expect(reviewTask?.approvalMode).toBe("ask");
+      expect(reviewTask?.approvalMode).toBe("full");
       expect(reviewTask?.autoApprove).toBe(false);
     } else {
       expect(reviewTask).toBeUndefined();
@@ -200,10 +183,14 @@ test.each([
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
       mcpConfig?: { toolScope?: { allow?: string[] } };
     }>;
-    if (mode === "permission") expect(turns.some((turn) => turn.uiResponse?.value === "Deny")).toBe(true);
+    if (mode === "permission" || mode === "coding-denied") {
+      expect(turns.some((turn) => turn.uiResponse)).toBe(false);
+      const messages = (await f.api("GET", `/api/threads/${workerTask.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+      expect(messages.some((message) => message.card)).toBe(false);
+    }
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
     for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
-      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit"]);
+      expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit", "native:coding_command"]);
     }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);
@@ -215,6 +202,13 @@ test.each([
     }
     expect(JSON.parse(readFileSync(f.state, "utf8")).holder === null).toBe(released);
     if (mode === "coding") {
+      const runs = new RunContractStore(join(f.dataDir, "coding-run", "runtime.db"));
+      try {
+        const snapshot = runs.get(scheduledCodingRunId(run));
+        expect(snapshot?.contract.limits?.maxSpendUsd).toBeUndefined();
+        expect(snapshot?.modelsUsed).toEqual(Array.from({ length: 2 }, () => ({ iteration: 1,
+          instanceId: "pi", model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai-codex/gpt-6-luna" })));
+      } finally { runs.close(); }
       expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(true);
       expect(turns.filter((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toHaveLength(2);
     } else {
@@ -225,14 +219,37 @@ test.each([
     }>;
     expect(ownerMessages.filter((message) => message.turnId?.startsWith("coding-result:") &&
       message.text?.includes(`Coding run ${expected}:`))).toHaveLength(1);
+    if (mode === "coding") expect(ownerMessages.find((message) => message.turnId?.startsWith("coding-result:"))?.text)
+      .toContain("No authorized Git destination was configured");
     const workerMessages = (await f.api("GET", `/api/threads/${workerTask.threadId}/messages?limit=100`)).messages as Array<{
       role: string; text?: string; turnTerminal?: boolean;
     }>;
-    expect(workerMessages.some((message) => message.role === "bot" && message.turnTerminal &&
-      message.text === (mode === "coding" ? "Coding fixture committed" : mode === "permission" ? "Permission denied" : "Hello from pi"))).toBe(true);
-    if (mode === "permission") {
+    if (mode !== "permission" && mode !== "coding-denied") expect(workerMessages.some((message) => message.role === "bot" && message.turnTerminal &&
+      message.text === (mode === "coding" ? "Coding fixture committed" : "Hello from pi"))).toBe(true);
+    if (mode === "permission" || mode === "coding-denied") {
       expect(workerMessages.some((message) => message.text === "ok")).toBe(false);
       expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(false);
+    }
+    if (mode === "permission" || mode === "coding-denied") {
+      const feed = new SessionStatusFeed(join(f.dataDir, "session-status.sqlite"));
+      try {
+        const notices = feed.pendingWakes().filter((wake) => wake.sessionId === scheduledCodingRunId(run));
+        expect(notices).toHaveLength(1);
+        expect(notices[0]?.kind).toBe("completion");
+        expect(notices[0]?.detail).toContain(mode === "permission" ? "Run bash" : "bash");
+        expect(feed.latest().find((record) => record.sessionId === scheduledCodingRunId(run))?.state).toBe("failed");
+      } finally { feed.close(); }
+    }
+    if (mode === "permission") {
+      await f.api("POST", `/api/bots/${worker.id}/messages`, { threadId: worker.threadId, text: "Interactive question" });
+      await f.until(async () => {
+        const messages = (await f.api("GET", `/api/threads/${worker.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+        return messages.some((message) => message.card);
+      }, "interactive chat permission card");
+      const chatTurn = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+        .findLast((item: { isTurnSpawn: boolean; cwd: string }) => item.isTurnSpawn && item.cwd !== f.leased);
+      expect(chatTurn?.mcpConfig?.codingRun).toBeUndefined();
+      expect(chatTurn?.mcpConfig?.approvalMode).toBe("ask");
     }
     if (mode === "coding") {
       const reviewMessages = (await f.api("GET", `/api/threads/${reviewTask.threadId}/messages?limit=100`)).messages as Array<{
@@ -278,7 +295,7 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
       registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"] }] } }));
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"] }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
     const due = Date.now() - 1000;
@@ -296,7 +313,7 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
       turnId?: string; text?: string;
     }>;
     expect(messages.find((message) => message.turnId?.startsWith("coding-result:"))?.text)
-      .toContain("configure this bot's wall-clock and spend ceilings");
+      .toContain("configure this bot's wall-clock ceiling");
     const bots = (await f.api("GET", "/api/bots")).bots;
     for (const id of [worker.id, reviewer.id]) {
       expect(bots.find((bot: { id: string }) => bot.id === id).tasks
@@ -306,8 +323,47 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
   finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);
 
+test("webhook coding delivery ends without an approval card", async () => {
+  const f = await fixture("coding");
+  try {
+    await f.start();
+    const origin = (await f.api("POST", "/api/bots", { name: "Webhook owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Webhook worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Webhook reviewer" })).bot;
+    for (const bot of [worker, reviewer]) await f.api("PATCH", `/api/bots/${bot.id}`, {
+      modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" },
+    });
+    const created = await f.api("POST", "/api/webhooks", {
+      name: "Coding webhook", prompt: "Complete fixture coding task", botId: origin.id, runOn: "maus",
+    });
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: {
+      repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
+      bots: { [origin.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, registrations: [{
+        routineId: created.webhook.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
+      }],
+    } }));
+    await f.start();
+    const delivery = await fetch(created.credential.url, { method: "POST", headers: {
+      "content-type": "application/json", "idempotency-key": "fixture-delivery-1",
+    }, body: JSON.stringify({ task: "fixture" }) });
+    expect(delivery.status).toBe(202);
+    await f.until(async () => ((await f.api("GET", "/api/routines")).runs as Array<{ webhookId: string; status: string }>).some(
+      (run) => run.webhookId === created.webhook.id && run.status === "completed"), "webhook coding completion");
+    const bots = (await f.api("GET", "/api/bots")).bots;
+    for (const bot of [worker, reviewer]) {
+      const task = bots.find((entry: { id: string }) => entry.id === bot.id)?.tasks.find((entry: { title: string }) => entry.title.startsWith("Coding "));
+      expect(task?.approvalMode).toBe("full");
+      const messages = (await f.api("GET", `/api/threads/${task.threadId}/messages?limit=100`)).messages as Array<{ card?: unknown }>;
+      expect(messages.some((message) => message.card)).toBe(false);
+    }
+  } finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
 test("composed server interrupts an active coding turn at its wall-clock ceiling", async () => {
-  const f = await fixture("permission");
+  const f = await fixture("coding-hold");
   try {
     await f.start();
     const origin = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
@@ -321,10 +377,10 @@ test("composed server interrupts an active coding turn at its wall-clock ceiling
     })).routine;
     await f.stop();
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
-      bots: { [origin.id]: { maxWallTimeMs: 5_000, maxSpendUsd: 1 } }, registrations: [{
+      bots: { [origin.id]: { maxWallTimeMs: 5_000 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"],
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -377,10 +433,10 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     })).routine;
     await f.stop();
     writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
-      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxSpendUsd: 1, maxIterations: 3 } }, registrations: [{
+      bots: { [owner.id]: { maxWallTimeMs: 600_000, maxIterations: 3 } }, registrations: [{
         routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
         developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
-        successCriteria: ["coding-fixture-result.txt exists"],
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
       }] } }));
     const routinesFile = join(f.dataDir, "routines.json");
     const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
@@ -398,7 +454,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const before = store.get(scheduledCodingRunId(activeRun));
     expect(before?.state).toBe("running");
     expect(before?.contract.maxIterations).toBe(3);
-    expect(before?.contract.limits?.maxWallTimeMs).toBe(120_000);
+    expect(before?.contract.limits?.maxWallTimeMs).toBe(600_000);
     const prepared = store.step(before!.contract.id, before!.iteration);
     expect(prepared?.status).toBe("prepared");
     const storeTaskId = store.taskId(before!.contract.id);
@@ -453,10 +509,10 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const auditConfigFile = join(f.home, "audit-config.json");
     const baseRevision = f.git(f.leased, "rev-parse", "main");
     const auditConfig = { destination: "fixture/agents", host: "fixture",
-      credentialReference: "fixture-reference", worktree: f.leased, model: "fixture/model", thinking: "low",
+      credentialReference: "fixture-reference", worktree: f.leased, model: "openai-codex/gpt-6-luna", thinking: "low",
       botConfig: { originBotId: owner.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-        modelSelection: { instanceId: "pi", model: "fixture/model" }, maxIterations: 3,
-        limits: { maxWallTimeMs: 120_000, maxSpendUsd: 1 } }, baseRevision,
+        modelSelection: { instanceId: "pi", model: "openai-codex/gpt-6-luna" }, maxIterations: 3,
+        limits: { maxWallTimeMs: 600_000, modelAccess: "subscription" } }, baseRevision,
       expectedRevisions: [review.revision] };
     writeFileSync(auditConfigFile, JSON.stringify(auditConfig));
     const audit = JSON.parse(execFileSync(process.execPath,

@@ -1,4 +1,4 @@
-import type { RunContractInput } from "./run-contract.ts";
+import type { HostCheckRecord, RunContractInput } from "./run-contract.ts";
 import { codingPlaybookPrompt } from "./coding-playbook-prompt.ts";
 import type { InnerLoop, InnerLoopResult } from "./outer-runner.ts";
 
@@ -20,6 +20,7 @@ export interface WorkerReport {
   evidence: string[];
   progress: boolean;
   costUsd?: number | null;
+  modelUsed?: { instanceId: string; model: string };
 }
 
 export interface ReviewReport {
@@ -27,6 +28,7 @@ export interface ReviewReport {
   accepted: boolean;
   evidence: string[];
   costUsd?: number | null;
+  modelUsed?: { instanceId: string; model: string };
 }
 
 export interface WorkerHost {
@@ -37,6 +39,7 @@ export interface WorkerHost {
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
   review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal): Promise<ReviewReport>;
   verifyWithPstack(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
+  runHostCheck(workspace: IsolatedWorkspace, command: string[], revision: string): Promise<HostCheckRecord>;
 }
 
 export function createWorkerRoute(host: WorkerHost, durable?: {
@@ -45,10 +48,11 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
 }): InnerLoop {
   return {
     async invoke(contract, _iteration, requestId, signal, remainingUsd, context): Promise<InnerLoopResult> {
+      const spendRequired = contract.limits?.modelAccess !== "subscription" && contract.limits?.modelAccess !== "local";
       const prior = context?.previous;
-      const carry = prior ? context?.compactor?.compact(prior) ??
+      const carry = prior ? context?.compactor?.compact(context.history ?? [prior]) ??
         `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
-      const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, remainingUsd ?? contract.limits?.maxSpendUsd ?? 0)}${carry ? `\n${carry}` : ""}`;
+      const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, spendRequired ? remainingUsd ?? contract.limits?.maxSpendUsd : undefined)}${carry ? `\n${carry}` : ""}`;
       const work = async (): Promise<InnerLoopResult> => {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
       if (contract.repositoryClass !== "agent-private") return { kind: "blocked", evidence: ["external repository requires a separate verified route"], costUsd: 0 };
@@ -61,18 +65,19 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
       let retainLease = false;
       let blockedEvidence: string[] = [];
       let spentUsd: number | null = 0;
+      const modelsUsed: Array<{ instanceId: string; model: string }> = [];
       const charge = (cost: number | null | undefined): boolean => {
         if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
-          spentUsd = null;
-          return false;
+          if (spendRequired) { spentUsd = null; return false; }
+          return true;
         }
         spentUsd = (spentUsd ?? 0) + cost;
-        return spentUsd < (remainingUsd ?? contract.limits?.maxSpendUsd ?? 0);
+        return !spendRequired || spentUsd < (remainingUsd ?? contract.limits?.maxSpendUsd ?? 0);
       };
       const blocked = (reason: string, detail?: string): InnerLoopResult => {
         releaseReason = reason;
         blockedEvidence = detail ? [reason, detail] : [reason];
-        return { kind: "blocked", evidence: blockedEvidence, costUsd: spentUsd };
+        return { kind: "blocked", evidence: blockedEvidence, costUsd: spentUsd, ...(modelsUsed.length ? { modelsUsed } : {}) };
       };
       try {
         if (workspace.repository !== contract.repository || workspace.branch !== contract.ref ||
@@ -80,25 +85,35 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           return blocked("isolated workspace does not match the run contract");
         }
         const report = await host.runPlaybook(workspace, roles.development, goal, requestId, signal);
+        if (report.modelUsed) modelsUsed.push(report.modelUsed);
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
         if (!report.revision || !report.progress) return blocked("worker made no verified progress");
         const review = await host.review(workspace, roles.independentReview, report.revision, signal);
+        if (review.modelUsed) modelsUsed.push(review.modelUsed);
         if (!charge(review.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached after review");
         if (signal.aborted) return blocked("review interrupted; reconcile outward effects");
         if (review.revision !== report.revision || !review.accepted || !review.evidence.some((item) => item.trim())) {
           retainLease = true;
-          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd };
+          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
         const verified = await host.verifyWithPstack(workspace, report.revision, contract.successCriteria, signal);
         if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
         retainLease = true;
         if (!verified?.some((item) => item.trim())) {
-          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd };
+          return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
-        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], costUsd: spentUsd };
+        if (!contract.checkCommand) return { kind: "blocked", evidence: [...report.evidence, "run contract has no host check command"], costUsd: spentUsd };
+        const hostCheck = await host.runHostCheck(workspace, contract.checkCommand, report.revision);
+        if (hostCheck.exitCode !== 0 || hostCheck.commitSha !== report.revision) {
+          return { kind: "blocked", evidence: [...report.evidence, ...verified, "host check failed"], hostCheck, costUsd: spentUsd };
+        }
+        return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], hostCheck, costUsd: spentUsd,
+          ...(modelsUsed.length ? { modelsUsed } : {}) };
       } catch (error) {
         return blocked("worker route failed; reconcile outward effects",
           error instanceof Error ? error.message : String(error));

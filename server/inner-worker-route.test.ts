@@ -1,11 +1,13 @@
 import { strict as assert } from "node:assert";
 import { test } from "vitest";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
+import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
+import type { IterationEntry } from "./loop-ledger.ts";
 import type { RunContractInput } from "./run-contract.ts";
 
 const contract: RunContractInput = {
   id: "44444444-4444-4444-8444-444444444444", botId: "fixture", repository: "fixture/agents", ref: "review",
-  repositoryClass: "agent-private", successCriteria: ["pstack acceptance passes"],
+  repositoryClass: "agent-private", successCriteria: ["pstack acceptance passes"], checkCommand: ["node", "-e", "process.exit(0)"],
   allowedEffects: ["edit", "commit", "push", "draft-pr"], authorisedExternalWrites: [],
   limits: { maxWallTimeMs: 30_000, maxSpendUsd: 1 },
 };
@@ -21,6 +23,7 @@ function host(): WorkerHost & { calls: string[] } {
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["separate review"], costUsd: 0 }; },
     async verifyWithPstack() { calls.push("pstack"); return ["acceptance result"]; },
+    async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
 
@@ -30,7 +33,8 @@ test("independent review and inner acceptance evidence precede completion", asyn
   const route = host();
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
   assert.equal(result.kind, "verified");
-  assert.deepEqual(route.calls, ["acquire", "worker", "reviewer", "pstack"]);
+  assert.equal(result.hostCheck?.exitCode, 0);
+  assert.deepEqual(route.calls, ["acquire", "worker", "reviewer", "pstack", "host-check"]);
 });
 
 test("worker goal carries iteration number and the preceding receipt", async () => {
@@ -48,6 +52,27 @@ test("worker goal carries iteration number and the preceding receipt", async () 
   assert.match(goal, /Iteration 2/);
   assert.match(goal, /Previous iteration 1 verdict: waiting/);
   assert.match(goal, /first proof/);
+});
+
+test("a long receipt history reaches the goal within the configured carry cap", async () => {
+  const route = host();
+  let goal = "";
+  route.runPlaybook = async (_workspace, _role, text) => {
+    goal = text;
+    return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 };
+  };
+  const history: IterationEntry[] = Array.from({ length: 12 }, (_, index) => ({
+    iteration: index + 1, goal: contract.successCriteria[0]!, verdict: "waiting",
+    startedAt: index, finishedAt: index + 1,
+    evidence: [index === 0 ? "failed approach: skipped tests; acceptance still unmet" : `review failed at ${index + 1}`],
+  }));
+  const carry = createIterationContextCompactor(1024);
+  await createWorkerRoute(route).invoke(contract, 13, "run:13", signal, 1, {
+    iteration: 13, previous: history.at(-1), history, compactor: carry,
+  });
+  assert.match(goal, /Iteration 13/);
+  assert.match(goal, /failed approach: skipped tests; acceptance still unmet/);
+  assert.ok(Buffer.byteLength(carry.compact(history)) <= 1024);
 });
 
 test("missing or same role blocks work before workspace allocation", async () => {

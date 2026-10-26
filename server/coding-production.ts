@@ -1,16 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { ApprovalMode } from "../shared/approval-mode.ts";
+import type { ProviderRegistry } from "./harness/registry.ts";
+import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
-import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost, type CodingGitRequest } from "./coding-git-policy.ts";
+import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
+import { createProductionCodingGitHost } from "./coding-git-host.ts";
+import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
 import { CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
 import { requireDriverRunApi } from "./driver-run-api.ts";
+import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
 import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 import { flushUsageLedger, readUsage } from "./usage-ledger.ts";
@@ -30,8 +34,9 @@ export async function openProductionCodingRuntime(options: {
   store: Store;
   routines: RoutineManager;
   webhooks: Pick<WebhookManager, "list">;
-  sourceApprovalMode: (botId: string, threadId: string) => ApprovalMode;
+  onTaskCreated?: (botId: string, threadId: string, requestId: string, workspace: IsolatedWorkspace) => void;
   driverKind: (botId: string) => string | undefined;
+  registry: Pick<ProviderRegistry, "instances" | "access">;
   startTurn: (botId: string, text: string, input: { threadId: string; requestId: string;
     triggerSource: "schedule" | "webhook"; allowedFallbackModels: Array<{ instanceId: string; model: string }>;
     onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
@@ -39,7 +44,13 @@ export async function openProductionCodingRuntime(options: {
   gitHost?: CodingGitHost;
 }) {
   const { config, dataDir, store, routines } = options;
+  const gitHost = options.gitHost ?? createProductionCodingGitHost(config);
   const registrations = config.registrations;
+  const modelChain = () => codingModelChain(options.registry.instances().map((instance) => ({
+    instanceId: instance.instanceId, driverKind: instance.driverKind, enabled: instance.enabled,
+    access: options.registry.access(instance.instanceId), models: instance.models,
+  })), config.localModelProviders ?? DEFAULT_CODING_LOCAL_PROVIDERS)
+    .map(({ instanceId, model }) => ({ instanceId, model }));
   const first = registrations[0];
   const repository = first?.repository;
   if (!repository || registrations.some((entry) => entry.repository !== repository ||
@@ -58,11 +69,15 @@ export async function openProductionCodingRuntime(options: {
     await driver.close();
     throw new Error("installed driver lacks the durable worker transport");
   }
-  const workspace = new CodingTreehouseWorkspace({ repository, root: config.repositoryRoot, dataDir: codingDir });
+  const workspaceManager = new CodingTreehouseWorkspace({ repository, root: config.repositoryRoot, dataDir: codingDir });
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
   delivery.replay();
   const origins = new Map<string, { botId: string; threadId: string; runId: string }>();
+  const workspacesByRun = new Map<string, IsolatedWorkspace>();
+  const publishing = new Map<string, Promise<string>>();
+  const publicationResults = new Map<string, string>();
+  let reportPending = () => {};
   const templates = new Map<string, TriggerTemplate>();
   const webhookTemplates = new Map<string, TriggerTemplate>();
   const roles = new Map(registrations.map((entry) => [entry.repository, {
@@ -83,14 +98,15 @@ export async function openProductionCodingRuntime(options: {
     const botId = (routine ?? hook)!.botId;
     const botConfig = config.bots?.[botId];
     const limits = botConfig && {
-      maxWallTimeMs: botConfig.maxWallTimeMs, maxSpendUsd: botConfig.maxSpendUsd,
-      allowedFallbackModels: botConfig.allowedFallbackModels,
+      maxWallTimeMs: botConfig.maxWallTimeMs, modelAccess: "subscription" as const,
+      allowedFallbackModels: [],
       allowedFallbackDataRoutes: botConfig.allowedFallbackDataRoutes,
     };
     const template: TriggerTemplate = {
       botId,
       repository: entry.repository, ref: entry.ref, repositoryClass: "agent-private",
-      successCriteria: entry.successCriteria, allowedEffects: ["edit", "commit"], authorisedExternalWrites: [],
+      successCriteria: entry.successCriteria, checkCommand: entry.checkCommand,
+      allowedEffects: ["edit", "commit", "push", "draft-pr"], authorisedExternalWrites: [],
       ...(limits ? { limits, ...(botConfig.maxIterations ? { maxIterations: botConfig.maxIterations } : {}) } : {}),
     };
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
@@ -106,16 +122,22 @@ export async function openProductionCodingRuntime(options: {
   };
   const turn = createCodingStartTurnPort({
     store,
-    approvalMode(requestId) {
+    onTaskCreated(botId, threadId, requestId, workspace) {
+      const runId = requestId.slice(0, 36);
+      workspacesByRun.set(runId, workspace);
+      options.onTaskCreated?.(botId, threadId, requestId, workspace);
+    },
+    assertActiveRun(requestId) {
       const origin = originForRequest(requestId);
       const run = origin && routines.runForThread(origin.threadId);
       if (!run || run.id !== origin.runId || run.botId !== origin.botId || run.status !== "running" ||
         (run.triggerSource !== "schedule" && run.triggerSource !== "webhook")) {
         throw new Error("coding run has no active originating routine thread");
       }
-      return run.triggerSource === "webhook" ? "ask" : options.sourceApprovalMode(origin.botId, origin.threadId);
+      return;
     },
     driverKind: options.driverKind,
+    modelChain,
     async costForThread(botId, threadId, since) {
       if (!Number.isSafeInteger(since) || since <= 0) return null;
       await flushUsageLedger(dataDir);
@@ -129,15 +151,13 @@ export async function openProductionCodingRuntime(options: {
     async startTurn(botId, text, input) {
       const origin = originForRequest(input.requestId);
       const run = origin && routines.runForThread(origin.threadId);
-      const request = input.requestId.startsWith("review:") ? input.requestId.slice(7) : input.requestId;
-      const allowedFallbackModels = origin ? runStore.get(request.slice(0, 36))
-        ?.contract.limits?.allowedFallbackModels ?? [] : [];
+      const allowedFallbackModels = origin ? modelChain() : [];
       await options.startTurn(botId, text, { ...input, allowedFallbackModels,
         triggerSource: run?.triggerSource === "webhook" ? "webhook" : "schedule" });
     },
     interrupt: options.interrupt,
   });
-  const host = createCodingWorkerHost({ roles, rolesFilePath: config.rolesFilePath, workspace, turn,
+  const host = createCodingWorkerHost({ roles, rolesFilePath: config.rolesFilePath, workspace: workspaceManager, turn,
     async verify(leased, revision) {
       try {
         execFileSync("git", ["cat-file", "-e", `${revision}^{commit}`], { cwd: leased.directory, timeout: 10_000 });
@@ -156,17 +176,43 @@ export async function openProductionCodingRuntime(options: {
     if (!run?.threadId) return false;
     runStore.linkRoutine(run.id, snapshot.contract.id);
     runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
+    if (snapshot.state === "done" && !publicationResults.has(snapshot.contract.id)) {
+      let publication = publishing.get(snapshot.contract.id);
+      if (!publication) {
+        const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
+        if (!workspace) return false;
+        const candidateBranch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
+        const hasDestination = (config.gitDestinations?.[snapshot.contract.botId] ?? []).some((grant) =>
+          grant.repository === snapshot.contract.repository && candidateBranch.startsWith(grant.branchPrefix));
+        publication = publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
+          createBranch: (directory, branch, base) => gitHost.port.createBranch(directory, branch, base), gitAction })
+          .then((branch) => branch ? `Published draft branch ${branch}` : "No authorized Git destination was configured")
+          .catch((error) => `Draft publication failed: ${error instanceof Error ? error.message : String(error)}`);
+        publishing.set(snapshot.contract.id, publication);
+        void publication.then((result) => {
+          publicationResults.set(snapshot.contract.id, result);
+          publishing.delete(snapshot.contract.id);
+          reportPending();
+        });
+        return false;
+      }
+      return false;
+    }
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
-    const detail = evidence || "No result was reported.";
+    const detail = [evidence || "No result was reported.", publicationResults.get(snapshot.contract.id)]
+      .filter((item): item is string => Boolean(item)).join("\n");
     routines.settleCodingRun(run.id, snapshot);
+    const models = (snapshot.modelsUsed ?? []).map((item) => `iteration ${item.iteration}: ${item.instanceId}/${item.model}`).join("; ");
     return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-      threadId: run.threadId, text: `Coding run ${snapshot.state}: ${detail}` }) === "delivered";
+      threadId: run.threadId, text: `Coding run ${snapshot.state}: ${models ? `Models: ${models}. ` : ""}${detail}` }) === "delivered";
   };
   let runtime: Awaited<ReturnType<typeof openCodingRunRuntime>>;
   try {
-    runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit, workerHost: host,
+    runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
+      contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
       routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver, driver });
   } catch (error) { await driver.close(); throw error; }
+  reportPending = runtime.reportPending;
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;
     const id = run.triggerSource === "schedule" && templates.has(run.routineId)
@@ -176,10 +222,7 @@ export async function openProductionCodingRuntime(options: {
     if (id && runtime.get(id)) runStore.linkRoutine(run.id, id);
   }
   runtime.reportPending();
-  const gitAction = options.gitHost ? createCodingGitRunPolicy(config, runStore, options.gitHost)
-    : async (_request: CodingGitRequest): Promise<"applied" | "owner-eligible"> => {
-      throw new Error("Git destination refused: no credential provider and checked host Git port are configured");
-    };
+  const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
   const dispatch = async (run: RoutineRun, botId: string, threadId: string) => {
     const id = run.triggerSource === "webhook" && run.webhookId && run.deliveryId
       ? webhookCodingRunId(run.webhookId, run.deliveryId) : scheduledCodingRunId(run);
@@ -202,6 +245,6 @@ export async function openProductionCodingRuntime(options: {
       }
       return dispatch(run, botId, threadId);
     },
-    async close() { await runtime.close(); delivery.close(); runStore.close(); workspace.close(); },
+    async close() { await runtime.close(); delivery.close(); runStore.close(); workspaceManager.close(); },
   };
 }

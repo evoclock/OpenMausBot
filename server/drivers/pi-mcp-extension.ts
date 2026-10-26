@@ -8,6 +8,7 @@ import { allowsTool, canUseMcpServer, parseToolScope, type ToolIdentity } from "
 import { ASK_USER_TOOL, formatQuestionAnswers, MAX_OPTIONS, MAX_QUESTIONS, parseAskQuestions } from "../../shared/ask-question.ts";
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
 import { REMOTE_MCP_STARTUP_MS } from "../mcp-http.ts";
+import { codingCommandAllowed, codingFileAllowed, executeCodingCommand, type CodingCommand } from "./coding-command.ts";
 
 interface McpServerDef {
   command: string;
@@ -26,6 +27,7 @@ interface McpConfig {
   automatedLocalComputer?: boolean;
   /** Register the ask_user tool: the driver sets it when the turn may ask. */
   askUser?: boolean;
+  codingRun?: { id: string; branch: string; directory: string };
 }
 
 interface McpTool {
@@ -585,6 +587,12 @@ export default async function (pi: PiExtensionApi): Promise<void> {
   const parsed = parseToolScope(config.toolScope);
   if (!parsed.ok) throw new Error(parsed.error);
   const scope = parsed.scope;
+  const closed = config.codingRun !== undefined;
+  if (closed && (!/^[a-zA-Z0-9_-]{1,128}$/.test(config.codingRun!.id) ||
+    !config.codingRun!.branch || config.codingRun!.directory !== process.cwd() ||
+    !scope || config.approvalMode !== "full" || config.askUser !== false || Object.keys(config.mcpServers ?? {}).length)) {
+    throw new Error("Coding run denied: closed profile is invalid");
+  }
   if (scope !== undefined && (typeof pi.getActiveTools !== "function" || typeof pi.setActiveTools !== "function")) throw new Error("Pi tool selection enforcement APIs are unavailable");
 
   const used = new Set<string>();
@@ -618,7 +626,10 @@ export default async function (pi: PiExtensionApi): Promise<void> {
       }
     };
     for (const event of ["session_start", "session_switch", "model_select", "before_agent_start", "context"]) pi.on(event, () => { intersect(); });
-    pi.on("tool_call", (event) => !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName) ? undefined : { block: true, reason: "Tool selection excludes this tool" });
+    pi.on("tool_call", (event) => !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName) &&
+      (!closed || (event.toolName === "coding_command" ? codingCommandAllowed(event.input)
+        : !["read", "write", "edit"].includes(event.toolName) || codingFileAllowed(process.cwd(), event.input)))
+      ? undefined : { block: true, reason: closed ? `Coding run denied: ${String(event?.toolName ?? "unknown")} is outside the envelope` : "Tool selection excludes this tool" });
     // Providers serialize tools before this hook, so the final payload is filtered too.
     pi.on("before_provider_request", (event, context) => {
       let selected = new Set<string>();
@@ -644,7 +655,23 @@ export default async function (pi: PiExtensionApi): Promise<void> {
     });
   }
 
-  if (config.askUser === true) {
+  if (closed) {
+    pi.registerTool({
+      name: "coding_command", label: "Coding command",
+      description: "Run a bounded Git operation or repository check on the coding worktree. No shell or network commands.",
+      parameters: Type.Object({
+        command: Type.Optional(Type.Any({ description: "One of status, diff, add, commit, typecheck, lint or test." })),
+        paths: Type.Optional(Type.Any({ description: "Explicit worktree-relative paths for add only." })),
+        message: Type.Optional(Type.Any({ description: "Commit message for commit only." })),
+      }, { additionalProperties: true }),
+      async execute(_id, params) {
+        const input = params as { command: CodingCommand; paths?: string[]; message?: string };
+        return { content: [{ type: "text", text: truncateToolText(executeCodingCommand(process.cwd(), input.command, input.paths, input.message, config.codingRun!.branch)) }], details: {} };
+      },
+    });
+  }
+
+  if (config.askUser === true && !closed) {
     const identity: ToolIdentity = { kind: "native", name: ASK_USER_TOOL };
     if (scope === undefined || allowsTool(scope, identity)) {
       pi.registerTool(askUserTool(() => scope === undefined || (!enforcementFailed && allowsTool(scope, identity))));
