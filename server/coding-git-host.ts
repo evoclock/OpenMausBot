@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createGitHubAppCredentialProvider } from "./github-app-credential.ts";
 import type { CodingGitCredential, CodingRunConfig } from "./coding-run-config.ts";
 import type { CodingGitHost, CodingGitRequest, RepositoryFacts } from "./coding-git-policy.ts";
@@ -34,15 +38,20 @@ async function withToken<T>(token: string, run: (env: NodeJS.ProcessEnv) => Prom
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Git credential listener unavailable");
-  const askpass = new URL("./coding-git-askpass.mjs", import.meta.url);
-  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  // git execs GIT_ASKPASS as a single program (no shell), so a quoted "node script"
+  // path fails with cannot exec. Use one executable wrapper that invokes node.
+  const askpass = fileURLToPath(new URL("./coding-git-askpass.mjs", import.meta.url));
+  const wrapper = join(tmpdir(), `omb-git-askpass-${nonce}`);
+  writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(askpass)} "$@"\n`, { mode: 0o755 });
   const env = { PATH: process.env.PATH, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
     TMPDIR: process.env.TMPDIR, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_ASKPASS_REQUIRE: "force", OMB_ASKPASS_URL: `http://127.0.0.1:${address.port}/${nonce}` };
   try {
-    const wrapped = { ...env, GIT_ASKPASS: `${quote(process.execPath)} ${quote(askpass.pathname)}` };
-    return await run(wrapped);
-  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+    return await run({ ...env, GIT_ASKPASS: wrapper });
+  } finally {
+    try { unlinkSync(wrapper); } catch { /* best-effort */ }
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 }
 
 async function gitHubJson(token: string, path: string, init?: RequestInit, request = fetch): Promise<any> {
