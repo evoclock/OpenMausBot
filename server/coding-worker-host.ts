@@ -9,8 +9,10 @@ export interface CodingTurnResult {
   revision: string;
   evidence: string[];
   accepted?: boolean;
+  blocked?: boolean;
   costUsd: number | null;
   modelUsed?: { instanceId: string; model: string };
+  modelsUsed?: Array<{ instanceId: string; model: string }>;
 }
 
 export interface CodingTurnPort {
@@ -60,7 +62,8 @@ export function createCodingWorkerHost(options: {
       }
       const result = await options.turn.run({ botId: config.developmentBotId, workspace, role: "development", prompt: goal, requestId, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
-        progress: Boolean(result.revision && result.evidence.length), modelUsed: result.modelUsed };
+        progress: Boolean(result.revision && result.evidence.length), modelUsed: result.modelUsed,
+        ...(result.blocked ? { blocked: true } : {}), ...(result.modelsUsed ? { modelsUsed: result.modelsUsed } : {}) };
     },
     async runHostCheck(workspace, command, revision) {
       return runHostCheck({ command, cwd: workspace.directory, revision });
@@ -77,7 +80,8 @@ export function createCodingWorkerHost(options: {
         requestId: `review:${requestId}:${revision}`, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         accepted: result.accepted === true && result.revision === revision && result.evidence.length > 0,
-        modelUsed: result.modelUsed };
+        modelUsed: result.modelUsed, ...(result.blocked ? { blocked: true } : {}),
+        ...(result.modelsUsed ? { modelsUsed: result.modelsUsed } : {}) };
     },
     verifyWithPstack: options.verify,
   };

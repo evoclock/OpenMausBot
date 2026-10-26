@@ -67,3 +67,162 @@ test("coding turn pins closed mode before dispatch and refuses replay", async ()
   await assert.rejects(port.run({ botId: "worker", workspace, role: "review", prompt: "Review", requestId: "review:1", signal }),
     /already completed/);
 });
+
+test("coding turn chases a stalled turn once after the server releases its thread", async () => {
+  const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
+  const messages = new Map<string, Array<{ role: "bot"; kind: "text"; text: string; turnTerminal: boolean; turnSucceeded?: boolean }>>();
+  const calls: Array<{ text: string; threadId: string }> = [];
+  let releaseStall!: () => void;
+  let signalStall!: () => void;
+  const stallObserved = new Promise<void>((resolve) => { signalStall = resolve; });
+  let activeAssertions = 0;
+  const store = {
+    bot: () => ({ id: "worker" }),
+    tasks: () => tasks,
+    createTask(_botId: string, title: string) {
+      const task = { title, threadId: `thread-${tasks.length + 1}`, cwd, createdAt: tasks.length + 1 };
+      tasks.push(task);
+      return task;
+    },
+    patchTask: () => ({}),
+    messagesFor: (threadId: string) => messages.get(threadId) ?? [],
+    switchTaskModel: () => ({}),
+    projectBotForTask: (_botId: string, threadId: string) => ({ modelSelection: {
+      instanceId: "pi", model: threadId === "thread-1" ? "first-model" : "chase-model",
+    } }),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => { activeAssertions++; }, driverKind: () => "piAgent",
+    modelChain: () => [{ instanceId: "pi", model: "first-model" }], costForThread: async () => 2,
+    async startTurn(_botId, text, options: { threadId: string; onTurnSettled: () => void;
+      onTurnStalled?: (released: Promise<void>) => void }) {
+      calls.push({ text, threadId: options.threadId });
+      if (calls.length === 1) {
+        assert.ok(options.onTurnStalled);
+        const released = new Promise<void>((resolve) => { releaseStall = resolve; });
+        options.onTurnStalled(released);
+        signalStall();
+      } else {
+        messages.set(options.threadId, [{ role: "bot", kind: "text", text: `ACCEPT ${revision}`, turnTerminal: true }]);
+      }
+      options.onTurnSettled();
+    },
+    async interrupt() {},
+  });
+  const running = port.run({ botId: "worker", workspace, role: "review", prompt: "Review this revision", requestId: "review:stalled", signal: new AbortController().signal });
+  await stallObserved;
+  assert.equal(calls.length, 1);
+  releaseStall();
+  const result = await running;
+  assert.equal(calls.length, 2);
+  assert.match(calls[1]!.text, /one bounded chase/i);
+  assert.match(calls[1]!.text, /Review this revision/);
+  assert.deepEqual(result.modelsUsed, [
+    { instanceId: "pi", model: "first-model" },
+    { instanceId: "pi", model: "chase-model" },
+  ]);
+  assert.equal(result.modelUsed?.model, "chase-model");
+  assert.equal(result.costUsd, 4);
+  assert.equal(activeAssertions, 2);
+  assert.equal(new Set(tasks.map((task) => task.title)).size, 2);
+});
+
+test("coding turn chases a repeated in-turn tool failure once", async () => {
+  type CodingMessage = { role: "bot"; kind: "text" | "activity"; text?: string; turnTerminal?: boolean;
+    turnSucceeded?: boolean; turnId?: string; at: number; tool?: { name: string; ok?: boolean; output?: string } };
+  const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
+  const messages = new Map<string, CodingMessage[]>();
+  const calls: string[] = [];
+  const store = {
+    bot: () => ({ id: "worker" }),
+    tasks: () => tasks,
+    createTask(_botId: string, title: string) {
+      const task = { title, threadId: `thread-${tasks.length + 1}`, cwd, createdAt: tasks.length + 1 };
+      tasks.push(task);
+      return task;
+    },
+    patchTask: () => ({}),
+    messagesFor: (threadId: string) => messages.get(threadId) ?? [],
+    switchTaskModel: () => ({}),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
+    costForThread: async () => 1,
+    async startTurn(_botId, text, options: { threadId: string; onTurnSettled: () => void }) {
+      calls.push(text);
+      messages.set(options.threadId, calls.length === 1 ? [
+        ...[1, 2, 3].map((at) => ({ role: "bot" as const, kind: "activity" as const, at, turnId: "turn-1",
+          tool: { name: "mcp__agents__send", ok: false, output: "no layer" } })),
+        { role: "bot", kind: "text", at: 4, turnId: "turn-1", text: "The tool failed three times.", turnTerminal: true },
+      ] : [{ role: "bot", kind: "text", at: 5, turnId: "turn-2", text: `ACCEPT ${revision}`, turnTerminal: true }]);
+      options.onTurnSettled();
+    }, async interrupt() {},
+  });
+  const result = await port.run({ botId: "worker", workspace, role: "review", prompt: "Review this revision",
+    requestId: "review:loop", signal: new AbortController().signal });
+  assert.equal(calls.length, 2);
+  assert.match(calls[1]!, /one bounded chase/i);
+  assert.equal(result.revision, revision);
+  assert.equal(result.costUsd, 2);
+});
+
+test("coding turn does not chase a completed turn with no answer", async () => {
+  const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
+  let calls = 0;
+  const store = {
+    bot: () => ({ id: "worker" }),
+    tasks: () => tasks,
+    createTask(_botId: string, title: string) {
+      const task = { title, threadId: `thread-${tasks.length + 1}`, cwd, createdAt: tasks.length + 1 };
+      tasks.push(task);
+      return task;
+    },
+    patchTask: () => ({}),
+    messagesFor: () => [],
+    switchTaskModel: () => ({}),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
+    costForThread: async () => 1,
+    async startTurn(_botId, _text, options: { onTurnSettled: () => void }) {
+      calls++;
+      options.onTurnSettled();
+    }, async interrupt() {},
+  });
+  await assert.rejects(port.run({ botId: "worker", workspace, role: "development", prompt: "Implement fixture change",
+    requestId: "run:empty", signal: new AbortController().signal }), /no completed answer/);
+  assert.equal(calls, 1);
+  assert.equal(tasks.length, 1);
+});
+
+test("coding turn surfaces BLOCKED after exactly one blocked chase", async () => {
+  const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
+  const messages = new Map<string, Array<{ role: "bot"; kind: "text"; text: string; turnTerminal: boolean; turnSucceeded?: boolean }>>();
+  let calls = 0;
+  const store = {
+    bot: () => ({ id: "worker" }),
+    tasks: () => tasks,
+    createTask(_botId: string, title: string) {
+      const task = { title, threadId: `thread-${tasks.length + 1}`, cwd, createdAt: tasks.length + 1 };
+      tasks.push(task);
+      return task;
+    },
+    patchTask: () => ({}),
+    messagesFor: (threadId: string) => messages.get(threadId) ?? [],
+    switchTaskModel: () => ({}),
+    projectBotForTask: () => ({ modelSelection: { instanceId: "pi", model: "fixture-model" } }),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
+    costForThread: async () => 1,
+    async startTurn(_botId, _text, options: { threadId: string; onTurnSettled: () => void }) {
+      calls++;
+      messages.set(options.threadId, [{ role: "bot", kind: "text", text: "BLOCKED: fixture obstruction",
+        turnTerminal: true, turnSucceeded: false }]);
+      options.onTurnSettled();
+    }, async interrupt() {},
+  });
+  const result = await port.run({ botId: "worker", workspace, role: "development", prompt: "Implement fixture change",
+    requestId: "run:blocked", signal: new AbortController().signal });
+  assert.equal(calls, 2);
+  assert.equal(tasks.length, 2);
+  assert.equal(result.blocked, true);
+  assert.equal(result.costUsd, 2);
+  assert.match(result.evidence.join("\n"), /BLOCKED/);
+});

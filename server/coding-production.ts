@@ -39,7 +39,8 @@ export async function openProductionCodingRuntime(options: {
   registry: Pick<ProviderRegistry, "instances" | "access">;
   startTurn: (botId: string, text: string, input: { threadId: string; requestId: string;
     triggerSource: "schedule" | "webhook"; allowedFallbackModels: Array<{ instanceId: string; model: string }>;
-    onTurnSettled: () => void; onDispatchError: (error: string) => void }) => Promise<void>;
+    onTurnSettled: () => void; onDispatchError: (error: string) => void;
+    onTurnStalled?: (released: Promise<void>) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   gitHost?: CodingGitHost;
   driverFactory?: (directory: string) => Promise<InstalledWorkerDriver>;

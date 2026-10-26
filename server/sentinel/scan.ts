@@ -3,6 +3,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { DETECTORS } from "./detectors/index.ts";
+import { DEFAULT_RETRY_LOOP_MIN } from "./detectors/retry-loop.ts";
 import { readQueueRecords, readThreadOwners, readToolRecords, readTurnRecords } from "./sources.ts";
 import { pruneSeen, readIssues, readState, upsertIssues, writeSentinelFiles } from "./store.ts";
 import type { DetectorConfig, Issue, Observation, SentinelRecord } from "./types.ts";
@@ -36,7 +37,7 @@ export function runScan(options: ScanOptions): ScanSummary {
   const config: DetectorConfig = {
     queueWaitMs: options.queueWaitMs ?? DEFAULT_QUEUE_WAIT_MS,
     costUsd: options.costUsd ?? DEFAULT_COST_USD,
-    retryLoopMin: options.retryLoopMin ?? 3,
+    retryLoopMin: options.retryLoopMin ?? DEFAULT_RETRY_LOOP_MIN,
     now,
   };
   const state = readState(options.out);
