@@ -120,19 +120,23 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
         await git(["branch", `--set-upstream-to=origin/${base}`, branch], workspace, process.env);
       },
       async head(workspace) { return git(["rev-parse", "HEAD"], workspace, process.env); },
-      async outgoingAuthors(workspace, _remote, branch) {
-        if (await git(["branch", "--show-current"], workspace, process.env) !== branch) {
-          throw new Error("Git branch changed during publication");
+      async outgoingAuthors(workspace, remote, branch) {
+        if (await git(["branch", "--show-current"], workspace, process.env) !== branch ||
+          await git(["remote", "get-url", "origin"], workspace, process.env) !== remote ||
+          await git(["config", "--get", `branch.${branch}.remote`], workspace, process.env) !== "origin" ||
+          await git(["config", "--get", `branch.${branch}.merge`], workspace, process.env) !== `refs/heads/${branch}`) {
+          throw new Error("Git branch upstream changed during publication");
         }
-        const output = await git(["log", "@{upstream}..HEAD", "--format=%an%x00%ae"], workspace, process.env);
+        const output = await git(["log", `refs/remotes/origin/${branch}..HEAD`, "--format=%an%x00%ae"], workspace, process.env);
         return output ? output.split("\n").map((line) => { const [name, email] = line.split("\0"); return { name: name ?? "", email: email ?? "" }; }) : [];
       },
       async push(workspace, remote, revision, destination, credential, repository, options) {
         const setUpstream = options?.setUpstream === true;
         let source = revision;
         let pushRemote = remote;
+        let branch = "";
         if (setUpstream) {
-          const branch = await git(["branch", "--show-current"], workspace, process.env);
+          branch = await git(["branch", "--show-current"], workspace, process.env);
           const head = await git(["rev-parse", "HEAD"], workspace, process.env);
           const origin = await git(["remote", "get-url", "origin"], workspace, process.env);
           if (!branch || destination !== `refs/heads/${branch}` || head !== revision || origin !== remote) {
@@ -145,6 +149,14 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
         await withToken(token, (env) => git(["-c", "url.https://github.com/.insteadOf=git@github.com:",
           "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/", "push",
           ...(setUpstream ? ["--set-upstream"] : []), pushRemote, `${source}:${destination}`], workspace, env));
+        if (setUpstream) {
+          const upstreamRemote = await git(["config", "--get", `branch.${branch}.remote`], workspace, process.env);
+          const upstreamBranch = await git(["config", "--get", `branch.${branch}.merge`], workspace, process.env);
+          if (upstreamRemote !== "origin" || upstreamBranch !== destination) {
+            throw new Error("coding workspace upstream does not match its pushed branch");
+          }
+          await git(["update-ref", `refs/remotes/origin/${branch}`, revision], workspace, process.env);
+        }
       },
       async pullRequest(action, repository, base, head, credential, options) {
         const token = await tokenFor(credential, repository);

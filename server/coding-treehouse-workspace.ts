@@ -88,7 +88,9 @@ export class CodingTreehouseWorkspace {
         { cwd: row.path!, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
       if (realpathSync(row.path) !== row.path || !this.verifySlot(row.path) ||
         git("branch", "--show-current") !== branch ||
-        git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}") !== `origin/${branch}`) return undefined;
+        git("config", "--get", `branch.${branch}.remote`) !== "origin" ||
+        git("config", "--get", `branch.${branch}.merge`) !== `refs/heads/${branch}`) return undefined;
+      git("rev-parse", "--verify", `refs/remotes/origin/${branch}`);
     } catch { return undefined; }
     return { repository: contract.repository, directory: row.path, branch, baseBranch: contract.ref,
       base: row.base_sha, leaseId: row.lease_id };

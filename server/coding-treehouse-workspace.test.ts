@@ -233,6 +233,7 @@ if (args[0] === 'status') {
       verifyRepository: () => true, verifySlot: () => true,
       pushWorkspaceBranch: async ({ directory, branch }) => {
         git(directory, "push", "--set-upstream", "origin", branch);
+        git(directory, "update-ref", `refs/remotes/origin/${branch}`, "HEAD");
       },
     });
     const requestId = `${contract.id}:narrow-fetch`;
@@ -242,6 +243,7 @@ if (args[0] === 'status') {
     assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.remote`), "origin");
     assert.equal(git(slot, "config", "--get", `branch.${expectedBranch}.merge`), `refs/heads/${expectedBranch}`);
     assert.throws(() => { git(slot, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"); });
+    assert.deepEqual(workspace.findForRun(contract.id), acquired);
   } finally {
     workspace?.close();
     await removeTempDir(dir);

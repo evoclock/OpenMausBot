@@ -9,6 +9,7 @@ import { allowsTool } from "../shared/tool-scope.ts";
 import { codingGitDestinationSchema, type CodingGitCredential, type CodingGitDestination } from "./coding-run-config.ts";
 import { RunContractStore } from "./run-contract.ts";
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
+import { removeTempDir } from "./testing/cleanup.ts";
 
 const repository = "evoclock/fixture";
 const author = { name: "evoclock", email: "52983349+evoclock@users.noreply.github.com" };
@@ -61,7 +62,12 @@ test("production Git host resolves an App installation and creates the checked p
       repositories: [repository], visibility: "private" } },
   }, { credentials: { async canWrite() { return true; } }, scopedToken: async () => "fixture-token",
     runGit: async (args, cwd, env) => {
-      gitInvocation = { args, cwd, env };
+      if (args.includes("push")) gitInvocation = { args, cwd, env };
+      if (args[0] === "config" && args[1] === "--get" && args[2]?.endsWith(".remote")) return "origin";
+      if (args[0] === "config" && args[1] === "--get" && args[2]?.endsWith(".merge")) {
+        const branch = args[2].slice("branch.".length, -".merge".length);
+        return `refs/heads/${branch}`;
+      }
       if (args.includes("push")) {
         const askpass = env.GIT_ASKPASS ?? "";
         assert.ok(askpass.startsWith("/"), "GIT_ASKPASS must be one absolute executable path");
@@ -107,6 +113,37 @@ test("production Git host resolves an App installation and creates the checked p
   assert.equal(typeof host.credentials.canWrite, "function");
   assert.equal(typeof host.port.push, "function");
   assert.equal(typeof host.port.pullRequest, "function");
+});
+
+test("production Git host reads outgoing authors with a narrow remote fetch refspec", async () => {
+  const cache = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "git-host-narrow-fetch-"));
+  const bare = join(dir, "origin.git");
+  const root = join(dir, "root");
+  const slot = join(dir, "slot");
+  mkdirSync(root);
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  try {
+    git(dir, "init", "--bare", "--initial-branch=main", bare);
+    git(root, "init", "-b", "main");
+    git(root, "-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--allow-empty", "-m", "base");
+    const base = git(root, "rev-parse", "HEAD");
+    git(root, "push", bare, `${base}:refs/heads/main`);
+    git(dir, "clone", "--branch", "main", bare, slot);
+    git(slot, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main");
+    const branch = "omb/coding-fixture";
+    git(slot, "switch", "-c", branch);
+    const head = git(slot, "rev-parse", "HEAD");
+    const host = createProductionCodingGitHost({ repositoryRoot: root, registrations: [] }, {
+      scopedToken: async () => "fixture-token",
+      runGit: async (args, cwd, env) => execFileSync("git", args, { cwd, encoding: "utf8", env }).trim(),
+    });
+    await host.port.push(slot, bare, head, `refs/heads/${branch}`,
+      { kind: "fine-grained-token", reference: "fixture" }, repository, { setUpstream: true });
+    git(slot, "-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--allow-empty", "-m", "change");
+    assert.deepEqual(await host.port.outgoingAuthors(slot, bare, branch), [author]);
+  } finally { await removeTempDir(dir); }
 });
 
 test("configured mixed-case evoclock repositories are allowed without widening the owner", async () => {
