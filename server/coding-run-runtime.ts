@@ -57,9 +57,10 @@ export async function openCodingRunRuntime(options: {
       const result = await activeDriver.invokeWorker({ requestId, goal, signal,
         transport: { async invoke() {
           const outcome = await work();
-          if (outcome.kind === "blocked") throw new Error("inner invocation requires reconciliation");
           const [runId, sequence] = requestId.split(":");
           const iteration = Number(sequence);
+          // Persist blocked outcomes too — throwing here used to mask evidence such as
+          // "coding turn produced no completed answer" behind a generic reconcile error.
           receipts.saveResult(runId!, iteration, requestId, outcome);
           const reference = `omb-result:${createHash("sha256").update(JSON.stringify(outcome)).digest("hex")}`;
           return { result: outcome, verified: true, reference };
