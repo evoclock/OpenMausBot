@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
-import type { InnerLoopResult } from "./outer-runner.ts";
 import { openOuterRunner } from "./outer-runner.ts";
 import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
+import type { InstalledWorkerDriver } from "./driver-run-api.ts";
 import type { RunSnapshot } from "./run-contract.ts";
 import { startGithubCodingRun, startScheduledCodingRun, startWebhookCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
@@ -23,21 +23,38 @@ export async function openCodingRunRuntime(options: {
   webhooks?: ReadonlyMap<string, TriggerTemplate>;
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
   effectInspector?: EffectReconcileHost;
-  driver?: {
-    status(runId: string): Promise<{ state: string; steps: Array<{ id: string; requestKey: string;
-      state: string; receipt?: { reference: string } }> } | null>;
-    reconcile(runId: string, evidence: { stepId: string; requestKey: string;
-      verified: boolean; reference?: string }): Promise<unknown>;
-    invokeWorker(input: { requestId: string; goal: string; signal: AbortSignal;
-      transport: { invoke(): Promise<{ result: InnerLoopResult; verified: true; reference: string }> } }):
-      Promise<{ runId: string; state: string; result?: InnerLoopResult; step?: { receipt?: { reference: string } } }>;
-    close(): Promise<void>;
-  };
+  driver?: InstalledWorkerDriver;
+  loadDriver?: () => Promise<InstalledWorkerDriver>;
 }) {
   const receipts = new CodingEffectReceipts(join(options.dataDir, "effect-receipts.sqlite"));
-  const route = createWorkerRoute(options.workerHost, options.driver ? {
+  let driver = options.driver;
+  let driverPromise: Promise<InstalledWorkerDriver> | undefined;
+  const resolveDriver = (): Promise<InstalledWorkerDriver> => {
+    if (driver) return Promise.resolve(driver);
+    if (!options.loadDriver) return Promise.reject(new Error("durable worker driver is unavailable"));
+    driverPromise ??= options.loadDriver().then(async (loaded) => {
+      if (typeof loaded.invokeWorker !== "function" || typeof loaded.status !== "function" ||
+        typeof loaded.reconcile !== "function" || typeof loaded.close !== "function") {
+        await loaded.close();
+        throw new Error("installed driver lacks the durable worker transport");
+      }
+      driver = loaded;
+      return loaded;
+    }).catch((error) => {
+      driverPromise = undefined;
+      throw error;
+    });
+    return driverPromise;
+  };
+  const route = createWorkerRoute(options.workerHost, options.driver || options.loadDriver ? {
     async invoke(requestId, goal, signal, work) {
-      const result = await options.driver!.invokeWorker({ requestId, goal, signal,
+      let activeDriver: InstalledWorkerDriver;
+      try { activeDriver = await resolveDriver(); }
+      catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return { kind: "blocked", evidence: [`durable worker driver unavailable: ${detail}`], costUsd: 0 };
+      }
+      const result = await activeDriver.invokeWorker({ requestId, goal, signal,
         transport: { async invoke() {
           const outcome = await work();
           if (outcome.kind === "blocked") throw new Error("inner invocation requires reconciliation");
@@ -72,15 +89,16 @@ export async function openCodingRunRuntime(options: {
       ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
         async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
         async confirmInvocation(requestId, result) {
-          if (!options.driver) return true;
+          if (!options.driver && !options.loadDriver) return true;
+          const activeDriver = await resolveDriver();
           const runId = createHash("sha256").update(`worker:${requestId}`).digest("hex");
-          const run = await options.driver.status(runId);
+          const run = await activeDriver.status(runId);
           const step = run?.steps[0];
           if (!step || run.steps.length !== 1) return false;
           const reference = `omb-result:${createHash("sha256").update(JSON.stringify(result)).digest("hex")}`;
           if (step.state === "finished") return step.receipt?.reference === reference;
           if (!["held", "intent"].includes(step.state) || run?.state === "cancelled") return false;
-          await options.driver.reconcile(runId, { stepId: step.id, requestKey: step.requestKey,
+          await activeDriver.reconcile(runId, { stepId: step.id, requestKey: step.requestKey,
             verified: true, reference });
           return true;
         },
@@ -110,6 +128,11 @@ export async function openCodingRunRuntime(options: {
     report: runner.report,
     reportPending: runner.reportPending,
     cancel: runner.cancel,
-    async close() { await runner.close(); await options.driver?.close(); receipts.close(); },
+    async close() {
+      await runner.close();
+      const activeDriver = driver ?? (driverPromise ? await driverPromise.catch(() => undefined) : undefined);
+      await activeDriver?.close();
+      receipts.close();
+    },
   };
 }

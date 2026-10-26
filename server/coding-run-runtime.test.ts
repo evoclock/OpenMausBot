@@ -95,6 +95,7 @@ test("the outer invocation hands one opaque goal to the durable transport", asyn
         return { runId: "correlated", state: "finished", result: receipt.result };
       },
       async status() { return null; },
+      async resume() { return { state: "finished", steps: [] }; },
       async reconcile() {},
       async close() {},
     } });
@@ -104,7 +105,22 @@ test("the outer invocation hands one opaque goal to the durable transport", asyn
     if (!("id" in accepted)) throw new Error("missing run");
     assert.equal(await settled(runtime, accepted.id), "done");
     assert.deepEqual(requests, [`${accepted.id}:1`]);
-    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check"]);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check"]);
+  } finally { await runtime.close(); }
+});
+
+test("a missing lazy driver blocks before starting a worker turn", async () => {
+  const calls: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map([["routine", template]]), github: new Map(),
+    loadDriver: async () => { throw new Error("installed driver-run API is unavailable"); } });
+  try {
+    const accepted = await runtime.scheduled({ id: "missing-driver", routineId: "routine", botId: "fixture",
+      scheduledFor: 100, triggerSource: "schedule", status: "running" });
+    if (!("id" in accepted)) throw new Error("missing run id");
+    expect(await settled(runtime, accepted.id)).toBe("blocked");
+    expect(runtime.get(accepted.id)?.evidence.join(" ")).toContain("installed driver-run API is unavailable");
+    expect(calls).toEqual([]);
   } finally { await runtime.close(); }
 });
 

@@ -14,12 +14,14 @@ export interface InstalledWorkerDriver {
   close(): Promise<void>;
 }
 
-export async function requireDriverRunApi(): Promise<{
+export interface DriverRunApi {
   openDurableDriver: (options: { directory: string }) => Promise<InstalledWorkerDriver>;
-}> {
+}
+
+export async function requireDriverRunApi(moduleSpecifier = moduleName): Promise<DriverRunApi> {
   let loaded: unknown;
   try {
-    loaded = await import(moduleName);
+    loaded = await import(moduleSpecifier);
   } catch {
     throw new Error(unavailable);
   }

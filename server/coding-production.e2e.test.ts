@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import { RunContractStore } from "./run-contract.ts";
-import { requireDriverRunApi } from "./driver-run-api.ts";
+import { openDurableDriver as openTestDurableDriver } from "./testing/fake-durable-driver.ts";
 import { SessionStatusFeed } from "./session-status-feed.ts";
 import { scheduledCodingRunId } from "./run-triggers.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
@@ -67,7 +67,8 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
   const port = mainPort.port;
   const base = `http://127.0.0.1:${port}`;
   const env = { HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port),
-    OMB_WEBHOOK_PORT: String(webhookPort.port), OMB_STATIC_DIR: join(home, "static"),
+    OMB_WEBHOOK_PORT: String(webhookPort.port), OMB_STATIC_DIR: join(home, "static"), NODE_ENV: "test",
+    OMB_TEST_DRIVER_RUN_API_MODULE: pathToFileURL(join(serverDir, "testing", "fake-durable-driver.ts")).href,
     PATH: `${bin}:${process.env.PATH ?? ""}` };
   let child: ChildProcess | undefined;
   let stderr = "";
@@ -461,9 +462,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     store.close();
     expect(f.git(f.leased, "rev-parse", "HEAD")).toBe(review.revision);
     await f.kill();
-    const driver = await (await requireDriverRunApi()).openDurableDriver({
-      directory: join(f.dataDir, "coding-run", "durable-driver"),
-    });
+    const driver = await openTestDurableDriver({ directory: join(f.dataDir, "coding-run", "durable-driver") });
     try {
       const driverRunId = createHash("sha256").update(`worker:${prepared!.requestId}`).digest("hex");
       const intent = await driver.status(driverRunId);
