@@ -192,6 +192,31 @@ test("coding turn does not chase a completed turn with no answer", async () => {
   assert.equal(tasks.length, 1);
 });
 
+test("a failed turn with no answer reports the Pi error instead of a missing answer", async () => {
+  const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
+  const messages = [
+    { role: "bot" as const, kind: "activity" as const, tool: { name: "error: pi process exited before replying: Coding run denied: closed profile is invalid", ok: false } },
+    { role: "bot" as const, kind: "digest" as const, text: "[digest]", turnId: "turn", turnSucceeded: false },
+  ];
+  const store = {
+    bot: () => ({ id: "reviewer" }), tasks: () => tasks,
+    createTask(_botId: string, title: string) {
+      const task = { title, threadId: "thread-1", cwd, createdAt: 1 };
+      tasks.push(task);
+      return task;
+    },
+    patchTask: () => ({}), messagesFor: () => messages, switchTaskModel: () => ({}),
+  } as unknown as Store;
+  const port = createCodingStartTurnPort({ store, assertActiveRun: () => {}, driverKind: () => "piAgent",
+    costForThread: async () => 0,
+    async startTurn(_botId, _text, options: { onTurnSettled: () => void }) { options.onTurnSettled(); },
+    async interrupt() {},
+  });
+  await assert.rejects(port.run({ botId: "reviewer", workspace, role: "review", prompt: "Review",
+    requestId: "review:failed", signal: new AbortController().signal }),
+  /did not complete successfully: pi process exited before replying: Coding run denied: closed profile is invalid/);
+});
+
 test("coding turn surfaces BLOCKED after exactly one blocked chase", async () => {
   const tasks: Array<{ title: string; threadId: string; cwd: string; createdAt: number }> = [];
   const messages = new Map<string, Array<{ role: "bot"; kind: "text"; text: string; turnTerminal: boolean; turnSucceeded?: boolean }>>();

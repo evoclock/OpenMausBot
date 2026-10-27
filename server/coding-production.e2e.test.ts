@@ -182,7 +182,7 @@ test.each([
     }
     const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
       cwd: string; isTurnSpawn: boolean; argv: string[]; uiResponse?: { value?: string };
-      mcpConfig?: { toolScope?: { allow?: string[] } };
+      mcpConfig?: { toolScope?: { allow?: string[] }; codingRun?: { id?: string } };
     }>;
     if (mode === "permission" || mode === "coding-denied") {
       expect(turns.some((turn) => turn.uiResponse)).toBe(false);
@@ -192,6 +192,8 @@ test.each([
     expect(turns.some((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toBe(true);
     for (const turn of turns.filter((item) => item.isTurnSpawn && item.cwd === f.leased)) {
       expect(turn.mcpConfig?.toolScope?.allow).toEqual(["native:read", "native:write", "native:edit", "native:coding_command"]);
+      // Worker and reviewer share the bare run id; a `review:` prefix fails the closed profile and kills Pi.
+      expect(turn.mcpConfig?.codingRun?.id).toBe(scheduledCodingRunId(run));
     }
     const operations = readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
     expect(operations.some((operation) => operation[0] === "get")).toBe(true);

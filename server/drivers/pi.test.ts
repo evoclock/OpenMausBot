@@ -699,6 +699,16 @@ describe("PiDriver turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-exit")).toBe(false);
   });
 
+  it("reports pi stderr when the process exits before replying", async () => {
+    await create("exit-early-stderr");
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-exit-stderr", text: "hi" });
+    const done = await recorder.until((e) => e.type === "turn.completed" && e.turnId === turnId);
+    expect(done).toMatchObject({ ok: false, stopReason: "failed" });
+    expect(recorder.events.filter((e) => e.type === "runtime.error" && e.turnId === turnId)).toEqual([
+      expect.objectContaining({ message: "pi process exited before replying: Error: Failed to load extension: fixture startup failure" }),
+    ]);
+  });
+
   it("surfaces a pi turn error instead of reporting an empty success", async () => {
     await create("turn-error");
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-turn-error", text: "hi" });

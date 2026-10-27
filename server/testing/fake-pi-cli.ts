@@ -2,7 +2,7 @@
 // Fake of the pi coding agent's `--mode rpc --no-session` stdio surface for pi.ts tests. Env knobs:
 //   FAKE_PI_MODE  happy (default) | tooluse | permission | interleave | question-select | question-input
 //     | turn-error | coding | no-models | exit-early | compaction | compaction-recovery
-//     | compaction-recovery-upstream | prompt-reject | omp-chunk
+//     | compaction-recovery-upstream | prompt-reject | omp-chunk | exit-early-stderr
 //   FAKE_PI_MODELS  provider/model pairs (default "ollama-cloud/glm-5.2,openai/gpt-4o")
 //   FAKE_PI_DUMP  path to append {argv, env} JSON to
 //   FAKE_PI_STEER_REFUSE  answer a steer with an explicit success:false
@@ -66,11 +66,28 @@ if (process.env.FAKE_PI_DUMP) {
   } catch {}
 }
 
+// Mirrors pi-mcp-extension: an invalid closed coding profile fails extension load, so pi exits before any reply.
+if (argv[0] === "--mode" && argv.includes("-e") && process.env.OMB_MCP_CONFIG) {
+  let codingRunId: unknown;
+  try {
+    codingRunId = (JSON.parse(readFileSync(process.env.OMB_MCP_CONFIG, "utf8")) as { codingRun?: { id?: unknown } }).codingRun?.id;
+  } catch {}
+  if (codingRunId !== undefined && (typeof codingRunId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(codingRunId))) {
+    process.stderr.write("Error: Failed to load extension: Coding run denied: closed profile is invalid\n");
+    process.exit(1);
+  }
+}
+
 if (argv[0] === "update" && argv.includes("--models")) {
   process.exit(mode === "update-error" ? 1 : 0);
 }
 
 if (mode === "exit-early" && argv.includes("-e")) {
+  process.exit(1);
+}
+
+if (mode === "exit-early-stderr" && argv.includes("-e")) {
+  process.stderr.write("Error: Failed to load extension: fixture startup failure\n");
   process.exit(1);
 }
 

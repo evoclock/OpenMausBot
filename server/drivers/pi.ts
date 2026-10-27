@@ -48,6 +48,7 @@ import {
 import { appendNative } from "./native.ts";
 import { decodePiConfig, type PiConfig } from "./pi-config.ts";
 import { checkPiReadiness } from "../pi-readiness.ts";
+import { captureStderrTail, piExitMessage, scopeReceiptReady } from "./pi-process-diagnostics.ts";
 import { allowsTool, canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
 import { customServerGate, gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
 import { remoteMcpSpec } from "../mcp-http.ts";
@@ -875,8 +876,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         emit({ ...base(threadId, turnId), type: "runtime.error", message: fail.message, setup: fail.setup });
         settle(false);
       });
+      const stderrTail = captureStderrTail(child);
       child.on("close", () => {
         rejectWaiters(new Error("pi process exited before replying"));
+        if (!settled) emit({ ...base(threadId, turnId), type: "runtime.error", message: piExitMessage(stderrTail()) });
         settle(false);
       });
 
@@ -903,6 +906,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         // pi --no-session accepts a prompt without an explicit session.
       }
 
+      // A process that already exited cannot take the model or prompt; its close event reported why.
+      if (settled) return { turnId };
       const chosen = typeof turn.model === "string" ? splitPiModel(turn.model) : null;
       if (chosen) {
         try {
@@ -921,18 +926,12 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
       }
 
-      if (scopeReadyPath) {
-        let ready = false;
-        try {
-          const receipt = JSON.parse(readFileSync(scopeReadyPath, "utf8")) as { status?: unknown; toolScope?: unknown };
-          ready = (receipt.status === "registered" || receipt.status === "enforced") && JSON.stringify(receipt.toolScope) === JSON.stringify(toolScope);
-        } catch { /* Missing or malformed readiness is never a grant. */ }
-        if (!ready) {
-          const message = "Pi tool selection enforcement is unavailable. Update Pi and check the OpenMausBot extension before retrying.";
-          emit({ ...base(threadId, turnId), type: "runtime.error", message });
-          settle(false);
-          throw new Error(message);
-        }
+      if (settled) return { turnId };
+      if (scopeReadyPath && !scopeReceiptReady(scopeReadyPath, toolScope)) {
+        const message = "Pi tool selection enforcement is unavailable. Update Pi and check the OpenMausBot extension before retrying.";
+        emit({ ...base(threadId, turnId), type: "runtime.error", message });
+        settle(false);
+        throw new Error(message);
       }
 
       const halves = promptHalves(turn);
