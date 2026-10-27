@@ -383,6 +383,15 @@ function handle(cmd: any) {
         send({ type: "tool_execution_end", toolCallId: "forbidden", toolName: "bash", isError: true,
           result: { content: [{ type: "text", text: "Coding run denied: bash is outside the envelope" }] } });
       }
+      else if (mode === "coding-path-denied") {
+        const toolName = process.env.FAKE_PI_DENIED_TOOL ?? "read";
+        const path = process.env.FAKE_PI_DENIED_PATH ?? ".git/config";
+        send({ type: "agent_start" }); send({ type: "turn_start" });
+        send({ type: "tool_execution_start", toolCallId: "path-probe", toolName, args: { path } });
+        send({ type: "tool_execution_end", toolCallId: "path-probe", toolName, isError: true,
+          result: { content: [{ type: "text", text: `Coding run denied: ${toolName} is outside the envelope` }] } });
+        streamTurn("Continued after denied path");
+      }
       else if (mode === "question-select") streamQuestionSelectTurn();
       else if (mode === "question-input") streamQuestionInputTurn();
       else if (mode === "interleave") streamInterleaveTurn();
