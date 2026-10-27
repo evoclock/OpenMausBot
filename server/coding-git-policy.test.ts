@@ -133,16 +133,23 @@ test("production Git host reads outgoing authors with a narrow remote fetch refs
     git(dir, "clone", "--branch", "main", bare, slot);
     git(slot, "config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main");
     const branch = "omb/coding-fixture";
-    git(slot, "switch", "-c", branch);
-    const head = git(slot, "rev-parse", "HEAD");
     const host = createProductionCodingGitHost({ repositoryRoot: root, registrations: [] }, {
       scopedToken: async () => "fixture-token",
       runGit: async (args, cwd, env) => execFileSync("git", args, { cwd, encoding: "utf8", env }).trim(),
     });
+    await host.port.createBranch(slot, branch, "main");
+    git(slot, "-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--allow-empty", "-m", "change");
+    const head = git(slot, "rev-parse", "HEAD");
+    assert.deepEqual(await host.port.outgoingAuthors(slot, bare, branch, "main"), [author]);
+    git(slot, "config", `branch.${branch}.merge`, "refs/heads/main");
+    await assert.rejects(host.port.outgoingAuthors(slot, bare, branch, "main"), /upstream changed/);
+    git(slot, "config", `branch.${branch}.merge`, `refs/heads/${branch}`);
+    git(slot, "config", `branch.${branch}.remote`, "elsewhere");
+    await assert.rejects(host.port.outgoingAuthors(slot, bare, branch, "main"), /upstream changed/);
+    git(slot, "config", `branch.${branch}.remote`, "origin");
     await host.port.push(slot, bare, head, `refs/heads/${branch}`,
       { kind: "fine-grained-token", reference: "fixture" }, repository, { setUpstream: true });
-    git(slot, "-c", `user.name=${author.name}`, "-c", `user.email=${author.email}`, "commit", "--allow-empty", "-m", "change");
-    assert.deepEqual(await host.port.outgoingAuthors(slot, bare, branch), [author]);
+    assert.deepEqual(await host.port.outgoingAuthors(slot, bare, branch, "main"), [author]);
   } finally { await removeTempDir(dir); }
 });
 

@@ -258,6 +258,7 @@ const WAKE_HORIZON_MS = 60 * 60_000;
 
 export const ROUTINE_RESTARTED = "OpenMausBot restarted while this routine was running";
 const MAX_DATE_MS = 8_640_000_000_000_000;
+const UNSCHEDULED_ONCE_AT = MAX_DATE_MS;
 const LOCAL_DAY_MS = 24 * 60 * 60_000;
 const INTERVAL_RESTRICTION_SEARCH_MS = 9 * LOCAL_DAY_MS;
 const CLOCK_TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -679,7 +680,9 @@ export class RoutineManager {
       assertRoutineFileShape(disk);
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
-            const schedule = loadSchedule(routine.schedule, this.now());
+            const schedule = routine.schedule === null && routine.enabled === false
+              ? { type: "once" as const, at: UNSCHEDULED_ONCE_AT }
+              : loadSchedule(routine.schedule, this.now());
             if (!schedule) {
               console.warn(`routines: keeping ${String(routine.id)} on disk unscheduled; its schedule could not load`);
               this.unloadedRoutines.push(routine);
@@ -983,6 +986,8 @@ export class RoutineManager {
     }
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
+    if (routine.schedule.type === "once" && routine.schedule.at === UNSCHEDULED_ONCE_AT &&
+      patch.enabled === true && !patch.schedule) throw new RoutineScheduleError("Choose a schedule before enabling this routine");
     const now = this.now();
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,

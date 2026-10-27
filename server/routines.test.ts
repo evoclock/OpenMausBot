@@ -10,6 +10,7 @@ import { isRoutineProblemRun } from "../shared/routines.ts";
 import { ROUTINE_SKIPPED_WHILE_WAITING, ROUTINE_SUPERSEDED } from "./routine-execution.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { runSnapshotSchema } from "./run-contract.ts";
+import { removeTempDir } from "./testing/cleanup.ts";
 import {
   nextOccurrence,
   RoutineManager,
@@ -121,6 +122,30 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+it("loads a disabled unscheduled seed for a later schedule update without starting it", async () => {
+  const cache = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "routine-unscheduled-"));
+  const file = join(dir, "routines.json");
+  const seed = { id: "seed", name: "Future coding trigger", prompt: "Review a task", target: "bot",
+    botId: "fixture-bot", runOn: "maus", enabled: false, schedule: null, durationMinutes: 30,
+    nextRunAt: null, createdAt: 1, updatedAt: 1 };
+  writeFileSync(file, JSON.stringify({ version: 1, routines: [seed, { ...seed, id: "bad", enabled: true }], runs: [] }));
+  try {
+    const manager = new RoutineManager({ file, now: () => 1_000, botState: () => "ready",
+      createTask: () => { throw new Error("disabled seed dispatched"); }, startTurn: async () => { throw new Error("disabled seed dispatched"); } });
+    expect(manager.listRoutines().map((routine) => routine.id)).toEqual(["seed"]);
+    await manager.tick();
+    expect(manager.listRuns()).toHaveLength(0);
+    expect(() => manager.update("seed", { enabled: true })).toThrow("Choose a schedule before enabling");
+    const scheduled = manager.update("seed", { schedule: { type: "once", at: 60_000 }, enabled: false });
+    expect(scheduled?.schedule).toEqual({ type: "once", at: 60_000 });
+    expect(scheduled?.enabled).toBe(false);
+    expect(manager.listRuns()).toHaveLength(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).routines.find((routine: { id: string }) => routine.id === "bad").schedule).toBeNull();
+  } finally { await removeTempDir(dir); }
 });
 
 describe("routine store durability boundary", () => {
