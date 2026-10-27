@@ -28,6 +28,11 @@ export function codingTurnToolScope(config: CodingRunConfig | undefined, botId: 
     ? codingGitToolScope(existing) : existing;
 }
 
+/** Review turns carry `review:<runId>:<revision>`; the closed Pi profile needs the bare run id. */
+export function codingRunIdForRequest(requestId: string): string {
+  return (requestId.startsWith("review:") ? requestId.slice("review:".length) : requestId).slice(0, 36);
+}
+
 export async function openProductionCodingRuntime(options: {
   config: CodingRunConfig;
   dataDir: string;
@@ -145,8 +150,7 @@ export async function openProductionCodingRuntime(options: {
     (hook ? webhookTemplates : templates).set(entry.routineId, template);
   }
   const originForRequest = (requestId: string) => {
-    const source = requestId.startsWith("review:") ? requestId.slice(7) : requestId;
-    const id = source.slice(0, 36);
+    const id = codingRunIdForRequest(requestId);
     const live = origins.get(id);
     if (live) return live;
     const linked = runStore.routineLink(id);
@@ -156,7 +160,7 @@ export async function openProductionCodingRuntime(options: {
   const turn = createCodingStartTurnPort({
     store,
     onTaskCreated(botId, threadId, requestId, workspace) {
-      const runId = requestId.slice(0, 36);
+      const runId = codingRunIdForRequest(requestId);
       workspacesByRun.set(runId, workspace);
       options.onTaskCreated?.(botId, threadId, requestId, workspace);
     },

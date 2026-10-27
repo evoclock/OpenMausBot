@@ -875,8 +875,17 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         emit({ ...base(threadId, turnId), type: "runtime.error", message: fail.message, setup: fail.setup });
         settle(false);
       });
+      // Extension load failures reach only stderr; keep a short tail so an early exit is not silent.
+      let stderrTail = "";
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => { stderrTail = (stderrTail + chunk).slice(-2_000); });
       child.on("close", () => {
         rejectWaiters(new Error("pi process exited before replying"));
+        if (!settled) {
+          const detail = stderrTail.trim().split("\n").filter((line) => line.trim()).slice(-2).join(" ").slice(-500);
+          emit({ ...base(threadId, turnId), type: "runtime.error",
+            message: detail ? `pi process exited before replying: ${detail}` : "pi process exited before replying" });
+        }
         settle(false);
       });
 
@@ -903,6 +912,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         // pi --no-session accepts a prompt without an explicit session.
       }
 
+      // A process that already exited cannot take the model or prompt; its close event reported why.
+      if (settled) return { turnId };
       const chosen = typeof turn.model === "string" ? splitPiModel(turn.model) : null;
       if (chosen) {
         try {
@@ -921,6 +932,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
       }
 
+      if (settled) return { turnId };
       if (scopeReadyPath) {
         let ready = false;
         try {

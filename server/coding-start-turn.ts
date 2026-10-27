@@ -110,7 +110,11 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
           const turnId = answer?.turnId ?? messages.findLast((message) => message.role === "bot" && message.turnId)?.turnId;
           const looping = hasRetryLoop(task.threadId, messages, turnId);
           const blocked = answer?.text?.trimStart().startsWith("BLOCKED:") === true;
-          const successful = answer?.turnSucceeded !== false;
+          // With no answer, the turn's failure sits on its digest or error activity, not on a text message.
+          const successful = answer ? answer.turnSucceeded !== false
+            : !messages.some((message) => message.role === "bot" && message.turnSucceeded === false);
+          const failure = answer ? undefined : messages.findLast((message) => message.role === "bot" &&
+            message.kind === "activity" && message.tool?.ok === false && message.tool.name.startsWith("error: "))?.tool?.name.slice("error: ".length);
           if (answer?.text && successful && !blocked && !stalled && !looping) {
             const after = revision(workspace.directory);
             return { revision: after === before && role !== "review" ? "" : after,
@@ -123,10 +127,12 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
             if (signal.aborted) throw new Error("coding turn cancelled");
             continue;
           }
-          if (chase === 0) throw new Error(successful
-            ? "coding turn produced no completed answer" : "coding turn did not complete successfully");
+          if (chase === 0) throw new Error((successful
+            ? "coding turn produced no completed answer" : "coding turn did not complete successfully") +
+            (failure ? `: ${failure}` : ""));
           const detail = answer?.text?.trim() || (stalled ? "the Pi turn stalled again" :
-            successful ? "the Pi turn produced no completed answer" : "the Pi turn did not complete successfully");
+            successful ? "the Pi turn produced no completed answer" : "the Pi turn did not complete successfully") +
+            (failure ? `: ${failure}` : "");
           return await blockedResult(`BLOCKED after one stuck-turn chase: ${detail}`);
         } catch (error) {
           if (chase === 0) throw error;

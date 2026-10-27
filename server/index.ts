@@ -1,7 +1,7 @@
 // Import first: it reads a Cloud home's secrets off the launcher's pipe before any module can start a process.
 import { BOOT_CLOUD_SECRETS } from "./cloud-secrets-boot.ts";
 import { createQueuedSendDrain, queuedTurnTrigger } from "./host/queued-send-drain.ts";
-import { codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
+import { codingRunIdForRequest, codingTurnToolScope, openProductionCodingRuntime } from "./coding-production.ts";
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
@@ -10198,7 +10198,7 @@ if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
     onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
-      { id: requestId.slice(0, 36), branch: workspace.branch, directory: workspace.directory }),
+      { id: codingRunIdForRequest(requestId), branch: workspace.branch, directory: workspace.directory }),
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
     registry,
     async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {

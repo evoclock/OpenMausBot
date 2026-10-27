@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
 import { codingGitToolScope, createCodingGitPolicy, createCodingGitRunPolicy, type CodingGitPort, type CodingGitRequest, type RepositoryFacts } from "./coding-git-policy.ts";
-import { codingTurnToolScope } from "./coding-production.ts";
+import { codingRunIdForRequest, codingTurnToolScope } from "./coding-production.ts";
 import { allowsTool } from "../shared/tool-scope.ts";
 import { codingGitDestinationSchema, type CodingGitCredential, type CodingGitDestination } from "./coding-run-config.ts";
 import { RunContractStore } from "./run-contract.ts";
@@ -351,4 +351,13 @@ test("checked push reaches a real local bare repository with a canonical ref", a
     writeFileSync(join(process.env.OMB_GIT_POLICY_PROOF_DIR, "bare-push.txt"),
       `bare branch bot/review: ${revision}\nprotected base trunk: ${base}\n`);
   }
+});
+
+test("review turns reuse the run id the closed Pi profile accepts", () => {
+  const runId = "24421e77-046b-5e9b-8162-b06f26914964";
+  const review = codingRunIdForRequest(`review:${runId}:816360d21b9dfb2f569343f47638fd3a398da697`);
+  assert.equal(review, runId);
+  assert.equal(codingRunIdForRequest(runId), runId);
+  // Same pattern pi-mcp-extension enforces before loading a closed coding profile.
+  assert.match(review, /^[a-zA-Z0-9_-]{1,128}$/);
 });
