@@ -135,11 +135,19 @@ export class CodingTreehouseWorkspace {
       }
       const currentHead = this.readRevision(slot.path, "HEAD");
       const currentStatus = this.readStatus(slot.path);
-      if (!row.base_sha && (currentStatus || currentHead !== this.readRevision(slot.path, contract.ref))) {
-        throw new Error("workspace base cannot be recovered after uncertain work");
+      if (!row.base_sha) {
+        let baseTip: string;
+        try { baseTip = this.readRevision(slot.path, `${contract.ref}@{upstream}`); }
+        catch {
+          try { baseTip = this.readRevision(slot.path, `origin/${contract.ref}`); }
+          catch { baseTip = this.readRevision(slot.path, contract.ref); }
+        }
+        if (currentStatus || currentHead !== baseTip) {
+          throw new Error("workspace base cannot be recovered after uncertain work");
+        }
       }
       const base = row.base_sha ?? currentHead;
-      await this.ensureWorkspaceBranch(slot.path, contract, requestId, branch, currentHead, row.base_sha, currentStatus);
+      await this.ensureWorkspaceBranch(slot.path, contract, requestId, branch, currentHead, base, currentStatus);
       this.db.prepare("UPDATE coding_workspaces SET path = ?, lease_id = ?, base_sha = ? WHERE request_id = ?")
         .run(slot.path, slot.lease_id, base, requestId);
       this.db.exec("COMMIT");

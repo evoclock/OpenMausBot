@@ -86,6 +86,54 @@ test("a task reacquires its lease without another get or pushing recovered commi
   } finally { workspace.close(); }
 });
 
+test("first acquire records the upstream tip when local main lags a clean slot", async () => {
+  const root = process.cwd();
+  const dir = mkdtempSync(join(root, "node_modules", ".cache", "coding-upstream-"));
+  const slot = join(dir, "slot");
+  mkdirSync(slot);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: slot, encoding: "utf8" }).trim();
+  git("init", "-b", "main");
+  git("remote", "add", "origin", slot);
+  writeFileSync(join(slot, "tracked.txt"), "original");
+  git("add", "tracked.txt");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "local base");
+  const local = git("rev-parse", "HEAD");
+  git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--allow-empty", "-m", "remote base");
+  const tip = git("rev-parse", "HEAD");
+  git("update-ref", "refs/remotes/origin/main", tip);
+  git("branch", "--set-upstream-to=origin/main", "main");
+  git("switch", "--detach", tip);
+  git("branch", "-f", "main", local);
+  const executable = join(dir, "treehouse.mjs");
+  writeFileSync(executable, `#!/usr/bin/env node\nimport { readFileSync, writeFileSync } from 'node:fs';\nconst args = process.argv.slice(2);\nconst state = ${JSON.stringify(join(dir, "holder"))};\nconst path = ${JSON.stringify(slot)};\nif (args[0] === 'status') {\n let holder; try { holder = readFileSync(state, 'utf8'); } catch {}\n console.log(JSON.stringify(holder ? [{ path, status: 'leased', lease_id: 'lease-1', lease_holder: holder }] : []));\n} else if (args[0] === 'get') {\n writeFileSync(state, args[args.indexOf('--lease-holder') + 1]);\n console.log(JSON.stringify({ path, lease_id: 'lease-1' }));\n} else process.exit(1);\n`);
+  chmodSync(executable, 0o755);
+  const workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir,
+    executable, verifyRepository: () => true, verifySlot: () => true,
+    pushWorkspaceBranch: async ({ branch }) => {
+      git("update-ref", `refs/remotes/origin/${branch}`, tip);
+      git("config", `branch.${branch}.remote`, "origin");
+      git("config", `branch.${branch}.merge`, `refs/heads/${branch}`);
+    } });
+  try {
+    assert.equal(git("rev-parse", "main"), local);
+    assert.equal(git("rev-parse", "main@{upstream}"), tip);
+    assert.equal(git("status", "--porcelain"), "");
+    const request = { ...contract, allowedEffects: ["edit", "push"] as Array<"edit" | "push"> };
+    writeFileSync(join(slot, "tracked.txt"), "dirty");
+    await assert.rejects(workspace.acquire(request, "upstream-task"), /base cannot be recovered/);
+    writeFileSync(join(slot, "tracked.txt"), "original");
+    git("switch", "--detach", local);
+    await assert.rejects(workspace.acquire(request, "upstream-task"), /base cannot be recovered/);
+    git("switch", "--detach", tip);
+    assert.equal((await workspace.acquire(request, "upstream-task")).base, tip);
+    const db = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
+    try {
+      assert.equal((db.prepare("SELECT base_sha FROM coding_workspaces WHERE request_id = ?")
+        .get("upstream-task") as { base_sha: string }).base_sha, tip);
+    } finally { db.close(); }
+  } finally { workspace.close(); }
+});
+
 test.each(["clean", "dirty", "bundle-failure", "unpushed-clean", "ignored", "ignored-unreadable"])("release reconciles %s workspace before guarded return", async (condition) => {
   const root = process.cwd();
   const dir = mkdtempSync(join(root, "node_modules", ".cache", "coding-release-"));
