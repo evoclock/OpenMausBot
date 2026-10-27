@@ -2,16 +2,28 @@ import { describe, expect, it } from "vitest";
 import { allowedCodingRecovery, codingRecoveryAllowlist, codingModelChain, codingRecoveryCandidates, recoveryCapabilityError } from "./automatic-recovery.ts";
 
 describe("automatic recovery capabilities", () => {
-  it("orders subscription, preferred local, then allowlisted locals and excludes API and unlisted loaded models", () => {
-    const instance = (instanceId: string, access: "api" | "custom", models: string[]) => ({
-      instanceId, driverKind: "piAgent", enabled: true, access,
-      models: { options: models.map((id) => ({ id })) },
-    });
-    expect(codingModelChain([
-      instance("pi", "custom", ["local-2/other", "merge-gateway/paid", "dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-luna"]),
-      instance("billed", "api", ["dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-luna"]),
-    ], ["dsf41", "local-2", "merge-gateway"])).toEqual([
+  const instance = (instanceId: string, access: "api" | "custom", models: string[]) => ({
+    instanceId, driverKind: "piAgent", enabled: true, access,
+    models: { options: models.map((id) => ({ id })) },
+  });
+  it("defaults the subscription model to gpt-6-sol and never silently picks luna", () => {
+    expect(codingModelChain([instance("pi", "custom", ["openai-codex/gpt-6-luna", "openai-codex/gpt-6-sol"])], []))
+      .toEqual([{ instanceId: "pi", model: "openai-codex/gpt-6-sol", modelAccess: "subscription" }]);
+    expect(codingModelChain([instance("pi", "custom", ["openai-codex/gpt-6-luna"])], [])).toEqual([]);
+  });
+  it("uses luna only when configured, in configured order", () => {
+    expect(codingModelChain([instance("pi", "custom", ["openai-codex/gpt-6-sol", "openai-codex/gpt-6-luna"])], [],
+      ["openai-codex/gpt-6-luna", "openai-codex/gpt-6-sol"])).toEqual([
       { instanceId: "pi", model: "openai-codex/gpt-6-luna", modelAccess: "subscription" },
+      { instanceId: "pi", model: "openai-codex/gpt-6-sol", modelAccess: "subscription" },
+    ]);
+  });
+  it("orders subscription, preferred local, then allowlisted locals and excludes API and unlisted loaded models", () => {
+    expect(codingModelChain([
+      instance("pi", "custom", ["local-2/other", "merge-gateway/paid", "dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-luna", "openai-codex/gpt-6-sol"]),
+      instance("billed", "api", ["dsf41/deepseek-v4.1-flash-tf", "openai-codex/gpt-6-sol"]),
+    ], ["dsf41", "local-2", "merge-gateway"])).toEqual([
+      { instanceId: "pi", model: "openai-codex/gpt-6-sol", modelAccess: "subscription" },
       { instanceId: "pi", model: "dsf41/deepseek-v4.1-flash-tf", modelAccess: "local" },
       { instanceId: "pi", model: "local-2/other", modelAccess: "local" },
     ]);

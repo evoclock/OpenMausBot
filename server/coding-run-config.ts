@@ -49,6 +49,8 @@ export const codingRunConfigSchema = z.object({
   contextCarryMaxBytes: z.number().int().min(256).max(32768).optional(),
   /** Only these Pi provider IDs are trusted as local coding fallbacks. */
   localModelProviders: z.array(z.string().regex(/^[a-z0-9][a-z0-9._-]*$/)).optional(),
+  /** Ordered subscription models tried before local fallbacks; default `["openai-codex/gpt-6-sol"]`. */
+  subscriptionModels: z.array(z.string().regex(/^openai-codex\/[^\s/]+$/)).min(1).optional(),
   /** Explicit per-origin-bot run budgets; a missing bot entry refuses unattended work. */
   bots: z.record(z.string().min(1), codingRunLimitsSchema.extend({
     maxIterations: z.number().int().positive().default(8),

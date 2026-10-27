@@ -11,7 +11,7 @@ const workspace: IsolatedWorkspace = { repository: "fixture/agents", directory: 
   baseBranch: "main", base: "main", leaseId: "lease" };
 
 test("coding turn pins an allowed model and reports the model that completed the turn", async () => {
-  let selected = { instanceId: "pi", model: "openai-codex/gpt-6-luna" };
+  let selected = { instanceId: "pi", model: "openai-codex/gpt-6-sol" };
   const messages = [{ role: "bot" as const, kind: "text" as const, text: `ACCEPT ${revision}`, turnTerminal: true }];
   const store = {
     bot: () => ({ id: "worker" }), tasks: () => [],

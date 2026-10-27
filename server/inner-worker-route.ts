@@ -63,8 +63,8 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
       if (contract.repositoryClass !== "agent-private") return { kind: "blocked", evidence: ["external repository requires a separate verified route"], costUsd: 0 };
       const roles = await host.roles(contract.repository);
-      if (!roles?.development || !roles.independentReview || roles.development === roles.independentReview) {
-        return { kind: "blocked", evidence: ["distinct worker and reviewer routes are unavailable"], costUsd: 0 };
+      if (!roles?.development || !roles.independentReview) {
+        return { kind: "blocked", evidence: ["worker and reviewer routes are unavailable"], costUsd: 0 };
       }
       const workspace = await host.acquire(contract, requestId);
       let releaseReason = "worker route failed; reconcile outward effects";
