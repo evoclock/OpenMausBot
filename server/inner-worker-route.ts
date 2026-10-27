@@ -21,16 +21,20 @@ export interface WorkerReport {
   revision: string;
   evidence: string[];
   progress: boolean;
+  blocked?: boolean;
   costUsd?: number | null;
   modelUsed?: { instanceId: string; model: string };
+  modelsUsed?: Array<{ instanceId: string; model: string }>;
 }
 
 export interface ReviewReport {
   revision: string;
   accepted: boolean;
   evidence: string[];
+  blocked?: boolean;
   costUsd?: number | null;
   modelUsed?: { instanceId: string; model: string };
+  modelsUsed?: Array<{ instanceId: string; model: string }>;
 }
 
 export interface WorkerHost {
@@ -88,10 +92,11 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         }
         const workspaceGoal = `${goal}\nTreehouse workspace is already leased at ${workspace.directory} on ${workspace.branch}. Work only there. Use read, write, edit, and coding_command for scoped files, checks, add, and commit. Git push and draft PR are handled by the host after verification. Do not acquire another workspace or call GitHub tools.`;
         const report = await host.runPlaybook(workspace, roles.development, workspaceGoal, requestId, signal);
-        if (report.modelUsed) modelsUsed.push(report.modelUsed);
+        modelsUsed.push(...(report.modelsUsed?.length ? report.modelsUsed : report.modelUsed ? [report.modelUsed] : []));
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
+        if (report.blocked) return blocked("worker turn remained blocked after one chase", report.evidence.join("\n"));
         if (!report.revision || !report.progress) {
           let dirty = "";
           try {
@@ -111,10 +116,11 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           return blocked("worker made no verified progress");
         }
         const review = await host.review(workspace, roles.independentReview, report.revision, signal);
-        if (review.modelUsed) modelsUsed.push(review.modelUsed);
+        modelsUsed.push(...(review.modelsUsed?.length ? review.modelsUsed : review.modelUsed ? [review.modelUsed] : []));
         if (!charge(review.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached after review");
         if (signal.aborted) return blocked("review interrupted; reconcile outward effects");
+        if (review.blocked) return blocked("reviewer turn remained blocked after one chase", review.evidence.join("\n"));
         if (review.revision !== report.revision || !review.accepted || !review.evidence.some((item) => item.trim())) {
           retainLease = true;
           return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,

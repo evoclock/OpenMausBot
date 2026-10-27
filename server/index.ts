@@ -2153,7 +2153,8 @@ const directRequestOwners = new Map<string, {
 }>();
 type DirectTurnOutcome = HostTurnResult;
 const directFollowupTurns = new ProviderTurnGenerationRegistry<DirectTurnOutcome>();
-const directFollowupSettlers = new Map<string, { threadId: string; settle?: () => void }>();
+const directFollowupSettlers = new Map<string, { threadId: string; settle?: () => void;
+  onTurnStalled?: (released: Promise<void>) => void }>();
 const directCoordinationSettlers = new Map<string, { nodeId: string; settle: (outcome: DirectTurnOutcome) => void }>();
 const computerParks = new Map<string, string>();
 const parkedSeats = new Map<string, string>();
@@ -5494,6 +5495,11 @@ const watchdog = new TurnWatchdog({
   onStall: (turn) => {
     const stalledResourceOwner = turnResourceOwners.get(turn.threadId);
     const stalledGeneration = directTurnGenerationByThread.get(turn.threadId);
+    const stalledCodingTurn = stalledGeneration ? directFollowupSettlers.get(stalledGeneration) : undefined;
+    let releaseStalledCodingTurn: (() => void) | undefined;
+    if (stalledCodingTurn?.onTurnStalled) {
+      stalledCodingTurn.onTurnStalled(new Promise<void>((resolve) => { releaseStalledCodingTurn = resolve; }));
+    }
     const stalledProviderTurn = directRequestOwners.get(turn.threadId);
     cancelDirectTurnDispatch(turn.botId, turn.threadId);
     const stalledVmTarget = localVmThreadTargets.get(turn.threadId);
@@ -5521,39 +5527,45 @@ const watchdog = new TurnWatchdog({
     roomStallCompletions.stall(turn.threadId);
     // ACP interruption settles within five seconds: keep ownership meanwhile so another turn cannot overlap the process being stopped.
     const releaseOwnership = () => {
-      if (stalledGeneration && directTurnGenerationByThread.get(turn.threadId) !== stalledGeneration) return;
-      if (stalledResourceOwner && turnResourceOwners.get(turn.threadId)?.generation !== stalledResourceOwner.generation) return;
-      if (stalledGeneration && stalledProviderTurn?.generation === stalledGeneration && stalledProviderTurn.turnId) {
-        retireProviderTurn(stalledProviderTurn.turnId);
-      }
-      // A goal coordinator can stall before its provider turn id is known: keep ownership until the guard binds or expires.
-      if (hasUnboundDiscardedGroupGoalTurn(turn.threadId)) {
-        const retry = setTimeout(releaseOwnership, 1_000);
-        retry.unref?.();
-        return;
-      }
-      if (stalledVmTarget && localVmThreadTargets.get(turn.threadId) === stalledVmTarget) {
-        releaseLocalVmThread(turn.threadId);
-      }
-      const group = store.groupByThread(turn.threadId);
-      const speaker = groupSpeakers.get(turn.threadId);
-      const stalledRoomSpeaker = group && speaker?.botId === turn.botId;
-      if (stalledRoomSpeaker) {
-        groupSpeakers.delete(turn.threadId);
-        const remaining = group ? activeGroupSpeaker(group.id) : undefined;
-        store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null, unread: true });
-      }
-      // A cleared UI busy flag must not strand this finished generation's computer claim.
-      releaseTurnResources(stalledResourceOwner);
-      const currentBot = store.bot(turn.botId);
-      if (currentBot?.busy && (threadBusy(currentBot.id, turn.threadId) || stalledRoomSpeaker)) {
-        stopScreenPoller(currentBot.id, turn.threadId);
-        vpsThreadEnded(currentBot.id, turn.threadId);
-        if (store.taskByThread(currentBot.id, turn.threadId)) store.setTaskActivity(currentBot.id, turn.threadId, "idle");
-        else store.setActivity(currentBot.id, "idle");
-        directTurnBots.delete(turn.threadId);
-        // Stands in for the missing turn.completed: release everything queued behind this bot.
-        drainQueuedSends();
+      let deferred = false;
+      try {
+        if (stalledGeneration && directTurnGenerationByThread.get(turn.threadId) !== stalledGeneration) return;
+        if (stalledResourceOwner && turnResourceOwners.get(turn.threadId)?.generation !== stalledResourceOwner.generation) return;
+        if (stalledGeneration && stalledProviderTurn?.generation === stalledGeneration && stalledProviderTurn.turnId) {
+          retireProviderTurn(stalledProviderTurn.turnId);
+        }
+        // A goal coordinator can stall before its provider turn id is known: keep ownership until the guard binds or expires.
+        if (hasUnboundDiscardedGroupGoalTurn(turn.threadId)) {
+          const retry = setTimeout(releaseOwnership, 1_000);
+          retry.unref?.();
+          deferred = true;
+          return;
+        }
+        if (stalledVmTarget && localVmThreadTargets.get(turn.threadId) === stalledVmTarget) {
+          releaseLocalVmThread(turn.threadId);
+        }
+        const group = store.groupByThread(turn.threadId);
+        const speaker = groupSpeakers.get(turn.threadId);
+        const stalledRoomSpeaker = group && speaker?.botId === turn.botId;
+        if (stalledRoomSpeaker) {
+          groupSpeakers.delete(turn.threadId);
+          const remaining = group ? activeGroupSpeaker(group.id) : undefined;
+          store.patchGroup(group.id, { busyBotId: remaining?.botId ?? null, unread: true });
+        }
+        // A cleared UI busy flag must not strand this finished generation's computer claim.
+        releaseTurnResources(stalledResourceOwner);
+        const currentBot = store.bot(turn.botId);
+        if (currentBot?.busy && (threadBusy(currentBot.id, turn.threadId) || stalledRoomSpeaker)) {
+          stopScreenPoller(currentBot.id, turn.threadId);
+          vpsThreadEnded(currentBot.id, turn.threadId);
+          if (store.taskByThread(currentBot.id, turn.threadId)) store.setTaskActivity(currentBot.id, turn.threadId, "idle");
+          else store.setActivity(currentBot.id, "idle");
+          directTurnBots.delete(turn.threadId);
+          // Stands in for the missing turn.completed: release everything queued behind this bot.
+          drainQueuedSends();
+        }
+      } finally {
+        if (!deferred) releaseStalledCodingTurn?.();
       }
     };
     const release = setTimeout(releaseOwnership, 6_000);
@@ -8221,6 +8233,7 @@ async function startTurn(
     automaticRecoveryIndex?: number;
     codingFallbackModels?: Array<{ instanceId: string; model: string }>;
     onTurnSettled?: () => void;
+    onTurnStalled?: (released: Promise<void>) => void;
     coordination?: { id: string; resumed: boolean; settle: (outcome: HostTurnResult) => void };
   },
 ) {
@@ -8419,7 +8432,8 @@ async function startTurn(
   const pendingSource = requestMessageId ?? store.activePath(threadId).findLast(message => message.role === "user")?.id;
   if (pendingSource) store.patchMessage(threadId, pendingSource, { requestPending: true });
   if (opts?.coordination) directCoordinationSettlers.set(dispatchClaimId, { nodeId: opts.coordination.id, settle: opts.coordination.settle });
-  directFollowupSettlers.set(dispatchClaimId, { threadId, settle: opts?.onTurnSettled });
+  directFollowupSettlers.set(dispatchClaimId, { threadId, settle: opts?.onTurnSettled,
+    onTurnStalled: opts?.onTurnStalled });
   directTurnDispatchClaims.set(threadId, { id: dispatchClaimId, botId, threadId, phase: "setup" });
   directTurnBots.set(threadId, bot);
   beginInternalCapabilityGeneration(threadId, dispatchClaimId);

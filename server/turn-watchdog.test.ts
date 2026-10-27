@@ -136,24 +136,29 @@ describe("the stall handler", () => {
       { id: "b", role: "bot", kind: "text", at: 2, turnId: "turn-1", text: "Exporting the second half now." } as Message,
     ];
     const settled: Array<{ generation?: string; text: string }> = [], delegations: string[] = [];
+    const timers: Array<() => void> = [];
+    const stalls: Promise<void>[] = [];
     const context = vm.createContext({
       process: { env: {} },
       RoomTurnStallRegistry: class { stall() {} },
       TurnStops, stoppedTurnOutcome, reportsToRequester: () => true,
       TurnWatchdog: class { options: unknown; constructor(options: { onStall: (turn: WatchedTurn) => void }) { this.options = options; } },
-      store: { messagesFor: () => messages, activePath: () => messages, appendMessage() {} },
+      store: { messagesFor: () => messages, activePath: () => messages, appendMessage() {}, bot: () => ({ busy: false }), groupByThread: () => undefined },
       turnResourceOwners: new Map(), directTurnGenerationByThread: new Map([["t1", "gen-1"]]), directRequestOwners: new Map(),
+      groupSpeakers: new Map(),
+      directFollowupSettlers: new Map([["gen-1", { onTurnStalled: (released: Promise<void>) => stalls.push(released) }]]),
       localVmThreadTargets: new Map(), liveTurnByThread: new Map([["t1", "turn-1"]]), turnUsage: new Map(), turnContext: new Map(),
-      cancelDirectTurnDispatch() {}, revokeInternalCapabilitiesForThread() {}, repeats: { settle() {} },
+      cancelDirectTurnDispatch() {}, revokeInternalCapabilitiesForThread() {}, releaseTurnResources() {},
+      hasUnboundDiscardedGroupGoalTurn: () => false, repeats: { settle() {} },
       botForThread: () => ({ id: "eli" }), activeRoutineRunForThread: () => undefined,
       runningTurnInstance: () => ({ adapter: { interruptTurn: async () => {} } }),
       failedTurnTool: (name: string) => ({ name, ok: false }), reportIncident() {},
       settleDirectFollowup: (generation: string | undefined, outcome: { text: string }) => settled.push({ generation, text: outcome.text }),
       finalizeDelegationWatch: (_threadId: string, _ok: boolean, _reply: string, why: string) => delegations.push(why),
-      setTimeout: () => ({ unref() {} }),
+      setTimeout: (callback: () => void) => { timers.push(callback); return { unref() {} }; },
     });
     vm.runInContext(code, context, { filename: "index.ts (stall handler fixture)" });
-    return { context, settled, delegations };
+    return { context, settled, delegations, timers, stalls };
   }
 
   it("tells a stalled turn's requester why it stopped and what it did", () => {
@@ -162,6 +167,19 @@ describe("the stall handler", () => {
     const told = 'No activity for 20 minutes — the turn was stopped. Before it stopped it made 1 tool call: Bash ×1.\nIts last message, quoted: "Exporting the second half now."';
     expect(settled).toEqual([{ generation: "gen-1", text: told }]);
     expect(delegations).toEqual([]);
+  });
+
+  it("releases one coding chase only after the watchdog releases the stalled turn", async () => {
+    const { context, timers, stalls } = load();
+    context.watchdog.options.onStall({ threadId: "t1", botId: "eli" });
+    expect(stalls).toHaveLength(1);
+    let released = false;
+    void stalls[0]!.then(() => { released = true; });
+    await Promise.resolve();
+    expect(released).toBe(false);
+    timers.at(-1)!();
+    await stalls[0];
+    expect(released).toBe(true);
   });
 
   it("gives a stopped turn's own end the cause the harness noted before interrupting it", () => {

@@ -4,6 +4,8 @@ import type { Detector, Observation, SentinelRecord } from "../types.ts";
 
 type ToolRecord = Extract<SentinelRecord, { type: "tool" }>;
 
+export const DEFAULT_RETRY_LOOP_MIN = 3;
+
 export const retryLoop: Detector = {
   name: "retry_loop",
   detect(records, config) {

@@ -207,3 +207,28 @@ test("external destinations never enter the default worker route", async () => {
   assert.equal(result.kind, "blocked");
   assert.deepEqual(route.calls, []);
 });
+
+test.each(["worker", "reviewer"] as const)("a blocked %s chase stops the route and retains usage", async (step) => {
+  const route = host();
+  const modelsUsed = [
+    { instanceId: "pi", model: "first-attempt" },
+    { instanceId: "pi", model: "one-chase" },
+  ];
+  const blockedReport = { revision: "revision", evidence: ["BLOCKED after one chase"], costUsd: 0.4,
+    modelsUsed, blocked: true };
+  if (step === "worker") route.runPlaybook = async () => Object.assign({ ...blockedReport, progress: false });
+  else route.review = async (_workspace, _role, revision) => {
+    route.calls.push("reviewer");
+    return Object.assign({ ...blockedReport, revision, accepted: false });
+  };
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:blocked", signal, 1);
+  assert.equal(result.kind, "blocked");
+  assert.equal(result.costUsd, 0.4);
+  assert.deepEqual(result.modelsUsed, modelsUsed);
+  assert.match(result.evidence.join("\n"), /BLOCKED after one chase/);
+  assert.equal(route.calls.includes("pstack"), false);
+  assert.equal(route.calls.includes("reviewer"), step === "reviewer");
+  assert.equal(route.calls.at(-1), step === "worker"
+    ? "release:lease:worker turn remained blocked after one chase"
+    : "release:lease:reviewer turn remained blocked after one chase");
+});
