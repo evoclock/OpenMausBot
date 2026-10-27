@@ -23,8 +23,13 @@ export interface DriverRunApi {
   openDurableDriver: (options: { directory: string }) => Promise<InstalledWorkerDriver>;
 }
 
-export async function requireDriverRunApi(moduleSpecifier = moduleName, configuredRoot = process.env.OMB_INSTALLED_DRIVER_ROOT): Promise<DriverRunApi> {
-  const roots = [configuredRoot, join(homedir(), ".pi", "pi", "git", "github.com", "evoclock", "pi-agentic-driver")]
+export async function requireDriverRunApi(moduleSpecifier = moduleName, configuredRoot = process.env.OMB_INSTALLED_DRIVER_ROOT, home = homedir()): Promise<DriverRunApi> {
+  const roots = [
+    configuredRoot,
+    join(home, ".pi", "pi", "npm", "node_modules", "@evoclock", "pi-agentic-driver"),
+    join(home, ".pi", "agent", "npm", "node_modules", "@evoclock", "pi-agentic-driver"),
+    join(home, ".pi", "pi", "git", "github.com", "evoclock", "pi-agentic-driver"),
+  ]
     .filter((root): root is string => Boolean(root));
   let loaded: unknown;
   try {
