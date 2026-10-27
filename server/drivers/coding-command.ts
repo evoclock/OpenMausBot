@@ -7,10 +7,11 @@ export type CodingCommand = "status" | "diff" | "add" | "commit" | "typecheck" |
 export function codingCommandAllowed(input: unknown): boolean {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
   const params = input as Record<string, unknown>;
-  if (Object.keys(params).some((key) => !["command", "paths", "message"].includes(key)) || typeof params.command !== "string") return false;
+  if (Object.keys(params).some((key) => !["command", "paths", "message", "revision"].includes(key)) || typeof params.command !== "string") return false;
   if (!Object.hasOwn(CHECKS, params.command) && !["status", "diff", "add", "commit"].includes(params.command as string)) return false;
   if (params.paths !== undefined && (!Array.isArray(params.paths) || params.paths.some((path) => typeof path !== "string"))) return false;
   if (params.message !== undefined && typeof params.message !== "string") return false;
+  if (params.revision !== undefined && (params.command !== "diff" || typeof params.revision !== "string" || !/^[a-f0-9]{40}$/.test(params.revision))) return false;
   return true;
 }
 
@@ -38,8 +39,8 @@ const CHECKS: Readonly<Record<string, readonly string[]>> = {
   test: ["exec", "vitest", "run"],
 };
 
-export function executeCodingCommand(cwd: string, command: CodingCommand, paths: string[] = [], message = "", expectedBranch?: string): string {
-  if (!codingCommandAllowed({ command, paths, message })) throw new Error("Coding run denied: command is outside the envelope");
+export function executeCodingCommand(cwd: string, command: CodingCommand, paths: string[] = [], message = "", expectedBranch?: string, revision?: string): string {
+  if (!codingCommandAllowed({ command, paths, message, revision })) throw new Error("Coding run denied: command is outside the envelope");
   const root = realpathSync(cwd);
   const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
   const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024, env: {
@@ -57,7 +58,10 @@ export function executeCodingCommand(cwd: string, command: CodingCommand, paths:
   if (command !== "commit" && message) throw new Error("Coding command denied: message is only supported for commit");
   switch (command) {
     case "status": return git(["status", "--short", "--branch"]);
-    case "diff": return git(["diff", "--no-ext-diff", "HEAD"]);
+    case "diff":
+      if (!revision) return git(["diff", "--no-ext-diff", "HEAD"]);
+      if (revision !== git(["rev-parse", "HEAD"])) throw new Error("Coding command denied: review revision is not HEAD");
+      return git(["diff", "--no-ext-diff", `${revision}^`, revision]);
     case "add":
       if (!paths.length) throw new Error("Coding command denied: explicit paths required");
       return git(["add", "--", ...paths]);

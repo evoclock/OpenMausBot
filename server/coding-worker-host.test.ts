@@ -62,6 +62,7 @@ test("worker route launches the existing fake process with the scoped approval m
     workspace: { async acquire(_contract, requestId) { return { ...workspace, branch: codingWorkspaceBranch(requestId) }; }, async release() {} },
     turn: { async run({ botId, prompt, requestId, signal }) {
       assert.ok(["worker", "reviewer"].includes(botId));
+      if (botId === "reviewer") assert.match(prompt, /coding_command \{"command":"diff","revision":"fixture-revision"\}/);
       assert.equal(signal.aborted, false);
       const threadId = `${botId}:${requestId}`;
       const done = new Promise<RuntimeEvent>((resolve) => {
