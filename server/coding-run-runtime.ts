@@ -22,6 +22,8 @@ export async function openCodingRunRuntime(options: {
   github: ReadonlyMap<string, GithubRegistration>;
   webhooks?: ReadonlyMap<string, TriggerTemplate>;
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  onStart?: (snapshot: RunSnapshot) => void;
+  onCancel?: (snapshot: RunSnapshot) => Promise<void>;
   effectInspector?: EffectReconcileHost;
   driver?: InstalledWorkerDriver;
   loadDriver?: () => Promise<InstalledWorkerDriver>;
@@ -85,7 +87,7 @@ export async function openCodingRunRuntime(options: {
         receipts.saveResult(contract.id, iteration, requestId, result);
       }
       return result;
-    } }, { onTerminal: options.onTerminal, restartLimit: options.restartLimit,
+    } }, { onTerminal: options.onTerminal, onStart: options.onStart, onCancel: options.onCancel, restartLimit: options.restartLimit,
       contextCompactor: createIterationContextCompactor(options.contextCarryMaxBytes),
       ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
         async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
@@ -129,6 +131,8 @@ export async function openCodingRunRuntime(options: {
     report: runner.report,
     reportPending: runner.reportPending,
     cancel: runner.cancel,
+    hold: runner.hold,
+    resumeRun: runner.resumeRun,
     async close() {
       await runner.close();
       const activeDriver = driver ?? (driverPromise ? await driverPromise.catch(() => undefined) : undefined);
