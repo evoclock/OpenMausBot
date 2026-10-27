@@ -34,6 +34,13 @@ test("seed rebases the roles file and agents base to the acquired lease and curr
   assert.equal(config.codingRuns.registrations[0].ref, "docs/stale-branch");
 });
 
+test("seed accepts one model shared by the worker and reviewer roles", () => {
+  const model = "openai-codex/gpt-6-sol";
+  const shared = { ...roles, roles: { development: model, "independent-review": model } };
+  const entry = { ...config.codingRuns.registrations[0], developmentRole: model, reviewRole: model };
+  assert.doesNotThrow(() => seed({ codingRuns: { ...config.codingRuns, registrations: [entry] } }, routines, sha, sha, shared));
+});
+
 test("seed refuses drifted main, mismatched roles, and any budget or routine that could fire unexpectedly", () => {
   assert.throws(() => seed(config, routines, sha, "b".repeat(40)), /main/);
   assert.throws(() => seed(config, routines, sha, sha, { ...roles, roles: {

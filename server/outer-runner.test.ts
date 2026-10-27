@@ -561,7 +561,7 @@ test("subscription and local runs need no spend cap and persist the actual model
     const runner = await openOuterRunner(fixtureDir(), { async invoke(_contract, _iteration, _requestId, _signal, remainingUsd) {
       assert.equal(remainingUsd, undefined);
       return { ...verified(["checked"], null),
-        modelsUsed: [{ instanceId: "pi", model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }] };
+        modelsUsed: [{ instanceId: "pi", model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-sol" }] };
     } });
     try {
       await runner.wait(await runner.start({ ...contract, limits: { maxWallTimeMs: 30_000,
@@ -569,7 +569,7 @@ test("subscription and local runs need no spend cap and persist the actual model
       const snapshot = runner.report(contract.id)?.snapshot;
       assert.equal(snapshot?.state, "done");
       assert.deepEqual(snapshot?.modelsUsed, [{ iteration: 1, instanceId: "pi",
-        model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-luna" }]);
+        model: modelAccess === "local" ? "dsf41/flash" : "openai-codex/gpt-6-sol" }]);
       assert.equal(snapshot?.spendUncertain, false);
     } finally { await runner.close(); }
   }

@@ -64,7 +64,6 @@ export function parsePiRoles(text: string): Record<PiRole, string | null> {
     if (value !== null && (typeof value !== "string" || !/^[^\s/]+\/[^\s]+$/.test(value))) throw new Error(`invalid ${role} role`);
     parsed[role] = value;
   }
-  if (parsed.development && parsed.development === parsed["independent-review"]) throw new Error("review must use a distinct model");
   return parsed;
 }
 
@@ -81,7 +80,7 @@ export async function checkPiReadiness(options: {
     skill: { ready: false, action: "Select a reviewed Pi agent directory containing poteto-mode-pi." },
     roles: {
       development: { ready: false, action: "Configure the development role in .pi/pstack-model-roles.v1.json." },
-      "independent-review": { ready: false, action: "Configure a distinct independent-review role in .pi/pstack-model-roles.v1.json." },
+      "independent-review": { ready: false, action: "Configure the independent-review role in .pi/pstack-model-roles.v1.json." },
     },
   };
   const runtimeEnv = agentDir ? { ...env, PI_CODING_AGENT_DIR: resolve(agentDir) } : env;

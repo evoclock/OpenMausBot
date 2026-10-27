@@ -90,11 +90,18 @@ test("a long receipt history reaches the goal within the configured carry cap", 
   assert.ok(Buffer.byteLength(carry.compact(history)) <= 1024);
 });
 
-test("missing or same role blocks work before workspace allocation", async () => {
+test("a missing role blocks work before workspace allocation", async () => {
   const route = host();
-  route.roles = async () => ({ development: "same", independentReview: "same" });
+  route.roles = async () => ({ development: "worker", independentReview: "" });
   assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
   assert.deepEqual(route.calls, []);
+});
+
+test("worker and reviewer may share one model", async () => {
+  const route = host();
+  route.roles = async () => ({ development: "openai-codex/gpt-6-sol", independentReview: "openai-codex/gpt-6-sol" });
+  await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
+  assert.ok(route.calls.length > 0);
 });
 
 test("a workspace with another base ref blocks before dispatch", async () => {

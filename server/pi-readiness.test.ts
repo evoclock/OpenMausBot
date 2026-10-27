@@ -22,9 +22,10 @@ afterEach(async () => {
 const roles = { schema: "pstack-model-roles.v1", roles: { development: "fixture/dev", "independent-review": "fixture/review" } };
 
 describe("Pi readiness", () => {
-  it("validates exact distinct role identities without exposing choices", () => {
+  it("validates exact role identities without exposing choices", () => {
     expect(parsePiRoles(JSON.stringify(roles))).toEqual(roles.roles);
-    expect(() => parsePiRoles(JSON.stringify({ ...roles, roles: { ...roles.roles, "independent-review": "fixture/dev" } }))).toThrow();
+    const shared = { development: "openai-codex/gpt-6-sol", "independent-review": "openai-codex/gpt-6-sol" };
+    expect(parsePiRoles(JSON.stringify({ ...roles, roles: shared }))).toEqual(shared);
     expect(() => parsePiRoles(JSON.stringify({ ...roles, roles: { development: "auto", "independent-review": null } }))).toThrow();
   });
 

@@ -9,16 +9,19 @@ export function codingRecoveryAllowlist(taskTitle: string,
 }
 
 export const DEFAULT_CODING_LOCAL_PROVIDERS = ["dsf41"] as const;
+export const DEFAULT_CODING_SUBSCRIPTION_MODELS = ["openai-codex/gpt-6-sol"] as const;
 
 export function codingModelChain(instances: readonly {
   instanceId: string; driverKind: string; enabled: boolean; access?: EngineAccess;
   models: { options: readonly { id: string }[] };
-}[], localProviders: readonly string[]): Array<{ instanceId: string; model: string; modelAccess: "subscription" | "local" }> {
+}[], localProviders: readonly string[], subscriptionModels: readonly string[] = DEFAULT_CODING_SUBSCRIPTION_MODELS,
+): Array<{ instanceId: string; model: string; modelAccess: "subscription" | "local" }> {
   const offered = instances.filter((instance) => instance.driverKind === "piAgent" && instance.enabled &&
     instance.access !== "api").flatMap((instance) => instance.models.options.map((option) => ({
       instanceId: instance.instanceId, model: option.id, access: instance.access,
     })));
-  const primary = offered.filter((item) => item.model === "openai-codex/gpt-6-luna" && item.access === "custom")
+  const primary = [...new Set(subscriptionModels)].flatMap((model) => offered.filter((item) =>
+    item.model === model && model.startsWith("openai-codex/") && item.access === "custom"))
     .map(({ instanceId, model }) => ({ instanceId, model, modelAccess: "subscription" as const }));
   const local = offered.filter((item) => {
     const provider = item.model.split("/", 1)[0];

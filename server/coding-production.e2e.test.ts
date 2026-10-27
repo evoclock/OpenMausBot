@@ -51,7 +51,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nimport {execFileSync} from 'node:child_process';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nconst git=(...args)=>execFileSync('git',args,{cwd:path,encoding:'utf8'}).trim();\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  const branch=a.includes('--branch')?a[a.indexOf('--branch')+1]:'';\n  if(branch){\n    try { git('rev-parse','--verify','refs/heads/'+branch); git('switch',branch); }\n    catch { git('switch','-c',branch); }\n    const head=git('rev-parse','HEAD');\n    git('update-ref','refs/remotes/origin/'+branch,head);\n    git('branch','--set-upstream-to','origin/'+branch,branch);\n  }\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
-  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-luna",
+  const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-sol",
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },
     config: { cli: fakePi, fullAuto: false } } } };
   writeFileSync(configFile, JSON.stringify(config));
@@ -210,7 +210,7 @@ test.each([
         const snapshot = runs.get(scheduledCodingRunId(run));
         expect(snapshot?.contract.limits?.maxSpendUsd).toBeUndefined();
         expect(snapshot?.modelsUsed).toEqual(Array.from({ length: 2 }, () => ({ iteration: 1,
-          instanceId: "pi", model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai-codex/gpt-6-luna" })));
+          instanceId: "pi", model: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai-codex/gpt-6-sol" })));
       } finally { runs.close(); }
       expect(existsSync(join(f.leased, "coding-fixture-result.txt"))).toBe(true);
       expect(turns.filter((turn) => turn.isTurnSpawn && turn.cwd === f.leased)).toHaveLength(2);
@@ -510,9 +510,9 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const auditConfigFile = join(f.home, "audit-config.json");
     const baseRevision = f.git(f.leased, "rev-parse", "main");
     const auditConfig = { destination: "fixture/agents", host: "fixture",
-      credentialReference: "fixture-reference", worktree: f.leased, model: "openai-codex/gpt-6-luna", thinking: "low",
+      credentialReference: "fixture-reference", worktree: f.leased, model: "openai-codex/gpt-6-sol", thinking: "low",
       botConfig: { originBotId: owner.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
-        modelSelection: { instanceId: "pi", model: "openai-codex/gpt-6-luna" }, maxIterations: 3,
+        modelSelection: { instanceId: "pi", model: "openai-codex/gpt-6-sol" }, maxIterations: 3,
         limits: { maxWallTimeMs: 600_000, modelAccess: "subscription" } }, baseRevision,
       expectedRevisions: [review.revision] };
     writeFileSync(auditConfigFile, JSON.stringify(auditConfig));

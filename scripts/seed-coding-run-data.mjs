@@ -15,7 +15,7 @@ export function prepareCodingSeed(config, routines, lease, agentsRoot, main, ori
   if (rolesFile.schema !== "pstack-model-roles.v1" ||
     rolesFile.roles?.development !== entries[0].developmentRole ||
     rolesFile.roles?.["independent-review"] !== entries[0].reviewRole ||
-    entries[0].developmentRole === entries[0].reviewRole || entries[0].workerBotId === entries[0].reviewerBotId) {
+    entries[0].workerBotId === entries[0].reviewerBotId) {
     throw new Error("seeded worker and reviewer routes do not match the registration");
   }
   const limits = config.codingRuns.bots?.[entries[0].workerBotId];

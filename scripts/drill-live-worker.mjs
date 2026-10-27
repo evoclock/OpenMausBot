@@ -20,7 +20,7 @@ const save = (name, value) => writeFileSync(join(proofRoot, name), JSON.stringif
 export function checkLiveConfig(config) {
   const limits = config.botConfig?.limits;
   const noSpendModel =
-    (config.model === "openai-codex/gpt-6-luna" && limits?.modelAccess === "subscription") ||
+    (["openai-codex/gpt-6-sol", "openai-codex/gpt-6-luna"].includes(config.model) && limits?.modelAccess === "subscription") ||
     (config.model === "dsf41/deepseek-v4.1-flash-tf" && limits?.modelAccess === "local");
   if (config.destination !== SANDBOX || config.host !== "mac-mini" ||
     config.credentialReference?.kind !== "github-app" || config.credentialReference.reference !== "sandbox-drill" ||

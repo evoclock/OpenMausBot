@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderRegistry } from "./harness/registry.ts";
-import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS } from "./automatic-recovery.ts";
+import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS, DEFAULT_CODING_SUBSCRIPTION_MODELS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
 import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
@@ -56,15 +56,16 @@ export async function openProductionCodingRuntime(options: {
   const modelChain = () => codingModelChain(options.registry.instances().map((instance) => ({
     instanceId: instance.instanceId, driverKind: instance.driverKind, enabled: instance.enabled,
     access: options.registry.access(instance.instanceId), models: instance.models,
-  })), config.localModelProviders ?? DEFAULT_CODING_LOCAL_PROVIDERS)
+  })), config.localModelProviders ?? DEFAULT_CODING_LOCAL_PROVIDERS,
+    config.subscriptionModels ?? DEFAULT_CODING_SUBSCRIPTION_MODELS)
     .map(({ instanceId, model }) => ({ instanceId, model }));
   const first = registrations[0];
   const repository = first?.repository;
   if (!repository || registrations.some((entry) => entry.repository !== repository ||
     entry.workerBotId !== first.workerBotId || entry.reviewerBotId !== first.reviewerBotId ||
     entry.developmentRole !== first.developmentRole || entry.reviewRole !== first.reviewRole ||
-    entry.workerBotId === entry.reviewerBotId || entry.developmentRole === entry.reviewRole)) {
-    throw new Error("coding registrations require one repository and distinct worker and reviewer routes");
+    entry.workerBotId === entry.reviewerBotId)) {
+    throw new Error("coding registrations require one repository and distinct worker and reviewer bots");
   }
   const codingDir = join(dataDir, "coding-run");
   const driverDir = join(codingDir, "durable-driver");
