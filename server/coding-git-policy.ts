@@ -26,7 +26,7 @@ export interface CodingGitPort {
   branch(workspace: string): Promise<string>;
   createBranch(workspace: string, branch: string, base: string): Promise<void>;
   head(workspace: string): Promise<string>;
-  outgoingAuthors(workspace: string, remoteUrl: string, branch: string): Promise<Array<{ name: string; email: string }>>;
+  outgoingAuthors(workspace: string, remoteUrl: string, branch: string, base: string): Promise<Array<{ name: string; email: string }>>;
   push(workspace: string, remoteUrl: string, revision: string, destination: string,
     credential: ResolvedCredential, repository: string, options?: { setUpstream?: boolean }): Promise<void>;
   pullRequest(action: "pr-open" | "pr-update" | "pr-ready", repository: string, base: string, head: string,
@@ -128,7 +128,9 @@ export function createCodingGitPolicy(options: {
     if (protectedNames.includes(request.branch.toLowerCase())) refuse("pushing to main, default or protected branches is forbidden");
     const revision = await options.port.head(request.workspace);
     if (!SHA.test(revision)) refuse("the local revision is not verified");
-    const authors = await options.port.outgoingAuthors(request.workspace, remote, request.branch);
+    const base = request.base ?? facts.defaultBranch;
+    if (!facts.protectedBranches.includes(base)) refuse("the outgoing base is not a verified protected branch");
+    const authors = await options.port.outgoingAuthors(request.workspace, remote, request.branch, base);
     if (!authors.length || authors.some((author) => author.name !== "evoclock" ||
       author.email !== "52983349+evoclock@users.noreply.github.com")) {
       refuse("every outgoing commit must use Julen's verified Git author");

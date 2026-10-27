@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
+import { isUnscheduledOnce, unscheduledOnceSchedule } from "./routine-unscheduled.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
 import { applyCodingSettlement, finishGoalRun as finishGoalRunState, type CodingSettlementReceipt } from "./routine-settlement.ts";
@@ -48,11 +49,9 @@ export type RoutineSchedule =
   | { type: "daily"; time: string; weekdays: number[] }
   | RoutineCronSchedule
   | RoutineIntervalSchedule;
-
 export type RoutineScheduleInput =
   | Exclude<RoutineSchedule, RoutineIntervalSchedule>
   | RoutineIntervalScheduleInput;
-
 /** `cloud` runs the agent inside the bot's Boat VM; `maus` runs the bot's own provider and borrows only its computer tools. */
 export type RoutineRunOn = "maus" | "cloud";
 export type RoutineTarget = "bot" | "room-goal";
@@ -679,7 +678,7 @@ export class RoutineManager {
       assertRoutineFileShape(disk);
       this.routines = Array.isArray(disk.routines)
         ? disk.routines.flatMap((routine) => {
-            const schedule = loadSchedule(routine.schedule, this.now());
+            const schedule = routine.schedule === null && routine.enabled === false ? unscheduledOnceSchedule() : loadSchedule(routine.schedule, this.now());
             if (!schedule) {
               console.warn(`routines: keeping ${String(routine.id)} on disk unscheduled; its schedule could not load`);
               this.unloadedRoutines.push(routine);
@@ -983,6 +982,7 @@ export class RoutineManager {
     }
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
+    if (isUnscheduledOnce(routine.schedule) && patch.enabled === true && !patch.schedule) throw new RoutineScheduleError("Choose a schedule before enabling this routine");
     const now = this.now();
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,

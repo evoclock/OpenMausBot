@@ -46,6 +46,10 @@ describe("spend cap and prices through real turns", () => {
     }));
     session = await launchVerificationServer({ ...process.env, FAKE_CLAUDE_TEXT_ROUTES: routes, FAKE_CLAUDE_TEXT_DUMP: dump },
       undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    await expect.poll(
+      () => fetch(`${session.info.url}/api/health`, { signal: AbortSignal.timeout(1_000) }).then((r) => r.ok, () => false),
+      { timeout: 20_000 },
+    ).toBe(true);
     const created = await api("/api/bots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Budgeted memory" }) });
     expect(created.status).toBe(201);
     const { bot } = await created.json() as any;
@@ -121,6 +125,11 @@ describe("spend cap and prices through real turns", () => {
     session = await launchVerificationServer({ ...process.env,
       FAKE_CLAUDE_TEXT_RESULT: JSON.stringify({ type: "result", result: '{"moves":[]}', ...metadata }),
     }, undefined, undefined, undefined, { dir: layerDir, licenseKey: "fixture-key" });
+    // Shard load can drop the first loopback fetch after relaunch; wait for health like the e2e suites.
+    await expect.poll(
+      () => fetch(`${session.info.url}/api/health`, { signal: AbortSignal.timeout(1_000) }).then((r) => r.ok, () => false),
+      { timeout: 20_000 },
+    ).toBe(true);
     const { bot } = await control(["new-bot", "--name", "Helper usage"]);
     expect((await api(`/api/bots/${bot.id}/memory/file`, {
       method: "PUT", headers: { "content-type": "application/json" },

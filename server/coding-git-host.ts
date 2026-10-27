@@ -117,17 +117,19 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
           const existing = await git(["branch", "--list", branch], workspace, process.env);
           await git(existing ? ["switch", branch] : ["switch", "-c", branch], workspace, process.env);
         }
-        await git(["branch", `--set-upstream-to=origin/${base}`, branch], workspace, process.env);
+        await git(["rev-parse", "--verify", `refs/remotes/origin/${base}`], workspace, process.env);
+        await git(["config", `branch.${branch}.remote`, "origin"], workspace, process.env);
+        await git(["config", `branch.${branch}.merge`, `refs/heads/${branch}`], workspace, process.env);
       },
       async head(workspace) { return git(["rev-parse", "HEAD"], workspace, process.env); },
-      async outgoingAuthors(workspace, remote, branch) {
+      async outgoingAuthors(workspace, remote, branch, base) {
         if (await git(["branch", "--show-current"], workspace, process.env) !== branch ||
           await git(["remote", "get-url", "origin"], workspace, process.env) !== remote ||
           await git(["config", "--get", `branch.${branch}.remote`], workspace, process.env) !== "origin" ||
           await git(["config", "--get", `branch.${branch}.merge`], workspace, process.env) !== `refs/heads/${branch}`) {
           throw new Error("Git branch upstream changed during publication");
         }
-        const output = await git(["log", `refs/remotes/origin/${branch}..HEAD`, "--format=%an%x00%ae"], workspace, process.env);
+        const output = await git(["log", `refs/remotes/origin/${base}..HEAD`, "--format=%an%x00%ae"], workspace, process.env);
         return output ? output.split("\n").map((line) => { const [name, email] = line.split("\0"); return { name: name ?? "", email: email ?? "" }; }) : [];
       },
       async push(workspace, remote, revision, destination, credential, repository, options) {
