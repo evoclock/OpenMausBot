@@ -140,6 +140,16 @@ assignments open for the run's thread (docs/runtime-contract.md §9), and the
 run completes when their results have resumed it as a routine turn. Status,
 result and scheduled/manual trigger must agree with the saved server record.
 
+## Cancel a pending one-time routine
+
+A one-time routine with a future scheduled time and no scheduled run cannot be
+paused with only `enabled: false`. The update returns a schedule validation
+error, leaving the occurrence intact. To cancel it, send `enabled: false` and
+`schedule: null` together in the same routine update. This removes its pending
+schedule; it cannot be resumed until a new schedule is provided. Repeating
+routines still pause with `enabled: false` alone. A one-time routine already
+advanced by the scheduler can also be disabled without clearing its schedule.
+
 ## Run on startup
 
 A repeating routine's **Advanced** section offers **Also run when OpenMausBot

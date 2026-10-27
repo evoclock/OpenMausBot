@@ -148,6 +148,56 @@ it("loads a disabled unscheduled seed for a later schedule update without starti
   } finally { await removeTempDir(dir); }
 });
 
+describe("pending once disable", () => {
+  const at = Date.parse("2026-08-17T08:05:00Z");
+  const input = () => ({ name: "One shot", prompt: "Check", botId: "maus-1",
+    schedule: { type: "once" as const, at } });
+
+  // Why: a pause must not silently erase a one-shot occurrence before the scheduler records it.
+  it("rejects disabling a future once with no occurrence run, without changing the store", () => {
+    const h = harness(at - 60_000);
+    const routine = h.manager.create(input());
+    const before = readFileSync(h.options.file!, "utf8");
+    expect(h.manager.listRuns()).toHaveLength(0);
+    expect(() => h.manager.update(routine.id, { enabled: false })).toThrow(RoutineScheduleError);
+    expect(readFileSync(h.options.file!, "utf8")).toBe(before);
+    expect(h.manager.listRoutines()[0]).toMatchObject({ enabled: true, nextRunAt: at });
+  });
+
+  // Why: the scheduler's own completion of an occurrence must not be mistaken for an unrun pending one.
+  it("allows disable after the scheduled occurrence has a run", async () => {
+    const h = harness(at - 60_000);
+    const routine = h.manager.create(input());
+    h.setNow(at);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toMatchObject([{ routineId: routine.id, scheduledFor: at, manual: false }]);
+    expect(h.manager.listRoutines()[0]).toMatchObject({ enabled: false, nextRunAt: null });
+    h.setNow(at - 1);
+    expect(h.manager.update(routine.id, { enabled: false })).toMatchObject({ enabled: false, nextRunAt: null });
+  });
+
+  // Why: cancellation must require an explicit schedule removal in the same update.
+  it("cancels a pending once when the patch clears its schedule", async () => {
+    const h = harness(at - 60_000);
+    const routine = h.manager.create(input());
+    expect(h.manager.update(routine.id, { enabled: false, schedule: null }))
+      .toMatchObject({ enabled: false, nextRunAt: null });
+    expect(new RoutineManager(h.options).listRoutines()[0]).toMatchObject({ enabled: false, nextRunAt: null });
+    h.setNow(at);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toHaveLength(0);
+  });
+
+  // Why: repeating schedules retain their existing pause and resume behavior.
+  it("still pauses and resumes intervals without cancelling their schedule", () => {
+    const h = harness(at - 60_000);
+    const schedule = { type: "interval" as const, everyMinutes: 5, anchorAt: at };
+    const routine = h.manager.create({ ...input(), schedule });
+    expect(h.manager.update(routine.id, { enabled: false })).toMatchObject({ enabled: false, schedule, nextRunAt: null });
+    expect(h.manager.update(routine.id, { enabled: true })).toMatchObject({ enabled: true, schedule, nextRunAt: at });
+  });
+});
+
 describe("routine store durability boundary", () => {
   it("does not acknowledge a pre-rename failure", () => {
     const file = tempFile();

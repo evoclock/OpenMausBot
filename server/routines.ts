@@ -969,7 +969,7 @@ export class RoutineManager {
 
   update(
     id: string,
-    patch: Partial<RoutineInput>,
+    patch: Partial<Omit<RoutineInput, "schedule">> & { schedule?: RoutineScheduleInput | null },
     request?: RoutineRequestCommitFor<"update" | "pause" | "resume">,
   ): Routine | null {
     this.assertWritable();
@@ -983,7 +983,14 @@ export class RoutineManager {
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
     if (isUnscheduledOnce(routine.schedule) && patch.enabled === true && !patch.schedule) throw new RoutineScheduleError("Choose a schedule before enabling this routine");
+    if (patch.schedule === null && patch.enabled !== false) throw new RoutineScheduleError("Clear the schedule only while disabling the routine");
     const now = this.now();
+    const onceAt = routine.schedule.type === "once" ? routine.schedule.at : null;
+    if (patch.enabled === false && routine.enabled && onceAt !== null && onceAt > now &&
+      !isUnscheduledOnce(routine.schedule) && patch.schedule !== null &&
+      !this.runs.some((run) => run.routineId === id && !run.manual && run.scheduledFor === onceAt)) {
+      throw new RoutineScheduleError("This one-time run is still pending. To cancel it, disable with schedule: null in the same update.");
+    }
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,
       prompt: patch.prompt ?? routine.prompt,
@@ -992,7 +999,8 @@ export class RoutineManager {
       groupId: Object.hasOwn(patch, "groupId") ? patch.groupId : routine.groupId,
       runOn: patch.runOn ?? routine.runOn,
       enabled: patch.enabled ?? routine.enabled,
-      schedule: patch.schedule ? mergeScheduleUpdate(routine.schedule, patch.schedule) : routine.schedule,
+      schedule: patch.schedule === null ? unscheduledOnceSchedule()
+        : patch.schedule ? mergeScheduleUpdate(routine.schedule, patch.schedule) : routine.schedule,
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
       timeoutMinutes: Object.hasOwn(patch, "timeoutMinutes") ? patch.timeoutMinutes : routine.timeoutMinutes,
       attachments: patch.attachments ?? routine.attachments,
