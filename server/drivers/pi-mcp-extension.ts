@@ -667,15 +667,16 @@ export default async function (pi: PiExtensionApi): Promise<void> {
   if (closed) {
     pi.registerTool({
       name: "coding_command", label: "Coding command",
-      description: "Run a bounded Git operation or repository check on the coding worktree. No shell or network commands.",
+      description: "Run a bounded Git operation or repository check. For a committed patch use command diff with revision set to the exact 40-character HEAD SHA. No shell or network commands.",
       parameters: Type.Object({
         command: Type.Optional(Type.Any({ description: "One of status, diff, add, commit, typecheck, lint or test." })),
+        revision: Type.Optional(Type.String({ description: "Exact 40-character HEAD SHA for diff of the committed patch only." })),
         paths: Type.Optional(Type.Any({ description: "Explicit worktree-relative paths for add only." })),
         message: Type.Optional(Type.Any({ description: "Commit message for commit only." })),
       }, { additionalProperties: true }),
       async execute(_id, params) {
-        const input = params as { command: CodingCommand; paths?: string[]; message?: string };
-        return { content: [{ type: "text", text: truncateToolText(executeCodingCommand(process.cwd(), input.command, input.paths, input.message, config.codingRun!.branch)) }], details: {} };
+        const input = params as { command: CodingCommand; paths?: string[]; message?: string; revision?: string };
+        return { content: [{ type: "text", text: truncateToolText(executeCodingCommand(process.cwd(), input.command, input.paths, input.message, config.codingRun!.branch, input.revision)) }], details: {} };
       },
     });
   }

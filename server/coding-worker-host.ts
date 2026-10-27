@@ -76,7 +76,7 @@ export function createCodingWorkerHost(options: {
       const requestId = leases.get(workspace.leaseId);
       if (!requestId) throw new Error("review has no originating coding request");
       const result = await options.turn.run({ botId: config.reviewerBotId, workspace, role: "review",
-        prompt: `Review revision ${revision}. Report whether it meets the stated goal.`,
+        prompt: `Review revision ${revision}. Inspect its committed patch with coding_command {"command":"diff","revision":"${revision}"}; the command field accepts only one fixed verb, not Git arguments. Report whether it meets the stated goal and include ACCEPT ${revision} only if verified.`,
         requestId: `review:${requestId}:${revision}`, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         accepted: result.accepted === true && result.revision === revision && result.evidence.length > 0,

@@ -39,6 +39,35 @@ test("coding command permits only fixed local git verbs on a feature worktree", 
   } finally { await removeTempDir(home); }
 });
 
+test("a reviewer can inspect only the committed HEAD patch through the closed command", async () => {
+  mkdirSync(cache, { recursive: true });
+  const home = mkdtempSync(join(cache, "coding-review-"));
+  try {
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: home, encoding: "utf8" }).trim();
+    git("init", "-b", "main");
+    git("config", "user.name", "evoclock");
+    git("config", "user.email", "52983349+evoclock@users.noreply.github.com");
+    writeFileSync(join(home, "file.txt"), "base\n");
+    git("add", "file.txt");
+    git("commit", "-m", "base");
+    git("switch", "-c", "feat/review");
+    writeFileSync(join(home, "file.txt"), "committed\n");
+    git("add", "file.txt");
+    git("commit", "-m", "change");
+    const head = git("rev-parse", "HEAD");
+    const base = git("rev-parse", "HEAD^");
+    writeFileSync(join(home, "file.txt"), "uncommitted\n");
+    assert.equal(codingCommandAllowed({ command: "diff", revision: head }), true);
+    const patch = executeCodingCommand(home, "diff", [], "", "feat/review", head);
+    assert.match(patch, /\+committed/);
+    assert.doesNotMatch(patch, /uncommitted/);
+    assert.throws(() => executeCodingCommand(home, "diff", [], "", "feat/review", base), /denied/i);
+    assert.equal(codingCommandAllowed({ command: "diff", revision: `${head}^ ${head}` }), false);
+    assert.equal(codingCommandAllowed({ command: "commit", revision: head }), false);
+    assert.equal(codingCommandAllowed({ command: "diff", revision: "HEAD" }), false);
+  } finally { await removeTempDir(home); }
+});
+
 test("coding file operations cannot escape through absolute paths or symlinks", async () => {
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-files-"));
