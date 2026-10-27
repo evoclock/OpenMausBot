@@ -48,6 +48,7 @@ import {
 import { appendNative } from "./native.ts";
 import { decodePiConfig, type PiConfig } from "./pi-config.ts";
 import { checkPiReadiness } from "../pi-readiness.ts";
+import { captureStderrTail, piExitMessage, scopeReceiptReady } from "./pi-process-diagnostics.ts";
 import { allowsTool, canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
 import { customServerGate, gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
 import { remoteMcpSpec } from "../mcp-http.ts";
@@ -875,17 +876,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         emit({ ...base(threadId, turnId), type: "runtime.error", message: fail.message, setup: fail.setup });
         settle(false);
       });
-      // Extension load failures reach only stderr; keep a short tail so an early exit is not silent.
-      let stderrTail = "";
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => { stderrTail = (stderrTail + chunk).slice(-2_000); });
+      const stderrTail = captureStderrTail(child);
       child.on("close", () => {
         rejectWaiters(new Error("pi process exited before replying"));
-        if (!settled) {
-          const detail = stderrTail.trim().split("\n").filter((line) => line.trim()).slice(-2).join(" ").slice(-500);
-          emit({ ...base(threadId, turnId), type: "runtime.error",
-            message: detail ? `pi process exited before replying: ${detail}` : "pi process exited before replying" });
-        }
+        if (!settled) emit({ ...base(threadId, turnId), type: "runtime.error", message: piExitMessage(stderrTail()) });
         settle(false);
       });
 
@@ -933,18 +927,11 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       }
 
       if (settled) return { turnId };
-      if (scopeReadyPath) {
-        let ready = false;
-        try {
-          const receipt = JSON.parse(readFileSync(scopeReadyPath, "utf8")) as { status?: unknown; toolScope?: unknown };
-          ready = (receipt.status === "registered" || receipt.status === "enforced") && JSON.stringify(receipt.toolScope) === JSON.stringify(toolScope);
-        } catch { /* Missing or malformed readiness is never a grant. */ }
-        if (!ready) {
-          const message = "Pi tool selection enforcement is unavailable. Update Pi and check the OpenMausBot extension before retrying.";
-          emit({ ...base(threadId, turnId), type: "runtime.error", message });
-          settle(false);
-          throw new Error(message);
-        }
+      if (scopeReadyPath && !scopeReceiptReady(scopeReadyPath, toolScope)) {
+        const message = "Pi tool selection enforcement is unavailable. Update Pi and check the OpenMausBot extension before retrying.";
+        emit({ ...base(threadId, turnId), type: "runtime.error", message });
+        settle(false);
+        throw new Error(message);
       }
 
       const halves = promptHalves(turn);
