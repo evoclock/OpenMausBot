@@ -134,6 +134,7 @@ if (existsSync(join(root, "enterprise", "server", "index.ts"))) {
 // The packaged desktop forks this bootstrap to turn on Node's compile cache.
 // Copied, not bundled: esbuild would inline index.js into it.
 copyFileSync(join(root, "scripts", "desktop-server-entry.mjs"), join(root, "dist-server", "desktop-entry.mjs"));
+copyFileSync(join(server, "coding-git-askpass.mjs"), join(root, "dist-server", "coding-git-askpass.mjs"));
 
 // The model catalog snapshot (server/model-catalog/catalog.ts) is read from
 // disk, not inlined: 1.5 MB of JSON has no place in index.js. The bundle looks
