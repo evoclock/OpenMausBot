@@ -1,4 +1,9 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { checkCiContract } from './check-ci-contract.mjs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -7,6 +12,49 @@ const ci = parse(readFileSync(new URL('../.buildkite/pipeline.yml', import.meta.
 
 // Tip CI lives on GitHub Actions; Buildkite tip is an intentional noop (Accept SoA t296).
 describe('repository CI and release boundaries', () => {
+  it('rejects a tip-config-only change and accepts a paired contract change', () => {
+    expect(() => checkCiContract(['.buildkite/pipeline.yml'])).toThrow(/scripts\/ci-workflow\.test\.ts/);
+    expect(() => checkCiContract(['.github/workflows/tip-ci.yml'])).toThrow(/scripts\/ci-workflow\.test\.ts/);
+    expect(() => checkCiContract(['.buildkite/pipeline.yml', 'scripts/ci-workflow.test.ts'])).not.toThrow();
+    expect(() => checkCiContract(['.github/workflows/tip-ci.yml', 'scripts/ci-workflow.test.ts'])).not.toThrow();
+    expect(() => checkCiContract(['docs/ci.md'])).not.toThrow();
+  });
+
+  // Self-contained: the checkout running Vitest may lack origin/main or hold a stale one.
+  it('fails the CLI on a tip-config-only branch diff and passes once the contract co-changes', () => {
+    const script = fileURLToPath(new URL('./check-ci-contract.mjs', import.meta.url));
+    const repo = mkdtempSync(join(tmpdir(), 'omb-ci-contract-'));
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-c', 'user.name=ci', '-c', 'user.email=ci@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+    };
+    const write = (path: string, body: string) => {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), body);
+    };
+    const guard = () => spawnSync(process.execPath, [script, 'base', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+    try {
+      git('init', '--quiet', '--initial-branch=base');
+      write('.github/workflows/tip-ci.yml', 'name: Tip CI\n');
+      write('scripts/ci-workflow.test.ts', '// contract\n');
+      git('add', '.');
+      git('commit', '--quiet', '-m', 'base');
+      git('checkout', '--quiet', '-b', 'change');
+      write('.github/workflows/tip-ci.yml', 'name: Tip CI\non: {}\n');
+      git('commit', '--quiet', '-am', 'tip-ci only');
+      const tipOnly = guard();
+      expect(tipOnly.status).toBe(1);
+      expect(tipOnly.stderr).toContain('changed without scripts/ci-workflow.test.ts');
+      write('scripts/ci-workflow.test.ts', '// contract updated\n');
+      git('commit', '--quiet', '-am', 'contract');
+      const paired = guard();
+      expect(paired.status, paired.stderr).toBe(0);
+      expect(paired.stdout).toContain('CI contract co-change: OK');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('runs tip gates on GitHub Actions ubuntu Tip CI', () => {
     const tip = workflow('tip-ci.yml');
     expect(tip.name).toBe('Tip CI');
@@ -25,6 +73,9 @@ describe('repository CI and release boundaries', () => {
     // Required branch-protection check name (job name on the tip gate).
     expect(tip.jobs.tip.name).toBe('typecheck / lint / tests');
     expect(tip.jobs.tip.needs).toEqual(['typecheck', 'lint', 'test', 'docs']);
+    const lintRuns = tip.jobs.lint.steps.filter((step: { run?: string }) => typeof step.run === 'string').map((step: { run: string }) => step.run);
+    expect(lintRuns).toContain('git fetch --quiet origin main');
+    expect(lintRuns).toContain('node scripts/check-ci-contract.mjs origin/main HEAD');
   });
 
   it('keeps Buildkite tip as a noop off Mac agents', () => {
