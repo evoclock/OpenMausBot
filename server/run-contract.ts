@@ -92,6 +92,7 @@ export class RunContractStore {
     )`);
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_reports (run_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_tasks (run_id TEXT PRIMARY KEY, task_id INTEGER NOT NULL UNIQUE)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_holds (run_id TEXT PRIMARY KEY, held INTEGER NOT NULL CHECK (held IN (0, 1)))");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_merge_reasons (run_id TEXT PRIMARY KEY, repository TEXT NOT NULL, reason TEXT NOT NULL, method TEXT NOT NULL CHECK (method IN ('merge', 'rebase')))");
   }
   close(): void { this.db.close(); }
@@ -120,10 +121,23 @@ export class RunContractStore {
       .run(JSON.stringify(checked), codingId);
     return this.routineLink(codingId);
   }
-  queued(): RunContract[] {
+  list(): RunSnapshot[] {
     const rows = this.db.prepare("SELECT snapshot FROM coding_runs").all() as Array<{ snapshot: string }>;
-    return rows.map((row) => runSnapshotSchema.parse(JSON.parse(row.snapshot)))
-      .filter((snapshot) => snapshot.state === "queued").map((snapshot) => snapshot.contract);
+    return rows.map((row) => runSnapshotSchema.parse(JSON.parse(row.snapshot)));
+  }
+  queued(): RunContract[] {
+    return this.list().filter((snapshot) => snapshot.state === "queued").map((snapshot) => snapshot.contract);
+  }
+  isHeld(id: string): boolean {
+    return Boolean((this.db.prepare("SELECT held FROM coding_run_holds WHERE run_id = ?").get(id) as
+      { held: number } | undefined)?.held);
+  }
+  setHeld(id: string, held: boolean): boolean {
+    const snapshot = this.get(id);
+    if (!snapshot || ["done", "failed", "cancelled", "blocked"].includes(snapshot.state)) return false;
+    this.db.prepare(`INSERT INTO coding_run_holds VALUES (?, ?) ON CONFLICT (run_id) DO UPDATE SET held = excluded.held`)
+      .run(id, held ? 1 : 0);
+    return true;
   }
   taskId(id: string): number | undefined {
     const row = this.db.prepare("SELECT task_id FROM coding_run_tasks WHERE run_id = ?").get(id) as { task_id: number } | undefined;

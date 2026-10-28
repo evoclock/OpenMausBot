@@ -75,6 +75,11 @@ export class CodingTreehouseWorkspace {
   private readonly readStatus: (path: string) => string;
   private readonly pushWorkspaceBranch?: PushWorkspaceBranch;
   close() { this.db.close(); }
+  hasLeaseForRun(runId: string): boolean {
+    const rows = this.db.prepare("SELECT request_id FROM coding_workspaces WHERE path IS NOT NULL AND lease_id IS NOT NULL AND request_id LIKE ?")
+      .all(`${runId}:%`) as Array<{ request_id: string }>;
+    return rows.some((row) => row.request_id.startsWith(`${runId}:`));
+  }
   findForRun(runId: string): IsolatedWorkspace | undefined {
     const rows = this.db.prepare("SELECT request_id, contract, path, lease_id, base_sha FROM coding_workspaces WHERE request_id LIKE ? ORDER BY rowid DESC")
       .all(`${runId}:%`) as Array<{ request_id: string; contract: string; path: string | null; lease_id: string | null; base_sha: string | null }>;
