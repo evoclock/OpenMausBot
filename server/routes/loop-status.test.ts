@@ -12,6 +12,34 @@ import { dispatchRoutes } from "./table.ts";
 const scratch = join(process.cwd(), ".omb-scratch", "proof", "loop-status");
 mkdirSync(scratch, { recursive: true });
 
+// Why: a visible bot is insufficient authority to control its coding run; only an owner session can mutate the matching bot.
+it("requires owner scope and bot ownership for coding controls", async () => {
+  const calls: string[] = [];
+  const id = "7898b674-9669-43c1-84d5-f0955fd4e1cd";
+  const controls = { get: (runId: string) => runId === id ? { contract: { botId: "visible" }, state: "running" } : undefined,
+    hold: () => { calls.push("hold"); return "held"; }, resumeRun: () => { calls.push("resume"); return "resumed"; },
+    cancel: async () => { calls.push("cancel"); return "marked"; } };
+  const route = createLoopStatusRoutes({ dataDir: scratch, botVisible: () => true, controls: () => controls });
+  const send = async (path: string, scopes: Array<"admin" | "client">) => {
+    const server = createServer(async (req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const handled = await dispatchRoutes([route], { req, res, url, path: url.pathname,
+        method: req.method ?? "GET", auth: { kind: "loopback", scopes } as RequestAuth, json, readBody });
+      if (!handled) json(res, 404, { error: "not found" });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try { return await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`, { method: "POST" }); }
+    finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+  };
+  const base = `/api/bots/visible/loop-status/${id}`;
+  expect((await send(`${base}/hold`, ["client"])).status).toBe(403);
+  expect((await send(`/api/bots/hidden/loop-status/${id}/cancel`, ["admin"])).status).toBe(404);
+  expect((await send(`${base}/hold`, ["admin"])).status).toBe(200);
+  expect((await send(`${base}/resume`, ["admin"])).status).toBe(200);
+  expect((await send(`${base}/cancel`, ["admin"])).status).toBe(200);
+  expect(calls).toEqual(["hold", "resume", "cancel"]);
+});
+
 it("serves only the visible bot's durable run over HTTP, without write methods", async () => {
   const dir = mkdtempSync(join(scratch, "route-"));
   mkdirSync(join(dir, "coding-run"));

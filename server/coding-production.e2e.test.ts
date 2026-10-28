@@ -166,6 +166,12 @@ test.each([
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     expect(run.triggerSource).toBe("schedule");
     expect(run.status, JSON.stringify(run)).toBe(mode === "coding" ? "completed" : "failed");
+    // Why: every composed coding run must publish its terminal snapshot to the owner status feed.
+    await f.until(async () => {
+      const feed = await f.api("GET", "/api/session-status") as { sessions: Array<{ sessionId: string; state: string }> };
+      return feed.sessions.some((entry) => entry.sessionId === scheduledCodingRunId(run) &&
+        entry.state === (mode === "permission" || mode === "coding-denied" ? "failed" : expected));
+    }, "coding status feed");
     const workers = (await f.api("GET", "/api/bots")).bots;
     const workerTask = workers.find((bot: { id: string }) => bot.id === worker.id).tasks.find((task: { title: string }) => task.title.startsWith("Coding "));
     expect(workerTask?.cwd).toBe(f.leased);
@@ -363,6 +369,53 @@ test("webhook coding delivery ends without an approval card", async () => {
       expect(messages.some((message) => message.card)).toBe(false);
     }
   } finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
+// Why: an owner cancel through the real server must interrupt the worker, release its isolated lease and report cancelled.
+test("owner cancel route settles a running coding turn and releases its lease", async () => {
+  const f = await fixture("coding-hold");
+  try {
+    await f.start();
+    const owner = (await f.api("POST", "/api/bots", { name: "Fixture owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Fixture worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Fixture reviewer" })).bot;
+    for (const bot of [worker, reviewer]) await f.api("PATCH", `/api/bots/${bot.id}`, {
+      modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" },
+    });
+    const routine = (await f.api("POST", "/api/routines", { name: "Cancel fixture", prompt: "Write fixture change",
+      botId: owner.id, schedule: { type: "once", at: Date.now() + 3_600_000 } })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: { repositoryRoot: f.repository,
+      rolesFilePath: f.rolesFilePath, bots: { [owner.id]: { maxWallTimeMs: 120_000 } }, registrations: [{
+        routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
+      }] } }));
+    const routinesFile = join(f.dataDir, "routines.json");
+    const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
+    const due = Date.now() - 1_000;
+    const scheduled = saved.routines.find((entry: { id: string }) => entry.id === routine.id);
+    scheduled.schedule.at = due;
+    scheduled.nextRunAt = due;
+    writeFileSync(routinesFile, JSON.stringify(saved));
+    await f.start();
+    await f.until(async () => {
+      const bot = (await f.api("GET", "/api/bots")).bots.find((entry: { id: string }) => entry.id === worker.id);
+      return Boolean(bot?.tasks.some((task: { title: string }) => task.title.startsWith("Coding ")));
+    }, "active worker turn");
+    const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const id = scheduledCodingRunId(run);
+    const cancelled = await f.api("POST", `/api/bots/${owner.id}/loop-status/${id}/cancel`);
+    expect(cancelled.outcome).toBe("marked");
+    await f.until(async () => {
+      const status = await f.api("GET", `/api/bots/${owner.id}/loop-status`);
+      return status.runs.some((entry: { id: string; state: string }) => entry.id === id && entry.state === "cancelled");
+    }, "cancelled status");
+    expect(JSON.parse(readFileSync(f.state, "utf8")).holder).toBeNull();
+    const feed = await f.api("GET", "/api/session-status");
+    expect(feed.sessions.find((entry: { sessionId: string }) => entry.sessionId === id)?.state).toBe("cancelled");
+  } catch (error) { console.error(f.logs().slice(-8000)); throw error; }
+  finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);
 
 test("composed server interrupts an active coding turn at its wall-clock ceiling", async () => {

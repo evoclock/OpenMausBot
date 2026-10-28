@@ -10,6 +10,8 @@ import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
+import { createCodingRunStatusReporter } from "./coding-run-status.ts";
+import type { SessionStatusFeed, SessionWake } from "./session-status-feed.ts";
 import { createCodingStartTurnPort } from "./coding-start-turn.ts";
 import { codingWorkspaceBranch, CodingTreehouseWorkspace } from "./coding-treehouse-workspace.ts";
 import { createCodingWorkerHost } from "./coding-worker-host.ts";
@@ -48,6 +50,8 @@ export async function openProductionCodingRuntime(options: {
     onTurnStalled?: (released: Promise<void>) => void }) => Promise<void>;
   interrupt: (botId: string, threadId: string) => Promise<void>;
   gitHost?: CodingGitHost;
+  statusFeed?: SessionStatusFeed;
+  wakeOwner?: (wakes: readonly SessionWake[]) => void;
   driverFactory?: (directory: string) => Promise<InstalledWorkerDriver>;
 }) {
   const { config, dataDir, store, routines } = options;
@@ -110,6 +114,8 @@ export async function openProductionCodingRuntime(options: {
     },
   });
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
+  const status = options.statusFeed && createCodingRunStatusReporter({ feed: options.statusFeed,
+    list: () => runStore.list(), wake: (wakes) => options.wakeOwner?.(wakes) });
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
   delivery.replay();
   const origins = new Map<string, { botId: string; threadId: string; runId: string }>();
@@ -205,6 +211,7 @@ export async function openProductionCodingRuntime(options: {
     },
   });
   const deliver = (snapshot: RunSnapshot): boolean => {
+    status?.tick();
     if (snapshot.state !== "done" && snapshot.state !== "blocked" &&
       snapshot.state !== "failed" && snapshot.state !== "cancelled") return false;
     const linked = runStore.routineLink(snapshot.contract.id);
@@ -246,7 +253,15 @@ export async function openProductionCodingRuntime(options: {
   };
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
     contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
-    routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver, loadDriver });
+    routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver,
+    onStart: () => status?.tick(), loadDriver,
+    async onCancel(snapshot) {
+      const workspace = workspaceManager.findForRun(snapshot.contract.id);
+      if (!workspace && workspaceManager.hasLeaseForRun(snapshot.contract.id)) {
+        throw new Error("coding workspace lease cannot be verified");
+      }
+      if (workspace) await workspaceManager.release(workspace.leaseId);
+    } });
   reportPending = runtime.reportPending;
   for (const run of routines.listRuns()) {
     if (!run.threadId) continue;
@@ -257,6 +272,11 @@ export async function openProductionCodingRuntime(options: {
     if (id && runtime.get(id)) runStore.linkRoutine(run.id, id);
   }
   runtime.reportPending();
+  status?.tick();
+  const statusTimer = status && setInterval(() => {
+    try { status.tick(); } catch { console.error("coding run status feed unavailable"); }
+  }, 60_000);
+  statusTimer?.unref();
   const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
   const dispatch = async (run: RoutineRun, botId: string, threadId: string) => {
     const id = run.triggerSource === "webhook" && run.webhookId && run.deliveryId
@@ -265,6 +285,7 @@ export async function openProductionCodingRuntime(options: {
     const result = run.triggerSource === "webhook" ? await runtime.webhook(run) : await runtime.scheduled(run);
     if (!("id" in result)) throw new Error("coding trigger did not match its registration");
     runStore.linkRoutine(run.id, result.id);
+    status?.tick();
     runtime.reportPending();
     const current = runtime.get(result.id);
     if (current && ["done", "blocked", "failed", "cancelled"].includes(current.state)) deliver(current);
@@ -280,6 +301,10 @@ export async function openProductionCodingRuntime(options: {
       }
       return dispatch(run, botId, threadId);
     },
-    async close() { await runtime.close(); delivery.close(); runStore.close(); workspaceManager.close(); },
+    get: runtime.get,
+    hold: runtime.hold,
+    resumeRun: runtime.resumeRun,
+    cancel: runtime.cancel,
+    async close() { if (statusTimer) clearInterval(statusTimer); await runtime.close(); delivery.close(); runStore.close(); workspaceManager.close(); },
   };
 }

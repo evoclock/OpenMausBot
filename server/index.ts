@@ -10197,6 +10197,8 @@ const webhookRequests = new WebhookRequestService({ store, webhooks, botName: (b
 if (cfg.codingRuns) {
   coding = await openProductionCodingRuntime({
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
+    statusFeed: sessionStatusFeed,
+    wakeOwner: () => { const id = cfg.sessionStatus?.wakeRoutineId; if (id) routines?.runNow(id); },
     onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
       { id: codingRunIdForRequest(requestId), branch: workspace.branch, directory: workspace.directory }),
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
@@ -13358,7 +13360,8 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
-ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id) }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
+ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id),
+  controls: () => coding }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));
 // `routines` is assigned at boot, so it is read per request.

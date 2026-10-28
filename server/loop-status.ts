@@ -6,12 +6,13 @@ import { runSnapshotSchema, type RunSnapshot } from "./run-contract.ts";
 export interface LoopStatusReader {
   list(botId: string): RunSnapshot[];
   recent(id: string): Array<{ iteration: number; state: string; at: number; verdict: string | null }>;
+  held(id: string): boolean;
 }
 
-export function loopStatus(snapshot: RunSnapshot, entries: ReturnType<LoopStatusReader["recent"]>) {
+export function loopStatus(snapshot: RunSnapshot, entries: ReturnType<LoopStatusReader["recent"]>, held = false) {
   const limits = snapshot.contract.limits;
   return {
-    id: snapshot.contract.id, state: snapshot.state, iteration: snapshot.iteration,
+    id: snapshot.contract.id, state: snapshot.state, held, iteration: snapshot.iteration,
     budget: {
       iterationsUsed: snapshot.iteration,
       iterationsRemaining: Math.max(0, snapshot.contract.maxIterations - snapshot.iteration),
@@ -37,6 +38,10 @@ export function openLoopStatusReader(dataDir: string): LoopStatusReader & { clos
       const rows = db.prepare("SELECT snapshot FROM coding_runs WHERE bot_id = ? ORDER BY rowid DESC LIMIT 20")
         .all(botId) as Array<{ snapshot: string }>;
       return rows.map((row) => runSnapshotSchema.parse(JSON.parse(row.snapshot)));
+    },
+    held(id) {
+      const row = db.prepare("SELECT held FROM coding_run_holds WHERE run_id = ?").get(id) as { held: number } | undefined;
+      return row?.held === 1;
     },
     recent(id) {
       const rows = db.prepare("SELECT sequence, status, result FROM coding_run_steps WHERE run_id = ? ORDER BY sequence DESC LIMIT 10")
