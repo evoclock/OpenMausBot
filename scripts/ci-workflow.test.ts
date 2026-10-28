@@ -14,14 +14,22 @@ describe('repository CI and release boundaries', () => {
     expect(steps.find((step: { label: string }) => step.label === 'Typecheck').command).toContain('pnpm typecheck');
     expect(steps.find((step: { label: string }) => step.label === 'Lint and policy tests').command).toContain('pnpm lint');
     const main = steps.filter((step: { label: string }) => /^Tests [1-4]\/4$/.test(step.label));
-    expect(main.map((step: { command: string[] }) => step.command.at(-1))).toEqual([1, 2, 3, 4].map((shard) => `pnpm exec vitest run --shard=${shard}/4`));
+    expect(main.map((step: { command: string[] }) => step.command.at(-1))).toEqual([1, 2, 3, 4].map((shard) => `pnpm exec vitest run --shard=${shard}/4 --exclude '**/*recovery.e2e.test.ts'`));
     expect(main.every((step: { if: string }) => step.if === 'build.pull_request.id == null')).toBe(true);
     const pr = steps.filter((step: { label: string }) => /^PR Mac tests [1-8]\/8$/.test(step.label));
     expect(pr.map((step: { env: { SHARD_INDEX: string } }) => Number(step.env.SHARD_INDEX))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(pr.every((step: { if: string; command: string[] }) => step.if === 'build.pull_request.id != null'
-      && step.command.some((command) => command.includes('pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8')))).toBe(true);
+      && step.command.some((command) => command.includes("pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --exclude '**/*recovery.e2e.test.ts'")))).toBe(true);
     expect(pr.every((step: { artifact_paths?: string[] }) => step.artifact_paths?.includes('.omb-scratch/buildkite-reports/vitest-*.json')
       && step.artifact_paths.includes('.omb-scratch/buildkite-reports/junit-*.xml'))).toBe(true);
+    const recovery = steps.filter((step: { label: string }) => step.label === 'Recovery e2e');
+    expect(recovery).toHaveLength(1);
+    expect(recovery[0]).toMatchObject({
+      agents: { queue: 'mac-mini' },
+      concurrency: 1,
+      concurrency_group: 'openmausbot-recovery-e2e-mac-mini',
+    });
+    expect(recovery[0].command.at(-1)).toBe('pnpm exec vitest run server/*recovery.e2e.test.ts');
   });
 
   it('keeps policy gates on GitHub and test-style PR checks on Buildkite', () => {
