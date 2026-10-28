@@ -112,7 +112,7 @@ export async function runLive(config) {
   const inputs = [];
   const contract = { id: randomUUID(), botId: config.botConfig.originBotId, repository: SANDBOX,
     ref: branch, repositoryClass: "agent-private", successCriteria: ["node drill-double.test.mjs exits zero"],
-    allowedEffects: ["edit", "commit"], authorisedExternalWrites: [], maxIterations: config.botConfig.maxIterations,
+    checkCommand: [process.execPath, "drill-double.test.mjs"], allowedEffects: ["edit", "commit"], authorisedExternalWrites: [], maxIterations: config.botConfig.maxIterations,
     limits: config.botConfig.limits };
   const route = createLoopStatusRoutes({ dataDir: proofRoot, botVisible: (_auth, botId) => botId === contract.botId });
   const server = createServer((req, res) => {
@@ -137,6 +137,7 @@ export async function runLive(config) {
     const result = await runPi(config.worktree, config, prompt, signal);
     transcripts.push({ iteration, events: result.transcript });
     save("worker-transcript-excerpt.json", transcripts);
+    const checkStartedAt = Date.now();
     const check = await new Promise((done) => {
       const child = spawn(process.execPath, ["drill-double.test.mjs"], { cwd: config.worktree, stdio: ["ignore", "pipe", "pipe"] });
       let output = "";
@@ -149,7 +150,14 @@ export async function runLive(config) {
     if (iteration === 1 && check.code === 0) return { kind: "blocked", evidence: ["first iteration unexpectedly passed; required failing check missing"], costUsd: result.costUsd };
     if (iteration === 1) return { kind: "progress", evidence: ["first iteration check failed", `exit ${check.code}`], costUsd: result.costUsd };
     if (check.code !== 0) return { kind: "progress", evidence: ["done check failed", `exit ${check.code}`], costUsd: result.costUsd };
-    return { kind: "verified", evidence: ["node drill-double.test.mjs passed"], costUsd: result.costUsd };
+    await git(["add", "--", "drill-double.mjs", "drill-double.test.mjs"]);
+    await git(["-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com",
+      "commit", "-m", "Add verified drill double"]);
+    revision = await git(["rev-parse", "HEAD"]);
+    return { kind: "verified", evidence: ["node drill-double.test.mjs passed"], costUsd: result.costUsd,
+      hostCheck: { command: [process.execPath, "drill-double.test.mjs"], exitCode: check.code,
+        commitSha: revision, startedAt: checkStartedAt, durationMs: Date.now() - checkStartedAt,
+        timedOut: false, outputTail: check.output } };
   } }, { onTerminal(snapshot) { reports.push({ state: snapshot.state, evidence: snapshot.evidence }); } });
   try {
     const task = await runner.start(contract);
@@ -165,10 +173,6 @@ export async function runLive(config) {
     save("run-record.json", transcripts);
     if (after.state !== "done" || after.iteration < 2 || !reports.some((entry) => entry.state === "done"))
       throw new Error("real Pi outer loop did not reach done in two iterations");
-    await git(["add", "--", "drill-double.mjs", "drill-double.test.mjs"]);
-    await git(["-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com",
-      "commit", "-m", "Add verified drill double"]);
-    revision = await git(["rev-parse", "HEAD"]);
     await git(["diff", "--check", `${base}..${revision}`]);
     await git(["remote", "add", "origin", destination]);
     await withSandboxGitToken(token, askpass, (env) => git(["push", "origin", `HEAD:refs/heads/${branch}`], config.worktree, env));
