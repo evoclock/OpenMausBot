@@ -16,6 +16,33 @@ import { installedChrome, UI_MUTATING } from "../scripts/testing/control-omb-ui.
 import { removeTempDir } from "./testing/cleanup.ts";
 
 describe("control-omb command mapping", () => {
+  // Why: port probes release their socket, so another server can answer health before the fixture binds.
+  it("waits for its own server before checking the starter bot", async () => {
+    const realFetch = globalThis.fetch;
+    let foreignHealth = true;
+    let ownHealth = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/api/health" && foreignHealth) {
+        foreignHealth = false;
+        return Response.json({ app: "openmausbot", pid: 0 });
+      }
+      if (path === "/api/bots" && !ownHealth) {
+        return Response.json({ bots: [{ id: "foreign-1" }, { id: "foreign-2" }] });
+      }
+      const response = await realFetch(input, init);
+      if (path === "/api/health" && response.ok) ownHealth = true;
+      return response;
+    });
+    try {
+      const fixture = await launchVerificationServer();
+      try {
+        expect(ownHealth).toBe(true);
+        expect(fixture.child.pid).toBe(fixture.info.pid);
+      } finally { await fixture.close(); }
+    } finally { fetchSpy.mockRestore(); }
+  }, 30_000);
+
   it("treats unhealthy doctor and non-settled waits as command failures", () => {
     expect(controlResultSucceeded("doctor", { ok: true })).toBe(true);
     expect(controlResultSucceeded("doctor", { ok: false })).toBe(false);
