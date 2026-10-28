@@ -199,6 +199,86 @@ test("cancel correlates by run ID and persists its terminal status", async () =>
   } finally { await runner.close(); }
 });
 
+// Why: a hold requested mid-turn must not open a second turn and resume must use the persisted next iteration.
+test("hold waits for a safe iteration boundary and resumes without replay", async () => {
+  const dir = fixtureDir();
+  let finishFirst!: (result: { kind: "progress"; evidence: string[]; costUsd: number }) => void;
+  let startedFirst!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { startedFirst = resolve; });
+  const calls: number[] = [];
+  const inner = { async invoke(_contract: RunContractInput, iteration: number) {
+    calls.push(iteration);
+    if (iteration === 1) {
+      startedFirst();
+      return new Promise<{ kind: "progress"; evidence: string[]; costUsd: number }>((resolve) => { finishFirst = resolve; });
+    }
+    return verified(["complete"]);
+  } };
+  const runner = await openOuterRunner(dir, inner);
+  try {
+    const id = await runner.start(contract);
+    await firstStarted;
+    assert.equal(await runner.hold(contract.id), "held");
+    finishFirst({ kind: "progress", evidence: ["first committed"], costUsd: 0 });
+    for (let i = 0; i < 100 && runner.get(contract.id)?.state !== "waiting"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(runner.get(contract.id)?.state, "waiting");
+    assert.deepEqual(calls, [1]);
+    assert.equal(await runner.resumeRun(contract.id), "resumed");
+    await runner.wait(id);
+    assert.deepEqual(calls, [1, 2]);
+    assert.equal(runner.get(contract.id)?.state, "done");
+  } finally { await runner.close(); }
+});
+
+// Why: a durable hold must survive restart at a completed step without dispatching a fresh turn.
+test("hold survives restart at the recorded step", async () => {
+  const dir = fixtureDir();
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const calls: number[] = [];
+  const inner = { async invoke(_contract: RunContractInput, iteration: number) {
+    calls.push(iteration);
+    if (iteration === 1) { entered(); return { kind: "progress" as const, evidence: ["step 1"], costUsd: 0 }; }
+    return verified(["complete"]);
+  } };
+  const first = await openOuterRunner(dir, inner);
+  try {
+    await first.start(contract);
+    await started;
+    assert.equal(first.hold(contract.id), "held");
+    for (let i = 0; i < 100 && first.get(contract.id)?.state !== "waiting"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(first.get(contract.id)?.state, "waiting");
+  } finally { await first.close(); }
+  const second = await openOuterRunner(dir, inner);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.deepEqual(calls, [1]);
+    assert.equal(second.resumeRun(contract.id), "resumed");
+    await second.wait(await second.start(contract));
+    assert.deepEqual(calls, [1, 2]);
+  } finally { await second.close(); }
+});
+
+// Why: cancellation must end a live turn as cancelled, never as a retryable blocked run.
+test("cancelled live invocation records a terminal cancelled report", async () => {
+  const runner = await openOuterRunner(fixtureDir(), {
+    async invoke(_contract, _iteration, _requestId, signal) {
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true }));
+    },
+  });
+  try {
+    const id = await runner.start(contract);
+    assert.equal(await runner.cancel(contract.id), "marked");
+    await runner.wait(id);
+    assert.equal(runner.get(contract.id)?.state, "cancelled");
+    assert.equal(runner.report(contract.id)?.snapshot.state, "cancelled");
+  } finally { await runner.close(); }
+});
+
 test("outer loop parks the run as blocked at the contract iteration ceiling", async () => {
   const calls: string[] = [];
   const runner = await openOuterRunner(fixtureDir(), {

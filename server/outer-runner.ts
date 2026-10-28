@@ -27,12 +27,14 @@ const requiresSpendCap = (limits: RunSnapshot["contract"]["limits"]) =>
 
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
+  onStart?: (snapshot: RunSnapshot) => void;
   restartLimit?: number;
   effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
     /** Only read a durably saved result and priced usage; never restart a worker turn. */
     recoverResult: (contract: RunContractInput, iteration: number, requestId: string) => Promise<InnerLoopResult | null>;
     confirmInvocation?: (requestId: string, result: InnerLoopResult) => Promise<boolean> };
   contextCompactor?: IterationContextCompactor;
+  onCancel?: (snapshot: RunSnapshot) => Promise<void>;
 } = {}) {
   const durablePath = join(dataDir, "coding-runs.sqlite");
   const restartLimit = options.restartLimit ?? CODING_RESTART_LIMIT_DEFAULT;
@@ -128,6 +130,10 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
             return;
           }
         }
+        while (store.isHeld(task.input.id) && !runtime.signal.aborted) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (runtime.signal.aborted) return;
         if (snapshot.state !== "queued" && snapshot.state !== "waiting") {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: snapshot.state } }), context);
           return;
@@ -196,6 +202,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           const state = reasons.length ? "blocked"
             : result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
               : result.kind === "progress" ? "waiting" : "blocked";
+          if (runtime.signal.aborted) return;
           const finished = store.finishIteration(task.input.id, current.iteration, requestId, state, at,
             [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null,
             result.modelsUsed, result.hostCheck);
@@ -209,12 +216,13 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           }
         } catch (error) {
           const latest = store.get(task.input.id);
-          if (latest?.state === "running") {
+          if (latest?.state === "running" && !runtime.signal.aborted) {
             transition(task.input.id, "blocked", Math.max(Date.now(), latest.updatedAt + 1,
               deadline.signal.aborted ? current.startedAt! + current.contract.limits!.maxWallTimeMs : 0),
               [deadline.signal.aborted ? `wall-clock ceiling reached (${current.contract.limits!.maxWallTimeMs} ms)`
                 : error instanceof Error ? error.message : "inner loop failed"]);
           }
+          if (runtime.signal.aborted) return;
           if (!deadline.signal.aborted) throw error;
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
         } finally { clearTimeout(timer); }
@@ -223,10 +231,13 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     abort: async (task, runtime, context) => {
       const snapshot = store.get(task.input.id);
       if (snapshot && !["done", "failed", "cancelled"].includes(snapshot.state)) {
-        const receipt = snapshot.state === "running" ? store.step(task.input.id, snapshot.iteration) : undefined;
-        transition(task.input.id, snapshot.state === "running" ? "blocked" : "cancelled",
-          Math.max(Date.now(), snapshot.updatedAt + 1),
-          [receipt?.status === "prepared" ? `unknown outward effect ${receipt.requestId}; owner review required` : "run stopped"]);
+        try {
+          await options.onCancel?.(snapshot);
+          transition(task.input.id, "cancelled", Math.max(Date.now(), snapshot.updatedAt + 1), ["run cancelled by owner"]);
+        } catch (error) {
+          transition(task.input.id, "blocked", Math.max(Date.now(), snapshot.updatedAt + 1),
+            [`cancellation needs lease reconciliation: ${error instanceof Error ? error.message : String(error)}`]);
+        }
       }
       await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
@@ -301,6 +312,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   const start = (contract: RunContractInput): Promise<TaskId<string>> => {
     requireHealthy();
     const snapshot = store.create(contract, Date.now());
+    options.onStart?.(snapshot);
     const existing = starting.get(snapshot.contract.id);
     if (existing) return existing;
     const attempt = startOne(snapshot).finally(() => starting.delete(snapshot.contract.id));
@@ -323,6 +335,8 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     report(id: string) { requireHealthy(); return store.report(id); },
     ledger(id: string) { requireHealthy(); return ledger.entries(id); },
     reportPending,
+    hold(id: string) { requireHealthy(); return store.setHeld(id, true) ? "held" : "not_found"; },
+    resumeRun(id: string) { requireHealthy(); return store.setHeld(id, false) ? "resumed" : "not_found"; },
     async cancel(id: string) {
       requireHealthy();
       const taskId = store.taskId(id);
