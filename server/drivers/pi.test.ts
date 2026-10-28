@@ -424,6 +424,45 @@ describe("PiDriver turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
   });
 
+  // Why: a rejected native path probe must reach the model as a failed tool result without aborting its coding turn.
+  it.each([
+    ["read", ".git/config"],
+    ["read", "../outside"],
+    ["write", "../outside"],
+    ["edit", ".git/config"],
+  ])("keeps a closed coding run alive after %s denies %s", async (tool, path) => {
+    await create("coding-path-denied", { FAKE_PI_DENIED_TOOL: tool, FAKE_PI_DENIED_PATH: path, FAKE_PI_SCOPE_ACK: "1" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-path-denied", text: "Continue", cwd: process.cwd(),
+      approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
+      codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "path-probe", ok: false }));
+    expect(recorder.events).not.toContainEqual(expect.objectContaining({ type: "runtime.error" }));
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Continued after denied path" }));
+  });
+
+  // Why: a forbidden tool is a dangerous envelope breach, not a recoverable native path probe.
+  it("ends a closed coding run when read is denied by its tool scope", async () => {
+    await create("coding-read-denied", { FAKE_PI_SCOPE_ACK: "1" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-read-denied", text: "Continue", cwd: process.cwd(),
+      approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
+      codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("denied read") }));
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+  });
+
+  it("ends a closed coding run after a disallowed tool", async () => {
+    await create("coding-denied", { FAKE_PI_SCOPE_ACK: "1" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-tool-denied", text: "Continue", cwd: process.cwd(),
+      approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
+      codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("denied bash") }));
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+  });
+
   it("reassembles chunked turn frames from a protocol-v2 runtime", async () => {
     await create("omp-chunk");
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-omp-chunk", text: "hi" });
