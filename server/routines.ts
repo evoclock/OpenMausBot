@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { DATA_DIR } from "./config.ts";
 import { assertRoutineFileShape } from "./routine-file-validation.ts";
-import { isUnscheduledOnce, unscheduledOnceSchedule } from "./routine-unscheduled.ts";
+import { onceUpdateError, unscheduledOnceSchedule } from "./routine-unscheduled.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
 import { applyCodingSettlement, finishGoalRun as finishGoalRunState, type CodingSettlementReceipt } from "./routine-settlement.ts";
@@ -173,6 +173,8 @@ export interface RoutineInput {
   runOnStartup?: boolean;
   resultsThreadId?: string | null;
 }
+
+type RoutineUpdate = Partial<Omit<RoutineInput, "schedule">> & { schedule?: RoutineScheduleInput | null };
 
 interface RoutineFile {
   version: 1;
@@ -967,11 +969,7 @@ export class RoutineManager {
     return this.routineWithHealth(routine);
   }
 
-  update(
-    id: string,
-    patch: Partial<RoutineInput>,
-    request?: RoutineRequestCommitFor<"update" | "pause" | "resume">,
-  ): Routine | null {
+  update(id: string, patch: RoutineUpdate, request?: RoutineRequestCommitFor<"update" | "pause" | "resume">): Routine | null {
     this.assertWritable();
     if (request) {
       const receipt = this.matchingRoutineRequestReceipt(request);
@@ -982,8 +980,9 @@ export class RoutineManager {
     }
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
-    if (isUnscheduledOnce(routine.schedule) && patch.enabled === true && !patch.schedule) throw new RoutineScheduleError("Choose a schedule before enabling this routine");
     const now = this.now();
+    const scheduleError = onceUpdateError(routine, patch, this.runs, now);
+    if (scheduleError) throw new RoutineScheduleError(scheduleError);
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,
       prompt: patch.prompt ?? routine.prompt,
@@ -992,7 +991,8 @@ export class RoutineManager {
       groupId: Object.hasOwn(patch, "groupId") ? patch.groupId : routine.groupId,
       runOn: patch.runOn ?? routine.runOn,
       enabled: patch.enabled ?? routine.enabled,
-      schedule: patch.schedule ? mergeScheduleUpdate(routine.schedule, patch.schedule) : routine.schedule,
+      schedule: patch.schedule === null ? unscheduledOnceSchedule()
+        : patch.schedule ? mergeScheduleUpdate(routine.schedule, patch.schedule) : routine.schedule,
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
       timeoutMinutes: Object.hasOwn(patch, "timeoutMinutes") ? patch.timeoutMinutes : routine.timeoutMinutes,
       attachments: patch.attachments ?? routine.attachments,

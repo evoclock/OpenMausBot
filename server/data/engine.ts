@@ -178,7 +178,7 @@ function failureFrom(error: unknown, sql: string, interrupted: InterruptCause | 
 
 export class Lane {
   private queue: Promise<unknown> = Promise.resolve();
-  private running: { interrupted: InterruptCause | null } | null = null;
+  private running: { interrupt(cause: InterruptCause): void } | null = null;
 
   readonly connection: DuckDB.DuckDBConnection;
   constructor(connection: DuckDB.DuckDBConnection) { this.connection = connection; }
@@ -193,30 +193,33 @@ export class Lane {
     const timeoutMs = options.timeoutMs ?? DATA_LIMITS.sqlTimeoutMs;
     if (options.signal?.aborted) throw new DataFailure({ code: "cancelled", message: "Cancelled before it ran.", sql });
     const state: { interrupted: InterruptCause | null } = { interrupted: null };
-    this.running = state;
+    let retry: ReturnType<typeof setInterval> | undefined;
     const interrupt = (cause: InterruptCause) => {
       if (state.interrupted) return;
       state.interrupted = cause;
       this.connection.interrupt();
+      retry = setInterval(() => this.connection.interrupt(), 20);
     };
+    this.running = { interrupt };
     const timer = setTimeout(() => interrupt("timeout"), timeoutMs);
     const onAbort = () => interrupt("cancelled");
     options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      return await work(this.connection);
+      const result = await work(this.connection);
+      if (state.interrupted) throw new Error("Interrupted after the statement completed.");
+      return result;
     } catch (error) {
       throw failureFrom(error, sql, state.interrupted, timeoutMs);
     } finally {
       clearTimeout(timer);
+      if (retry) clearInterval(retry);
       options.signal?.removeEventListener("abort", onAbort);
       this.running = null;
     }
   }
 
   interrupt(): void {
-    if (!this.running) return;
-    this.running.interrupted ??= "cancelled";
-    this.connection.interrupt();
+    this.running?.interrupt("cancelled");
   }
 }
 

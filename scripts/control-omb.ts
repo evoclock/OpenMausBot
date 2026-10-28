@@ -311,8 +311,8 @@ export async function launchVerificationServer(
         const response = await fetch(`${url}/api/health`, {
           signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
         });
-        const body = response.ok ? await response.json() as { app?: string } : null;
-        if (body?.app === "openmausbot") break;
+        const body = response.ok ? await response.json() as { app?: string; pid?: number } : null;
+        if (body?.app === "openmausbot" && body.pid === child.pid) break;
       } catch {
       }
       if (Date.now() >= deadline) throw new Error(`verification server did not become ready; see ${logPath}`);
@@ -335,7 +335,7 @@ export async function launchVerificationServer(
     const body = list.ok ? await list.json() as { bots?: Array<{ id: string }> } : null;
     const seeded = body?.bots;
     if (!Array.isArray(seeded) || seeded.length !== 1) {
-      throw new Error(`verification fixture did not seed exactly one starter bot; see ${logPath}`);
+      throw new Error(`verification fixture did not seed exactly one starter bot (status ${list.status}, count ${Array.isArray(seeded) ? seeded.length : "missing"}); see ${logPath}`);
     }
     const renameTimeout = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
     const rename = await fetch(`${url}/api/bots/${seeded[0].id}/profile`, {

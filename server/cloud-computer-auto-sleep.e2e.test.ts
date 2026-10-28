@@ -313,7 +313,7 @@ describe("a cloud computer goes to sleep after use and wakes on the next", () =>
     await pause(IDLE_MS * 3);
     expect(stopsOf(workerBox)).toHaveLength(before);
 
-    await apiOk("PATCH", `/api/routines/${routine.id}`, { enabled: false });
+    await apiOk("PATCH", `/api/routines/${routine.id}`, { enabled: false, schedule: null });
     const paused = Date.now();
     const stops = await until(() => stopsOf(workerBox), found => found.length === before + 1);
     expect(stops.at(-1)!.at - paused).toBeGreaterThanOrEqual(IDLE_MS - 500);

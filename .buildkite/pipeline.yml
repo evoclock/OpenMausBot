@@ -32,7 +32,7 @@ steps:
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
-      - "pnpm exec vitest run --shard=1/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
+      - "pnpm exec vitest run --shard=1/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
   - label: "Tests 2/4"
     if: build.pull_request.id == null
     priority: -1
@@ -41,7 +41,7 @@ steps:
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
-      - "pnpm exec vitest run --shard=2/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
+      - "pnpm exec vitest run --shard=2/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
   - label: "Tests 3/4"
     if: build.pull_request.id == null
     priority: -1
@@ -50,7 +50,7 @@ steps:
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
-      - "pnpm exec vitest run --shard=3/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
+      - "pnpm exec vitest run --shard=3/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
   - label: "Tests 4/4"
     if: build.pull_request.id == null
     priority: -1
@@ -59,7 +59,7 @@ steps:
     command:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
-      - "pnpm exec vitest run --shard=4/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
+      - "pnpm exec vitest run --shard=4/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'"
   - label: "PR Mac tests 1/8"
     if: build.pull_request.id != null
     priority: -1
@@ -77,7 +77,7 @@ steps:
         mkdir -p .omb-scratch/buildkite-reports
         report=".omb-scratch/buildkite-reports/vitest-$$SHARD_INDEX.json"
         status=0
-        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --exclude '**/*recovery.e2e.test.ts' --exclude '**/steer-e2e.test.ts' --reporter=default --reporter=json --outputFile.json="$$report" --reporter=junit --outputFile.junit=".omb-scratch/buildkite-reports/junit-$$SHARD_INDEX.xml" || status=$$?
+        pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts' --reporter=default --reporter=json --outputFile.json="$$report" --reporter=junit --outputFile.junit=".omb-scratch/buildkite-reports/junit-$$SHARD_INDEX.xml" || status=$$?
         if test -s "$$report"; then
           kept="$$HOME/.cache/omb-buildkite-reports/$$BUILDKITE_PIPELINE_SLUG/$$BUILDKITE_BUILD_NUMBER"
           mkdir -p "$$kept" && cp "$$report" "$$kept/vitest-$$SHARD_INDEX.json" || true
@@ -151,6 +151,16 @@ steps:
       - ".buildkite/host.sh"
       - "sfw pnpm install --frozen-lockfile"
       - "pnpm exec vitest run server/*recovery.e2e.test.ts"
+  - label: "Helper model e2e"
+    priority: -1
+    agents: { queue: mac-mini }
+    concurrency: 1
+    concurrency_group: openmausbot-helper-model-e2e-mac-mini
+    timeout_in_minutes: 30
+    command:
+      - ".buildkite/host.sh"
+      - "sfw pnpm install --frozen-lockfile"
+      - "pnpm exec vitest run server/helper-model.e2e.test.ts"
   - label: "Docs"
     priority: -1
     agents: { queue: mac-mini }
