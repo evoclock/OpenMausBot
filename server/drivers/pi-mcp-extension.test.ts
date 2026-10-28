@@ -328,7 +328,8 @@ describe("Pi MCP extension registration", () => {
     expect(await f.handlers.get("tool_call")?.({ toolName: "bash" })).toMatchObject({ block: true });
     expect(await f.handlers.get("tool_call")?.({ toolName: "ask_user" })).toMatchObject({ block: true });
     expect(await f.handlers.get("tool_call")?.({ toolName: "coding_command", input: { command: "push" } })).toMatchObject({ block: true });
-    expect(await f.handlers.get("tool_call")?.({ toolName: "write", input: { path: "../secrets" } })).toMatchObject({ block: true });
+    expect(await f.handlers.get("tool_call")?.({ toolName: "write", input: { path: "../secrets" } }))
+      .toMatchObject({ block: true, reason: "Coding path denied: write is outside the worktree" });
     expect(await f.handlers.get("tool_call")?.({ toolName: "coding_command", input: { command: "status" } })).toBeUndefined();
     f.restore(["bash", "coding_command", "ask_user"]);
     const payload = { tools: ["bash", "coding_command", "ask_user"].map((name) => ({ name })) };
@@ -354,7 +355,7 @@ describe("Pi MCP extension registration", () => {
     })).toMatchObject({ block: true });
     expect(await f.handlers.get("tool_call")?.({
       toolName: "read", input: JSON.stringify({ path: "/etc/passwd" }),
-    })).toMatchObject({ block: true });
+    })).toMatchObject({ block: true, reason: "Coding path denied: read is outside the worktree" });
   });
 
   it("intersects native and package tools before the first turn and after restoration", async () => {

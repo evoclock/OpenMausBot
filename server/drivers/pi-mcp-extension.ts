@@ -633,11 +633,13 @@ export default async function (pi: PiExtensionApi): Promise<void> {
     for (const event of ["session_start", "session_switch", "model_select", "before_agent_start", "context"]) pi.on(event, () => { intersect(); });
     pi.on("tool_call", (event) => {
       const input = parseToolInput(event?.input);
-      const permitted = !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName) &&
-        (!closed || (event.toolName === "coding_command" ? codingCommandAllowed(input)
-          : !["read", "write", "edit"].includes(event.toolName) || codingFileAllowed(process.cwd(), input)));
+      const scoped = !enforcementFailed && typeof event?.toolName === "string" && allowed(event.toolName);
+      const pathDenied = closed && scoped && typeof event?.toolName === "string" &&
+        ["read", "write", "edit"].includes(event.toolName) && !codingFileAllowed(process.cwd(), input);
+      const permitted = scoped && !pathDenied && (!closed || event.toolName !== "coding_command" || codingCommandAllowed(input));
       return permitted ? undefined : { block: true,
-        reason: closed ? `Coding run denied: ${String(event?.toolName ?? "unknown")} is outside the envelope` : "Tool selection excludes this tool" };
+        reason: pathDenied ? `Coding path denied: ${String(event.toolName)} is outside the worktree`
+          : closed ? `Coding run denied: ${String(event?.toolName ?? "unknown")} is outside the envelope` : "Tool selection excludes this tool" };
     });
     // Providers serialize tools before this hook, so the final payload is filtered too.
     pi.on("before_provider_request", (event, context) => {

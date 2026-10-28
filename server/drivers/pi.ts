@@ -724,8 +724,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             return;
           }
           case "tool_execution_end": {
-            if (codingRun && evt.isError && !["read", "write", "edit"].includes(String(evt.toolName)) &&
-              /Coding (?:run|command) denied:/.test(JSON.stringify(evt.result ?? ""))) {
+            if (codingRun && evt.isError && /Coding (?:run|command) denied:/.test(JSON.stringify(evt.result ?? ""))) {
               const action = String(evt.toolName ?? "tool");
               emit({ ...base(threadId, turnId), type: "runtime.error", message: `Coding run ${codingRun.id} denied ${action}: action is outside the envelope` });
               settle(false);

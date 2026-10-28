@@ -443,6 +443,16 @@ describe("PiDriver turns (fake CLI)", () => {
   });
 
   // Why: a forbidden tool is a dangerous envelope breach, not a recoverable native path probe.
+  it("ends a closed coding run when read is denied by its tool scope", async () => {
+    await create("coding-read-denied", { FAKE_PI_SCOPE_ACK: "1" });
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-read-denied", text: "Continue", cwd: process.cwd(),
+      approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
+      codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
+    await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("denied read") }));
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+  });
+
   it("ends a closed coding run after a disallowed tool", async () => {
     await create("coding-denied", { FAKE_PI_SCOPE_ACK: "1" });
     const { turnId } = await instance.adapter.sendTurn({ threadId: "t-tool-denied", text: "Continue", cwd: process.cwd(),
