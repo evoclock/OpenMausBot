@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
+import { join, sep } from "node:path";
 import type { Message, Store } from "./store.ts";
 import type { CodingTurnPort, CodingTurnResult } from "./coding-worker-host.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
@@ -8,6 +10,7 @@ import type { SentinelRecord } from "./sentinel/types.ts";
 import { failedTurnCause } from "../shared/failed-turn.ts";
 
 interface CodingStartTurnOptions {
+  dataDir?: string;
   store: Pick<Store, "bot" | "tasks" | "createTask" | "patchTask" | "messagesFor"> &
     Partial<Pick<Store, "switchTaskModel" | "projectBotForTask">>;
   assertActiveRun: (requestId: string) => void;
@@ -118,7 +121,18 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
             message.tool?.ok === false ? failedTurnCause(message.tool.name) : null).findLast((cause) => cause);
           if (answer?.text && successful && !blocked && !stalled && !looping) {
             const after = revision(workspace.directory);
+            const profile = options.dataDir && realpathSync(join(options.dataDir, "bots", botId, "pi"));
+            const cursors = options.store.tasks(botId).find((entry) => entry.threadId === task.threadId)?.resumeCursors;
+            const paths = Object.values(cursors ?? {}).filter((value): value is string => typeof value === "string");
+            const sessionFile = paths.find((path) => {
+              try {
+                const resolved = realpathSync(path);
+                return profile && resolved.startsWith(profile + sep) && statSync(resolved).isFile() && statSync(resolved).size > 0;
+              } catch { return false; }
+            });
+            if (options.dataDir && !sessionFile) throw new Error("coding turn has no durable Pi session file");
             return { revision: after === before && role !== "review" ? "" : after,
+              ...(sessionFile ? { sessionFile } : {}),
               evidence: [...(chase ? ["The first coding turn needed one bounded chase."] : []), answer.text],
               accepted: role === "review" && answer.text.includes(`ACCEPT ${after}`),
               costUsd: await costUsd(), ...modelUsage() };

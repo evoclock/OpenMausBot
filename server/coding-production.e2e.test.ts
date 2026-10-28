@@ -15,7 +15,7 @@ const serverDir = dirname(fileURLToPath(import.meta.url));
 const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
-async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied" | "coding-hold" | "drill", localOnly = false) {
+async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied" | "coding-hold" | "drill" | "coding-iterations", localOnly = false) {
   const cache = join(root, "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
@@ -46,9 +46,10 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
     git(repository, "push", join(home, "destination.git"), "main");
   } else git(repository, "remote", "add", "origin", "git@github.com:fixture/agents.git");
   git(repository, "worktree", "add", "--detach", leased, "main");
+  if (mode === "coding-iterations") git(repository, "worktree", "add", "--detach", join(home, "leased-2"), "main");
   writeFileSync(join(bin, "gh"), `#!/usr/bin/env node\nconst a=process.argv.slice(2);\nif(a.join(' ') !== 'repo view fixture/agents --json nameWithOwner,isPrivate,viewerPermission') process.exit(2);\nconsole.log(JSON.stringify({nameWithOwner:'fixture/agents',isPrivate:true,viewerPermission:'WRITE'}));\n`, { mode: 0o755 });
-  writeFileSync(state, JSON.stringify({ holder: null }));
-  writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nimport {execFileSync} from 'node:child_process';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nconst git=(...args)=>execFileSync('git',args,{cwd:path,encoding:'utf8'}).trim();\nif(a[0]==='status') console.log(JSON.stringify(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  const branch=a.includes('--branch')?a[a.indexOf('--branch')+1]:'';\n  if(branch){\n    try { git('rev-parse','--verify','refs/heads/'+branch); git('switch',branch); }\n    catch { git('switch','-c',branch); }\n    const head=git('rev-parse','HEAD');\n    git('update-ref','refs/remotes/origin/'+branch,head);\n    git('branch','--set-upstream-to','origin/'+branch,branch);\n  }\n  s.holder=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path,lease_id:'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
+  writeFileSync(state, JSON.stringify({ holder: null, holder2: null }));
+  writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nimport {execFileSync} from 'node:child_process';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nconst second=${JSON.stringify(mode === "coding-iterations" ? join(home, "leased-2") : "")};\nconst available=second && s.holder ? second : path;\nconst git=(...args)=>execFileSync('git',args,{cwd:available,encoding:'utf8'}).trim();\nif(a[0]==='status') console.log(JSON.stringify([...(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]),...(s.holder2?[{path:second,status:'leased',lease_id:'fixture-lease-2',lease_holder:s.holder2}]:[])]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  const branch=a.includes('--branch')?a[a.indexOf('--branch')+1]:'';\n  if(branch){\n    try { git('rev-parse','--verify','refs/heads/'+branch); git('switch',branch); }\n    catch { git('switch','-c',branch); }\n    const head=git('rev-parse','HEAD');\n    git('update-ref','refs/remotes/origin/'+branch,head);\n    git('branch','--set-upstream-to','origin/'+branch,branch);\n  }\n  const key=available===second?'holder2':'holder'; s[key]=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path:available,lease_id:available===second?'fixture-lease-2':'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
   const configFile = join(dataDir, "config.json");
   const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-sol",
@@ -120,6 +121,63 @@ test("parallel composed fixtures bind distinct OS-assigned listener ports", asyn
     await Promise.all([first.stop(), second.stop()]);
     await Promise.all([removeTempDir(first.home), removeTempDir(second.home)]);
   }
+}, 90_000);
+
+// Why: a second coding iteration must receive the previous worker's durable Pi session, not only a summary.
+test("two coding iterations retain session files in the run record and handover", async () => {
+  const f = await fixture("coding-iterations");
+  try {
+    await f.start();
+    const owner = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Coding worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
+    for (const bot of [worker, reviewer]) await f.api("PATCH", `/api/bots/${bot.id}`, {
+      modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" },
+    });
+    const routine = (await f.api("POST", "/api/routines", { name: "Two iterations", prompt: "Complete fixture coding task",
+      botId: owner.id, schedule: { type: "once", at: Date.now() + 3_600_000 } })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: {
+      repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
+      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxIterations: 2 } },
+      registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
+      }],
+    } }));
+    const routinesFile = join(f.dataDir, "routines.json");
+    const saved = JSON.parse(readFileSync(routinesFile, "utf8"));
+    const due = Date.now() - 1000;
+    const scheduled = saved.routines.find((entry: { id: string }) => entry.id === routine.id);
+    scheduled.schedule.at = due;
+    scheduled.nextRunAt = due;
+    writeFileSync(routinesFile, JSON.stringify(saved));
+    await f.start();
+    await f.until(async () => (await f.api("GET", "/api/routines")).runs.some(
+      (run: { routineId: string; status: string }) => run.routineId === routine.id && run.status === "completed"), "two-iteration coding result");
+    const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
+    const status = await f.api("GET", `/api/coding-runs/${scheduledCodingRunId(run)}`);
+    const iterations = status.iterations as Array<{ iteration: number; sessionFile?: string }>;
+    expect(iterations).toHaveLength(2);
+    for (const entry of iterations) {
+      expect(entry.sessionFile).toBeTruthy();
+      expect(existsSync(entry.sessionFile!)).toBe(true);
+      expect(readFileSync(entry.sessionFile!, "utf8").length).toBeGreaterThan(0);
+      expect(entry.sessionFile).toContain(join(f.dataDir, "bots"));
+    }
+    expect(iterations[1]?.sessionFile).not.toBe(iterations[0]?.sessionFile);
+    const spawns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+      .filter((entry: { isTurnSpawn?: boolean }) => entry.isTurnSpawn) as Array<{ argv: string[]; env: { PI_CODING_AGENT_DIR?: string } }>;
+    expect(spawns).toHaveLength(4);
+    expect(spawns.every((entry) => !entry.argv.includes("--no-session"))).toBe(true);
+    expect(new Set(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).size).toBe(2);
+    expect(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).toContain(join(f.dataDir, "bots", reviewer.id, "pi"));
+    const prompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.includes("Iteration 2\n"));
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0].prompt.message).toContain(iterations[0]!.sessionFile);
+  } catch (error) { console.error(f.logs().slice(-5000)); throw error; }
+  finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);
 
 test.each([

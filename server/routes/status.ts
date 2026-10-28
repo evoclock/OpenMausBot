@@ -141,7 +141,7 @@ export function createStatusRoutes(deps: StatusRouteDeps): RouteHandler {
       const id = path.slice("/api/coding-runs/".length);
       if (!/^[0-9a-f-]{36}$/i.test(id)) return json(res, 400, { error: "invalid run id" });
       try {
-        const db = new DatabaseSync(join(DATA_DIR, "runtime.db"), { readOnly: true });
+        const db = new DatabaseSync(join(DATA_DIR, "coding-run", "runtime.db"), { readOnly: true });
         try {
           const row = db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;
           return row ? json(res, 200, runSnapshotSchema.parse(JSON.parse(row.snapshot))) : json(res, 404, { error: "no such run" });

@@ -9,7 +9,8 @@
 //   FAKE_PI_STEER_OUT_OF_ORDER  hold the first steer until a second arrives, then refuse the first and accept the second
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const mode = process.env.FAKE_PI_MODE ?? "happy";
 const modelPairs = (process.env.FAKE_PI_MODELS ?? "ollama-cloud/glm-5.2,openai/gpt-4o")
@@ -55,7 +56,7 @@ if (process.env.FAKE_PI_DUMP) {
       JSON.stringify({
         argv,
         cwd: process.cwd(),
-        env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
+        env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER", "PI_CODING_AGENT_DIR"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
         envConfigured: ["PATH", "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "BOX_TOKEN"].filter(
           (k) => process.env[k] !== undefined,
         ),
@@ -332,7 +333,8 @@ function handle(cmd: any) {
         return;
       }
       sessionCounter += 1;
-      currentSessionFile = `/fake/pi-session-${sessionCounter}.json`;
+      currentSessionFile = argv.includes("--no-session") ? `/fake/pi-session-${sessionCounter}.json` :
+        join(process.env.PI_CODING_AGENT_DIR ?? "/fake", "sessions", `${process.pid}-${sessionCounter}.jsonl`);
       send({ type: "response", command: "new_session", success: true, data: { sessionId: `s-${sessionCounter}`, sessionFile: currentSessionFile } });
       return;
     case "switch_session":
@@ -342,6 +344,10 @@ function handle(cmd: any) {
       }
       currentSessionFile = cmd.sessionPath ?? currentSessionFile;
       send({ type: "response", command: "switch_session", success: true, data: { sessionId: "s-resumed", sessionFile: currentSessionFile } });
+      return;
+    case "get_state":
+      send({ type: "response", command: "get_state", success: true,
+        data: { sessionFile: currentSessionFile, sessionId: `s-${sessionCounter}` } });
       return;
     case "set_model": {
       if (process.env.FAKE_PI_DUMP) {
@@ -375,6 +381,10 @@ function handle(cmd: any) {
         } catch {}
       }
       send({ type: "response", command: "prompt", success: true });
+      if (!argv.includes("--no-session") && currentSessionFile) {
+        mkdirSync(join(process.env.PI_CODING_AGENT_DIR!, "sessions"), { recursive: true });
+        appendFileSync(currentSessionFile, `${JSON.stringify({ message: cmd.message })}\n`);
+      }
       if (mode === "tooluse") streamToolTurn();
       else if (mode === "permission") streamPermissionTurn();
       else if (mode === "coding-hold") { send({ type: "agent_start" }); send({ type: "turn_start" }); }
@@ -403,14 +413,17 @@ function handle(cmd: any) {
       else if (mode === "question-input") streamQuestionInputTurn();
       else if (mode === "interleave") streamInterleaveTurn();
       else if (mode === "turn-error") streamErrorTurn();
-      else if (mode === "coding" || mode === "drill") {
+      else if (mode === "coding" || mode === "drill" || mode === "coding-iterations") {
         const git = (...args: string[]) => execFileSync("git", args, { cwd: process.cwd(), encoding: "utf8" }).trim();
         if (String(cmd.message).includes("Review revision ")) {
           if (mode === "drill" && process.env.FAKE_PI_DRILL_REVIEW_MARKER) {
             writeFileSync(process.env.FAKE_PI_DRILL_REVIEW_MARKER, JSON.stringify({ pid: process.pid, revision: git("rev-parse", "HEAD") }));
+          } else if (mode === "coding-iterations" && !readFileSync("coding-fixture-result.txt", "utf8").includes("iteration 2")) {
+            streamTurn("Review needs another iteration");
           } else streamTurn(`ACCEPT ${git("rev-parse", "HEAD")}`);
         } else {
-          writeFileSync("coding-fixture-result.txt", "fixture work completed\n");
+          writeFileSync("coding-fixture-result.txt", mode === "coding-iterations" && String(cmd.message).includes("Iteration 2\n")
+            ? "iteration 2 completed\n" : "fixture work completed\n");
           git("add", "coding-fixture-result.txt");
           git("-c", "user.name=evoclock", "-c", `user.email=${mode === "drill" ? "52983349+evoclock@users.noreply.github.com" : "evoclock@users.noreply.github.com"}`,
             "commit", "-m", "Complete fixture coding task");

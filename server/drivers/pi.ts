@@ -1,11 +1,11 @@
 // The pi coding agent (@earendil-works/pi-coding-agent) over its own stdio JSON-RPC mode
-// (`pi --mode rpc --no-session`), not ACP. pi is BYOK and reads ~/.pi/agent/auth.json itself, so
-// this driver holds no key; resumeCursor is pi's `sessionFile` (switch_session).
+// (`pi --mode rpc`), not ACP. The driver holds no key; resumeCursor is pi's
+// `sessionFile` (switch_session).
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "../config.ts";
+import { DATA_DIR, PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "../config.ts";
 import { openStartupModelCatalog, writeStartupModelCache } from "../startup-model-catalog.ts";
 import { augmentedPath } from "../env-path.ts";
 import { botGitPath } from "./bot-git-path.ts";
@@ -20,6 +20,7 @@ import {
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { PiRpcChunks } from "./pi-rpc-chunks.ts";
+import { codingPiAgentDir, openPiSession } from "./pi-coding-session.ts";
 export { PiRpcChunks } from "./pi-rpc-chunks.ts";
 
 import type {
@@ -501,12 +502,14 @@ export const PiDriver: ProviderDriver<PiConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       if (startupModelRefresh) await startupModelRefresh;
       const { threadId } = turn;
+      const codingRun = turn.codingRun;
+      const agentDir = codingRun ? codingPiAgentDir(DATA_DIR, turn.botId ?? "") : config.agentDir;
+      const turnEnv = codingRun ? { ...catalogEnv, PI_CODING_AGENT_DIR: agentDir } : catalogEnv;
       const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
       if (!readiness.skill.ready) throw new Error(readiness.skill.action);
       const selection = parseToolScope(turn.toolScope);
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;
-      const codingRun = turn.codingRun;
       if (codingRun && (turn.approvalMode !== "full" || !toolScope || JSON.stringify(toolScope.allow) !== JSON.stringify(["native:read", "native:write", "native:edit", "native:coding_command"]))) {
         throw new Error("Coding run denied: invalid closed tool selection");
       }
@@ -523,7 +526,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
 
       // Before any credential-bearing temp file, so a model setup failure leaves nothing to clean up.
       if (typeof turn.model === "string" && turn.model) {
-        ensurePiInjectModel(turn.model, catalogEnv);
+        ensurePiInjectModel(turn.model, turnEnv);
       }
 
       // The MCP config carries credentials: a 0600 temp file removed at settle, never argv.
@@ -548,7 +551,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
         throw err;
       }
-      const childArgs = [...PI_ARGS, ...(codingRun ? ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files"] : []), "-e", SPAWNED_PROXIES.piMcpExtension];
+      const childArgs = [...(codingRun ? ["--mode", "rpc"] : PI_ARGS), ...(codingRun ? ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files"] : []), "-e", SPAWNED_PROXIES.piMcpExtension];
 
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
@@ -557,7 +560,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
             stdio: ["pipe", "pipe", "pipe"],
             cwd: turn.cwd,
             env: {
-              ...piEnvironment({ ...process.env, ...catalogEnv }),
+              ...piEnvironment({ ...process.env, ...turnEnv }),
               OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json"),
             },
           }, "bot");
@@ -890,20 +893,16 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       let sessionFile = sessionPath;
       let sessionReady = false;
       try {
-        const command = sessionPath ? "switch_session" : "new_session";
-        const hsPromise = awaitResponse(command);
-        send(sessionPath ? { type: "switch_session", sessionPath } : { type: "new_session" });
-        const hs = (await hsPromise) as { sessionFile?: string; sessionId?: string } | undefined;
-        if (hs?.sessionFile) sessionFile = hs.sessionFile;
+        const session = await openPiSession(send, awaitResponse, sessionPath, Boolean(codingRun));
+        sessionFile = session.sessionFile;
         sessionReady = true;
-        emit({
-          ...base(threadId, turnId),
-          type: "session.started",
-          sessionId: sessionFile ?? hs?.sessionId ?? null,
-          model: turn.model ?? null,
-        });
-      } catch {
-        // pi --no-session accepts a prompt without an explicit session.
+        emit({ ...base(threadId, turnId), type: "session.started",
+          sessionId: sessionFile ?? session.sessionId, model: turn.model ?? null });
+      } catch (error) {
+        if (codingRun) {
+          settle(false);
+          throw error;
+        }
       }
 
       // A process that already exited cannot take the model or prompt; its close event reported why.

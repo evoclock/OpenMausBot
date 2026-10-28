@@ -50,6 +50,7 @@ export const runSnapshotSchema = z.object({
   spentUsd: z.number().finite().nonnegative().default(0),
   spendUncertain: z.boolean().default(false),
   modelsUsed: z.array(z.object({ iteration: z.number().int().positive(), instanceId: z.string().min(1), model: z.string().min(1) }).strict()).optional(),
+  iterations: z.array(z.object({ iteration: z.number().int().positive(), sessionFile: z.string().min(1) }).strict()).optional(),
   evidence: z.array(z.string()),
   hostCheck: z.object({ command: z.array(z.string()), exitCode: z.number().int().nullable(), commitSha: z.string(), startedAt: z.number().int(), durationMs: z.number().int().nonnegative(), timedOut: z.boolean(), outputTail: z.string() }).strict().optional(),
 }).strict();
@@ -201,7 +202,7 @@ export class RunContractStore {
   }
   finishIteration(id: string, sequence: number, requestId: string, nextState: RunState,
     at: number, evidence: string[], costUsd: number | null = null,
-    modelsUsed: Array<{ instanceId: string; model: string }> = [], hostCheck?: RunSnapshot["hostCheck"]): RunSnapshot {
+    modelsUsed: Array<{ instanceId: string; model: string }> = [], hostCheck?: RunSnapshot["hostCheck"], sessionFile?: string): RunSnapshot {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const current = this.get(id);
@@ -213,6 +214,7 @@ export class RunContractStore {
       const advanced = advanceRun(checkedCurrent, nextState, at, evidence);
       const next = runSnapshotSchema.parse({ ...advanced, spentUsd: current.spentUsd + (costUsd ?? 0),
         modelsUsed: [...(current.modelsUsed ?? []), ...modelsUsed.map((selection) => ({ ...selection, iteration: sequence }))],
+        iterations: [...(current.iterations ?? []), ...(sessionFile ? [{ iteration: sequence, sessionFile }] : [])],
         spendUncertain: current.spendUncertain || (current.contract.limits?.modelAccess !== "local" &&
           current.contract.limits?.modelAccess !== "subscription" && costUsd === null) });
       this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")

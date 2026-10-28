@@ -8,6 +8,7 @@ export interface IterationEntry {
   verdict: RunSnapshot["state"] | "pending";
   startedAt: number;
   finishedAt?: number;
+  sessionFile?: string;
 }
 
 export interface IterationContextCompactor {
@@ -32,6 +33,7 @@ export function openLoopLedger(path: string) {
       const predecessor = db.prepare(`SELECT result FROM coding_run_steps WHERE run_id = ? AND sequence = ?`)
         .get(runId, row.sequence - 1) as { result: string | null } | undefined;
       const previous = predecessor?.result ? runSnapshotSchema.parse(JSON.parse(predecessor.result)) : undefined;
+      const sessionFile = result?.iterations?.find((entry) => entry.iteration === row.sequence)?.sessionFile;
       return {
         iteration: row.sequence,
         goal: current.contract.successCriteria.join("\n"),
@@ -40,6 +42,7 @@ export function openLoopLedger(path: string) {
         verdict: result?.state ?? "pending",
         startedAt: previous?.updatedAt ?? current.startedAt ?? current.updatedAt,
         ...(result ? { finishedAt: result.updatedAt } : {}),
+        ...(sessionFile ? { sessionFile } : {}),
       } satisfies IterationEntry;
     });
     return newestFirst.reverse();
