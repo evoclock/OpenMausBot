@@ -491,6 +491,36 @@ describe("a bot's database", () => {
 });
 
 describe("cancellation", () => {
+  // Why: DuckDB can ignore an interrupt delivered before its native statement becomes active.
+  it("interrupts a statement that becomes active after its first cancellation", async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let active = false;
+    let stop: (() => void) | undefined;
+    let interrupts = 0;
+    const connection = {
+      run: () => {
+        entered();
+        return new Promise<void>((_resolve, reject) => {
+          const fallback = setTimeout(() => reject(new Error("native statement remained busy")), 1_000);
+          setTimeout(() => { active = true; }, 10);
+          stop = () => { clearTimeout(fallback); reject(new Error("INTERRUPT Error: Interrupted!")); };
+        });
+      },
+      interrupt: () => { interrupts++; if (active) stop?.(); },
+    };
+    const lane = new Lane(connection as never);
+    const controller = new AbortController();
+    const query = lane.run("SELECT slow", { signal: controller.signal }, async (conn) => {
+      await conn.run("SELECT slow");
+    });
+    await started;
+    controller.abort();
+    const error = await failure(query);
+    expect(error.error).toMatchObject({ code: "cancelled", message: "INTERRUPT Error: Interrupted!" });
+    expect(interrupts).toBeGreaterThan(1);
+  });
+
   it("maps a timeout to `timeout` (retryable) and leaves the connection usable", async () => {
     const db = await engine().forBot("slow");
     const started = Date.now();
