@@ -2,7 +2,7 @@
 // The openmausbot headless verbs for verifying an isolated fixture. A verb that
 // changes something never runs on a server it merely found.
 import { spawn, type ChildProcess } from "node:child_process";
-import { closeSync, mkdirSync, mkdtempSync, openSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -210,8 +210,9 @@ export function verificationServerArgs(childEnv: NodeJS.ProcessEnv): string[] {
   ];
 }
 
-/** Start one foreground-owned, fake-engine server with no access to user data. */
-export async function launchVerificationServer(
+class VerificationPortCollisionError extends Error {}
+
+async function launchVerificationServerOnce(
   parentEnv: NodeJS.ProcessEnv = process.env,
   signal?: AbortSignal,
   localVm?: { binDir: string; host: string; sshKey: string; staticDir: string },
@@ -304,6 +305,11 @@ export async function launchVerificationServer(
     for (;;) {
       if (signal?.aborted) throw new ControlOmbError("verification launch cancelled");
       if (child.exitCode !== null || child.signalCode !== null) {
+        const logText = readFileSync(logPath, "utf8");
+        if (logText.includes("listen EADDRINUSE: address already in use") &&
+          new RegExp(`127\\.0\\.0\\.1:(?:${port}|${port + 1})(?:\\D|$)`).test(logText)) {
+          throw new VerificationPortCollisionError(`verification server port was taken; see ${logPath}`);
+        }
         throw new Error(`verification server exited before it was ready; see ${logPath}`);
       }
       try {
@@ -363,6 +369,20 @@ export async function launchVerificationServer(
       await removeTempDir(dataDir);
     },
   };
+}
+
+/** Start one foreground-owned, fake-engine server with no access to user data. */
+export async function launchVerificationServer(
+  ...args: Parameters<typeof launchVerificationServerOnce>
+): Promise<VerificationServer> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await launchVerificationServerOnce(...args);
+    } catch (error) {
+      if (!(error instanceof VerificationPortCollisionError) || attempt === 2 || args[1]?.aborted) throw error;
+    }
+  }
+  throw new Error("verification server port retries exhausted");
 }
 
 export function controlResultSucceeded(command: string, result: unknown): boolean {

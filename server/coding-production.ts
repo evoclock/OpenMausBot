@@ -165,7 +165,7 @@ export async function openProductionCodingRuntime(options: {
     return run?.threadId ? { botId: run.botId, threadId: run.threadId, runId: run.id } : null;
   };
   const turn = createCodingStartTurnPort({
-    store,
+    dataDir, store,
     onTaskCreated(botId, threadId, requestId, workspace) {
       const runId = codingRunIdForRequest(requestId);
       workspacesByRun.set(runId, workspace);

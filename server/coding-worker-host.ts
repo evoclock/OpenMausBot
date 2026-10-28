@@ -8,6 +8,7 @@ import { codingWorkspaceBranch } from "./coding-treehouse-workspace.ts";
 
 export interface CodingTurnResult {
   revision: string;
+  sessionFile?: string;
   evidence: string[];
   accepted?: boolean;
   blocked?: boolean;
@@ -66,7 +67,7 @@ export function createCodingWorkerHost(options: {
         ? `${goal}\n\nHost already wrote the BEGIN_CARD…END_CARD body into TASKS.md (## Consolidation phase). Verify the Class|Path classification table is present. Commit only TASKS.md. Do not paraphrase or rewrite that section.`
         : goal;
       const result = await options.turn.run({ botId: config.developmentBotId, workspace, role: "development", prompt, requestId, signal });
-      return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
+      return { revision: result.revision, evidence: result.evidence, sessionFile: result.sessionFile, costUsd: result.costUsd,
         progress: Boolean(result.revision && result.evidence.length), modelUsed: result.modelUsed,
         ...(result.blocked ? { blocked: true } : {}), ...(result.modelsUsed ? { modelsUsed: result.modelsUsed } : {}) };
     },

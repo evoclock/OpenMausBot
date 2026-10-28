@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -14,6 +15,12 @@ import {
 } from "../scripts/control-omb.ts";
 import { installedChrome, UI_MUTATING } from "../scripts/testing/control-omb-ui.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
+import { freePortBlock } from "./testing/ports.ts";
+
+vi.mock("./testing/ports.ts", async (importOriginal) => {
+  const ports = await importOriginal<typeof import("./testing/ports.ts")>();
+  return { ...ports, freePortBlock: vi.fn(ports.freePortBlock) };
+});
 
 describe("control-omb command mapping", () => {
   // Why: port probes release their socket, so another server can answer health before the fixture binds.
@@ -305,6 +312,29 @@ describe("control-omb isolated verification loop", () => {
     }
     expect(existsSync(session.info.dataDir)).toBe(false);
     expect(existsSync(session.info.logPath)).toBe(true);
+  }, 30_000);
+
+  // Why: a different fixture can bind a probed port before our child listens; retry only the failed launch on a fresh block.
+  it("relaunches on a fresh port when another server wins the bind", async () => {
+    const occupied = createServer((_request, response) => { response.writeHead(503).end(); });
+    await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+    const address = occupied.address();
+    if (!address || typeof address === "string") throw new Error("fixture port missing");
+    const ports = vi.mocked(freePortBlock);
+    ports.mockClear();
+    ports.mockImplementationOnce(async () => address.port);
+    let session: Awaited<ReturnType<typeof launchVerificationServer>> | undefined;
+    try {
+      session = await launchVerificationServer();
+      expect(ports).toHaveBeenCalledTimes(2);
+      expect(session.info.url).not.toBe(`http://127.0.0.1:${address.port}`);
+      const health = await fetch(`${session.info.url}/api/health`);
+      expect(health.ok).toBe(true);
+      expect((await health.json() as { pid: number }).pid).toBe(session.info.pid);
+    } finally {
+      await session?.close();
+      await new Promise<void>((resolve, reject) => occupied.close((error) => error ? reject(error) : resolve()));
+    }
   }, 30_000);
 
   it("allows slow starter reads and renames within the fixture launch deadline", async () => {

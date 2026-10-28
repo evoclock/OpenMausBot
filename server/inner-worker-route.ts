@@ -19,6 +19,7 @@ export interface IsolatedWorkspace {
 
 export interface WorkerReport {
   revision: string;
+  sessionFile?: string;
   evidence: string[];
   progress: boolean;
   blocked?: boolean;
@@ -56,8 +57,8 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
     async invoke(contract, _iteration, requestId, signal, remainingUsd, context): Promise<InnerLoopResult> {
       const spendRequired = contract.limits?.modelAccess !== "subscription" && contract.limits?.modelAccess !== "local";
       const prior = context?.previous;
-      const carry = prior ? context?.compactor?.compact(context.history ?? [prior]) ??
-        `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}` : "";
+      const carry = prior ? `${context?.compactor?.compact(context.history ?? [prior]) ??
+        `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}`}\nPrevious iteration Pi session file: ${prior.sessionFile ?? "unavailable"}` : "";
       const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, spendRequired ? remainingUsd ?? contract.limits?.maxSpendUsd : undefined)}${carry ? `\n${carry}` : ""}`;
       const work = async (): Promise<InnerLoopResult> => {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
@@ -72,6 +73,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
       let blockedEvidence: string[] = [];
       let spentUsd: number | null = 0;
       const modelsUsed: Array<{ instanceId: string; model: string }> = [];
+      let sessionFile: string | undefined;
       const charge = (cost: number | null | undefined): boolean => {
         if (cost === null || cost === undefined || !Number.isFinite(cost) || cost < 0) {
           if (spendRequired) { spentUsd = null; return false; }
@@ -83,7 +85,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
       const blocked = (reason: string, detail?: string): InnerLoopResult => {
         releaseReason = reason;
         blockedEvidence = detail ? [reason, detail] : [reason];
-        return { kind: "blocked", evidence: blockedEvidence, costUsd: spentUsd, ...(modelsUsed.length ? { modelsUsed } : {}) };
+        return { kind: "blocked", evidence: blockedEvidence, costUsd: spentUsd, ...(sessionFile ? { sessionFile } : {}), ...(modelsUsed.length ? { modelsUsed } : {}) };
       };
       try {
         if (workspace.repository !== contract.repository || workspace.baseBranch !== contract.ref ||
@@ -92,6 +94,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         }
         const workspaceGoal = `${goal}\nTreehouse workspace is already leased at ${workspace.directory} on ${workspace.branch}. Work only there. Use read, write, edit, and coding_command for scoped files, checks, add, and commit. Git push and draft PR are handled by the host after verification. Do not acquire another workspace or call GitHub tools.`;
         const report = await host.runPlaybook(workspace, roles.development, workspaceGoal, requestId, signal);
+        sessionFile = report.sessionFile;
         modelsUsed.push(...(report.modelsUsed?.length ? report.modelsUsed : report.modelUsed ? [report.modelUsed] : []));
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
@@ -109,7 +112,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
             return {
               kind: "progress",
               evidence: [...report.evidence, "worker left uncommitted changes; continue"],
-              costUsd: spentUsd,
+              costUsd: spentUsd, ...(sessionFile ? { sessionFile } : {}),
               ...(modelsUsed.length ? { modelsUsed } : {}),
             };
           }
@@ -124,6 +127,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         if (review.revision !== report.revision || !review.accepted || !review.evidence.some((item) => item.trim())) {
           retainLease = true;
           return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(sessionFile ? { sessionFile } : {}),
             ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
         const verified = await host.verifyWithPstack(workspace, report.revision, contract.successCriteria, signal);
@@ -131,6 +135,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         retainLease = true;
         if (!verified?.some((item) => item.trim())) {
           return { kind: "progress", evidence: [...report.evidence, ...review.evidence], costUsd: spentUsd,
+            ...(sessionFile ? { sessionFile } : {}),
             ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
         if (!contract.checkCommand) return { kind: "blocked", evidence: [...report.evidence, "run contract has no host check command"], costUsd: spentUsd };
@@ -139,6 +144,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           return { kind: "blocked", evidence: [...report.evidence, ...verified, "host check failed"], hostCheck, costUsd: spentUsd };
         }
         return { kind: "verified", evidence: [...report.evidence, ...review.evidence, ...verified], hostCheck, costUsd: spentUsd,
+          ...(sessionFile ? { sessionFile } : {}),
           ...(modelsUsed.length ? { modelsUsed } : {}) };
       } catch (error) {
         return blocked("worker route failed; reconcile outward effects",
