@@ -3,6 +3,7 @@ import { runHostCheck } from "./coding-host-check.ts";
 import { parsePiRoles } from "./pi-readiness.ts";
 import type { RunContractInput } from "./run-contract.ts";
 import type { IsolatedWorkspace, WorkerHost, WorkerRoles } from "./inner-worker-route.ts";
+import { applyEmbeddedCardInWorkspace } from "./coding-filled-card-apply.ts";
 import { codingWorkspaceBranch } from "./coding-treehouse-workspace.ts";
 
 export interface CodingTurnResult {
@@ -60,7 +61,11 @@ export function createCodingWorkerHost(options: {
       if (!request || !config || !(await this.roles(request.repository)) || config.development !== role || !config.developmentBotId) {
         throw new Error("coding worker role is not configured for this run");
       }
-      const result = await options.turn.run({ botId: config.developmentBotId, workspace, role: "development", prompt: goal, requestId, signal });
+      const applied = applyEmbeddedCardInWorkspace(workspace.directory, goal);
+      const prompt = applied
+        ? `${goal}\n\nHost already wrote the BEGIN_CARD…END_CARD body into TASKS.md (## Consolidation phase). Verify the Class|Path classification table is present. Commit only TASKS.md. Do not paraphrase or rewrite that section.`
+        : goal;
+      const result = await options.turn.run({ botId: config.developmentBotId, workspace, role: "development", prompt, requestId, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         progress: Boolean(result.revision && result.evidence.length), modelUsed: result.modelUsed,
         ...(result.blocked ? { blocked: true } : {}), ...(result.modelsUsed ? { modelsUsed: result.modelsUsed } : {}) };
