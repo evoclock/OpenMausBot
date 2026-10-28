@@ -1,5 +1,9 @@
 # OpenMausBot agent notes
 
+| Rule | Enforced by |
+| --- | --- |
+| Change `.github/workflows/tip-ci.yml` or `.buildkite/pipeline.yml` with `scripts/ci-workflow.test.ts` in the same PR. | `scripts/check-ci-contract.mjs` in Tip CI lint; `scripts/ci-workflow.test.ts` |
+
 Before claiming a server or conversation change works, follow
 [`docs/verification/README.md`](docs/verification/README.md). Launch an isolated
 fixture for verification. Permission release checks may additionally use a running
