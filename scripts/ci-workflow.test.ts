@@ -5,61 +5,37 @@ import { parse } from 'yaml';
 const workflow = (name: string) => parse(readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
 const ci = parse(readFileSync(new URL('../.buildkite/pipeline.yml', import.meta.url), 'utf8'));
 
-// The CI contract intentionally replaces the upstream release/deploy jobs.
+// Tip CI lives on GitHub Actions; Buildkite tip is an intentional noop (Accept SoA t296).
 describe('repository CI and release boundaries', () => {
-  // Why: helper-model e2e must not compete inside a shared Vitest shard and must still run once on both PRs and main.
-  it('runs typecheck, lint, and every test shard on the Mac for PRs and main', () => {
-    const steps = ci.steps.filter((step: { label?: string }) => step.label);
-    expect(steps.every((step: { agents?: { queue?: string }; timeout_in_minutes?: number; priority?: number }) =>
-      step.agents?.queue === 'mac-mini' && step.timeout_in_minutes! > 0 && step.priority === -1)).toBe(true);
-    expect(steps.find((step: { label: string }) => step.label === 'Typecheck').command).toContain('pnpm typecheck');
-    expect(steps.find((step: { label: string }) => step.label === 'Lint and policy tests').command).toContain('pnpm lint');
-    const main = steps.filter((step: { label: string }) => /^Tests [1-4]\/4$/.test(step.label));
-    expect(main.map((step: { command: string[] }) => step.command.at(-1))).toEqual([1, 2, 3, 4].map((shard) => `pnpm exec vitest run --shard=${shard}/4 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'`));
-    expect(main.every((step: { if: string }) => step.if === 'build.pull_request.id == null')).toBe(true);
-    const pr = steps.filter((step: { label: string }) => /^PR Mac tests [1-8]\/8$/.test(step.label));
-    expect(pr.map((step: { env: { SHARD_INDEX: string } }) => Number(step.env.SHARD_INDEX))).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
-    expect(pr.every((step: { if: string; command: string[] }) => step.if === 'build.pull_request.id != null'
-      && step.command.some((command) => command.includes("pnpm exec vitest run --shard=$$((SHARD_INDEX+1))/8 --exclude '**/*recovery.e2e.test.ts' --exclude '**/helper-model.e2e.test.ts' --exclude '**/steer-e2e.test.ts'")))).toBe(true);
-    expect(pr.every((step: { artifact_paths?: string[] }) => step.artifact_paths?.includes('.omb-scratch/buildkite-reports/vitest-*.json')
-      && step.artifact_paths.includes('.omb-scratch/buildkite-reports/junit-*.xml'))).toBe(true);
-    const recovery = steps.filter((step: { label: string }) => step.label === 'Recovery e2e');
-    expect(recovery).toHaveLength(1);
-    expect(recovery[0]).toMatchObject({
-      agents: { queue: 'mac-mini' },
-      concurrency: 1,
-      concurrency_group: 'openmausbot-recovery-e2e-mac-mini',
-    });
-    expect(recovery[0].command.at(-1)).toBe('pnpm exec vitest run server/*recovery.e2e.test.ts');
-    const helper = steps.filter((step: { label: string }) => step.label === 'Helper model e2e');
-    expect(helper).toHaveLength(1);
-    expect(helper[0]).toMatchObject({
-      agents: { queue: 'mac-mini' },
-      concurrency: 1,
-      concurrency_group: 'openmausbot-helper-model-e2e-mac-mini',
-    });
-    expect(helper[0].command.at(-1)).toBe('pnpm exec vitest run server/helper-model.e2e.test.ts');
-    const steering = steps.filter((step: { label: string }) => step.label === 'Steering e2e');
-    expect(steering).toHaveLength(1);
-    expect(steering[0]).toMatchObject({
-      agents: { queue: 'mac-mini' },
-      concurrency: 1,
-      concurrency_group: 'openmausbot-steer-e2e-mac-mini',
-    });
-    expect(steering[0].command.at(-1)).toBe('pnpm exec vitest run server/steer-e2e.test.ts');
-    const wait = ci.steps.findIndex((step: { wait?: unknown }) => step.wait !== undefined);
-    expect(wait).toBeGreaterThan(ci.steps.findIndex((step: { label?: string }) => step.label === 'Recovery e2e'));
-    expect(ci.steps[wait].wait.continue_on_failure).toBe(true);
-    expect(ci.steps[wait + 1].label).toBe('Steering e2e');
+  it('runs tip gates on GitHub Actions ubuntu Tip CI', () => {
+    const tip = workflow('tip-ci.yml');
+    expect(tip.name).toBe('Tip CI');
+    expect(tip.on.pull_request.branches).toEqual(['main']);
+    expect(tip.on.push.branches).toEqual(['main']);
+    expect(tip.jobs.typecheck['runs-on']).toBe('ubuntu-latest');
+    expect(tip.jobs.lint['runs-on']).toBe('ubuntu-latest');
+    expect(tip.jobs.test['runs-on']).toBe('ubuntu-latest');
+    expect(tip.jobs.docs['runs-on']).toBe('ubuntu-latest');
+    expect(tip.jobs.test.strategy.matrix.shard).toEqual([1, 2, 3, 4]);
+    const vitest = tip.jobs.test.steps.find((step: { name?: string }) => step.name?.startsWith('Vitest shard'));
+    expect(vitest.run).toContain("--shard=${{ matrix.shard }}/4");
+    expect(vitest.run).toContain("--exclude '**/*recovery.e2e.test.ts'");
+    expect(vitest.run).toContain("--exclude '**/helper-model.e2e.test.ts'");
+    expect(vitest.run).toContain("--exclude '**/steer-e2e.test.ts'");
+    // Required branch-protection check name (job name on the tip gate).
+    expect(tip.jobs.tip.name).toBe('typecheck / lint / tests');
+    expect(tip.jobs.tip.needs).toEqual(['typecheck', 'lint', 'test', 'docs']);
   });
 
-  it('keeps policy gates on GitHub and test-style PR checks on Buildkite', () => {
-    const labels = ci.steps.map((step: { label?: string }) => step.label);
-    expect(labels).toContain('Dependencies');
-    expect(labels).toContain('Docs');
-    expect(labels).not.toContain('Author check');
-    expect(labels).not.toContain('PR wording');
-    expect(labels).not.toContain('PR review gate');
+  it('keeps Buildkite tip as a noop off Mac agents', () => {
+    const steps = ci.steps.filter((step: { label?: string }) => step.label);
+    expect(steps).toHaveLength(1);
+    expect(steps[0].label).toBe('Tip CI moved to GitHub Actions');
+    expect(steps[0].command).toContain('GitHub Actions');
+    expect(steps[0].agents).toBeUndefined();
+  });
+
+  it('keeps policy gates and release on GitHub alongside Tip CI', () => {
     expect(Object.keys(workflow('author-check.yml').jobs)).toEqual(['author-check']);
     expect(Object.keys(workflow('pr-wording.yml').jobs)).toEqual(['pr-wording']);
     expect(Object.keys(workflow('pr-review-gate.yml').jobs)).toEqual(['pr-review-gate']);
@@ -67,7 +43,12 @@ describe('repository CI and release boundaries', () => {
     expect(windows.jobs.smoke['runs-on']).toBe('windows-latest');
     expect(windows.jobs.build.env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER).toBe('x86_64-w64-mingw32-gcc');
     expect(readdirSync(new URL('../.github/workflows/', import.meta.url)).sort()).toEqual([
-      'author-check.yml', 'browser-vendor-windows.yml', 'pr-review-gate.yml', 'pr-wording.yml', 'release.yml',
+      'author-check.yml',
+      'browser-vendor-windows.yml',
+      'pr-review-gate.yml',
+      'pr-wording.yml',
+      'release.yml',
+      'tip-ci.yml',
     ]);
   });
 
