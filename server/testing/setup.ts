@@ -1,13 +1,13 @@
 // Every test file gets a throwaway home, so DATA_DIR (~/.openmausbot) never touches the real one;
 // os.homedir() reads HOME / USERPROFILE at call time, and this runs before server/config.ts is imported.
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach } from "vitest";
 
 import { removeTempDir } from "./cleanup.ts";
 
-const home = mkdtempSync(join(tmpdir(), "omb-test-home-"));
+const home = realpathSync(mkdtempSync(join(tmpdir(), "omb-test-home-")));
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 // OMB_DATA_DIR must never escape the throwaway home the suite deletes.

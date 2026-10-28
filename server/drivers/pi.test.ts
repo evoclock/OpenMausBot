@@ -432,7 +432,7 @@ describe("PiDriver turns (fake CLI)", () => {
     ["edit", ".git/config"],
   ])("keeps a closed coding run alive after %s denies %s", async (tool, path) => {
     await create("coding-path-denied", { FAKE_PI_DENIED_TOOL: tool, FAKE_PI_DENIED_PATH: path, FAKE_PI_SCOPE_ACK: "1" });
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-path-denied", text: "Continue", cwd: process.cwd(),
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-path-denied", botId: "fixture-bot", text: "Continue", cwd: process.cwd(),
       approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
       codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
@@ -445,7 +445,7 @@ describe("PiDriver turns (fake CLI)", () => {
   // Why: a forbidden tool is a dangerous envelope breach, not a recoverable native path probe.
   it("ends a closed coding run when read is denied by its tool scope", async () => {
     await create("coding-read-denied", { FAKE_PI_SCOPE_ACK: "1" });
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-read-denied", text: "Continue", cwd: process.cwd(),
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-read-denied", botId: "fixture-bot", text: "Continue", cwd: process.cwd(),
       approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
       codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
@@ -455,7 +455,7 @@ describe("PiDriver turns (fake CLI)", () => {
 
   it("ends a closed coding run after a disallowed tool", async () => {
     await create("coding-denied", { FAKE_PI_SCOPE_ACK: "1" });
-    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-tool-denied", text: "Continue", cwd: process.cwd(),
+    const { turnId } = await instance.adapter.sendTurn({ threadId: "t-tool-denied", botId: "fixture-bot", text: "Continue", cwd: process.cwd(),
       approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
       codingRun: { id: "fixture-run", branch: "feat/fixture", directory: process.cwd() } });
     await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
