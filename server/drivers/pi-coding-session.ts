@@ -1,12 +1,41 @@
-import { chmodSync, mkdirSync, realpathSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdirSync, realpathSync, statSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
-export function codingPiAgentDir(dataDir: string, botId: string): string {
+export function codingPiAgentDir(
+  dataDir: string,
+  botId: string,
+  hostPi = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "pi"), "harness", "bin", "pi"),
+): string {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(botId)) throw new Error("Coding run denied: bot identity is invalid");
   const dir = join(dataDir, "bots", botId, "pi");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   if (realpathSync(dir) !== dir) throw new Error("Coding run denied: Pi profile is redirected");
   chmodSync(dir, 0o700);
+  const harness = join(dir, "harness");
+  mkdirSync(harness, { recursive: true, mode: 0o700 });
+  if (realpathSync(harness) !== harness) throw new Error("Coding run denied: Pi harness is redirected");
+  const bin = join(harness, "bin");
+  mkdirSync(bin, { recursive: true, mode: 0o700 });
+  if (realpathSync(bin) !== bin) throw new Error("Coding run denied: Pi harness is redirected");
+  const cli = join(bin, "pi");
+  if (!lstatSync(cli, { throwIfNoEntry: false })) {
+    let source: string;
+    try {
+      source = realpathSync(hostPi);
+      if (!statSync(source).isFile()) throw new Error("not a file");
+      accessSync(source, constants.X_OK);
+    } catch {
+      throw new Error("Coding run denied: host Pi CLI is unavailable");
+    }
+    symlinkSync(source, cli);
+  }
+  try {
+    if (!statSync(cli).isFile()) throw new Error("not a file");
+    accessSync(cli, constants.X_OK);
+  } catch {
+    throw new Error("Coding run denied: isolated Pi CLI is not executable");
+  }
   return dir;
 }
 
