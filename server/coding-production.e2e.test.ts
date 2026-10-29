@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -51,6 +51,9 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
   writeFileSync(state, JSON.stringify({ holder: null, holder2: null }));
   writeFileSync(join(bin, "treehouse"), `#!/usr/bin/env node\nimport {appendFileSync,readFileSync,writeFileSync} from 'node:fs';\nimport {execFileSync} from 'node:child_process';\nconst a=process.argv.slice(2), file=${JSON.stringify(state)}, log=${JSON.stringify(calls)}, path=${JSON.stringify(leased)};\nconst s=JSON.parse(readFileSync(file,'utf8'));\nappendFileSync(log,JSON.stringify(a)+'\\n');\nconst second=${JSON.stringify(mode === "coding-iterations" ? join(home, "leased-2") : "")};\nconst available=second && s.holder ? second : path;\nconst git=(...args)=>execFileSync('git',args,{cwd:available,encoding:'utf8'}).trim();\nif(a[0]==='status') console.log(JSON.stringify([...(s.holder?[{path,status:'leased',lease_id:'fixture-lease',lease_holder:s.holder}]:[]),...(s.holder2?[{path:second,status:'leased',lease_id:'fixture-lease-2',lease_holder:s.holder2}]:[])]));\nelse if(a[0]==='get' && a.includes('--lease') && a[a.indexOf('--base')+1]==='main') {\n  const branch=a.includes('--branch')?a[a.indexOf('--branch')+1]:'';\n  if(branch){\n    try { git('rev-parse','--verify','refs/heads/'+branch); git('switch',branch); }\n    catch { git('switch','-c',branch); }\n    const head=git('rev-parse','HEAD');\n    git('update-ref','refs/remotes/origin/'+branch,head);\n    git('branch','--set-upstream-to','origin/'+branch,branch);\n  }\n  const key=available===second?'holder2':'holder'; s[key]=a[a.indexOf('--lease-holder')+1]; writeFileSync(file,JSON.stringify(s)); console.log(JSON.stringify({path:available,lease_id:available===second?'fixture-lease-2':'fixture-lease'}));\n} else if(a[0]==='return' && a[a.indexOf('--if-lease-id')+1]==='fixture-lease' && a[a.indexOf('--if-lease-holder')+1]===s.holder) {\n  s.holder=null; writeFileSync(file,JSON.stringify(s));\n} else process.exit(2);\n`, { mode: 0o755 });
   chmodSync(fakePi, 0o755);
+  const hostPi = join(home, ".pi", "pi", "harness", "bin", "pi");
+  mkdirSync(dirname(hostPi), { recursive: true });
+  symlinkSync(fakePi, hostPi);
   const configFile = join(dataDir, "config.json");
   const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-sol",
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },

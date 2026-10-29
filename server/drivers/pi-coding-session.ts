@@ -5,7 +5,7 @@ import { join } from "node:path";
 export function codingPiAgentDir(
   dataDir: string,
   botId: string,
-  hostPi = join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "pi"), "harness", "bin", "pi"),
+  hostPi = join(homedir(), ".pi", "pi", "harness", "bin", "pi"),
 ): string {
   if (!/^[a-zA-Z0-9-]{1,128}$/.test(botId)) throw new Error("Coding run denied: bot identity is invalid");
   const dir = join(dataDir, "bots", botId, "pi");
