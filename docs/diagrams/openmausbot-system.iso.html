@@ -1,0 +1,945 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-light-flat-fill="dots" class="motion">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenMausBot: a request through the host</title>
+<meta name="description" content="Follow a chat turn, a scheduled run, or a paired device from the client boundary to durable results.">
+<meta name="generator" content="bowerbird">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..800&display=swap">
+<style>
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+html[data-theme=dark]{--bg:#1a1816;--panel:#272421;--line:#35302b;--ink:#ead1b5;--muted:#b09080;--accent:#79c39e}
+html[data-theme=light]{--bg:#fbf9f6;--panel:#fffdfa;--line:#dcdad7;--ink:#2f2a27;--muted:#716961;--accent:#3d8461}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 Geist,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased}
+a{color:var(--ink);text-decoration-color:var(--accent);text-decoration-thickness:1px;text-underline-offset:.22em}
+a:hover{color:var(--accent)}
+code{font:.84em ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.page{width:min(1680px,calc(100% - 48px));margin:0 auto}
+.caps{font-size:.68rem;font-weight:500;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+.toolbar{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;justify-content:space-between;padding:14px 0;background:var(--bg);border-bottom:1px solid var(--line)}
+.toolbar .group{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.toolbar label{margin-right:4px}
+button,select{min-height:32px;padding:4px 12px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--ink);font:inherit;font-size:.68rem;font-weight:500;letter-spacing:.16em;text-transform:uppercase;cursor:pointer}
+button:hover,select:hover{border-color:var(--muted)}
+button[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+select option{background:var(--bg);color:var(--ink);text-transform:none;letter-spacing:0}
+:focus-visible{outline:1.5px solid var(--accent);outline-offset:3px}
+.stage{position:relative;height:min(82vh,1100px);margin:24px 0;overflow:hidden;overflow:clip;border:1px solid var(--line);border-radius:6px;background:var(--bg);cursor:grab;touch-action:none;user-select:none}
+.stage.panning{cursor:grabbing}
+.stage:focus-visible{outline-offset:-2px}
+.stage:fullscreen{height:100vh;border:0;border-radius:0}
+.viewport{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
+.viewport svg{display:block}
+.nav{position:absolute;top:12px;right:12px;z-index:2;display:flex;gap:4px;padding:4px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+.nav button{min-width:34px;min-height:30px;padding:0 9px;border-color:transparent;letter-spacing:.06em}
+.nav button:hover{border-color:var(--line)}
+.nav #zoom-level{min-width:58px;font-variant-numeric:tabular-nums}
+.minimap{position:absolute;right:12px;bottom:12px;z-index:2;width:clamp(140px,16vw,220px);overflow:hidden;border:1px solid var(--line);border-radius:4px;background:var(--bg);cursor:crosshair;transition:opacity .25s ease}
+.minimap img{display:block;width:100%;height:auto;pointer-events:none}
+.minimap-frame{position:absolute;border:1.5px solid var(--accent);border-radius:2px;box-shadow:0 0 0 999px rgb(0 0 0 / 22%);pointer-events:none}
+.stage.at-fit .minimap{opacity:0;pointer-events:none}
+.stage-hint{position:absolute;left:14px;bottom:10px;z-index:2;margin:0;pointer-events:none;opacity:.8}
+.stage:not(.at-fit) .stage-hint{opacity:0}
+.bb-node[tabindex]{cursor:pointer}
+.bb-node:has(.iso-focus):focus{outline:none}
+.bb-node:focus .iso-focus,.bb-node.is-selected .iso-focus{stroke:var(--accent);stroke-width:7;stroke-linejoin:round}
+.bb-node[tabindex]:hover .bb-node-box,.bb-node[tabindex]:focus .bb-node-box{stroke-width:1.6}
+.bb-node.is-selected .bb-node-box{stroke-width:2}
+.map-item{transition:opacity .25s ease}
+.map-item.is-dimmed{opacity:.12}
+html:not(.motion) .bb-flow{display:none}
+.motion .bb-node{animation:bb-enter .6s cubic-bezier(.2,.7,.2,1) both}
+@keyframes bb-enter{from{opacity:0}}
+.drawer[hidden]{display:none}
+.drawer{position:fixed;z-index:20;top:80px;right:24px;bottom:24px;display:flex;flex-direction:column;width:min(420px,calc(100vw - 48px));border:1px solid var(--line);border-radius:6px;background:var(--bg);box-shadow:0 24px 60px rgb(0 0 0 / 22%)}
+.drawer.from-left{right:auto;left:24px}
+.drawer-head{display:flex;gap:12px;justify-content:space-between;align-items:start;padding:20px 22px 16px;border-bottom:1px solid var(--line)}
+.drawer-head p{margin:0 0 6px}
+.drawer-head h2{margin:0;font-size:1.35rem;font-weight:400;letter-spacing:-.01em}
+.drawer-head button{min-height:28px;padding:0 9px;letter-spacing:0;font-size:1rem}
+.drawer-body{overflow:auto;padding:14px 22px 22px;font-size:.9rem}
+.drawer-body h4,.detail h4{margin:18px 0 6px;color:var(--muted);font-size:.66rem;font-weight:500;letter-spacing:.2em;text-transform:uppercase}
+.drawer-body ul,.detail ul{margin:6px 0;padding-left:16px}
+.evidence-list{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:.84rem}
+.evidence-list b{display:block;margin-bottom:4px;color:var(--muted);font-size:.66rem;font-weight:500;letter-spacing:.2em;text-transform:uppercase}
+.details{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:0 32px;margin:40px 0 56px}
+.details>h2{grid-column:1/-1;margin:0 0 12px;font-size:1.5rem;font-weight:300;letter-spacing:-.01em}
+details.card{border-top:1px solid var(--line)}
+details.card summary{padding:14px 0;cursor:pointer;font-weight:500;list-style:none;display:flex;gap:10px;align-items:baseline}
+details.card summary::-webkit-details-marker{display:none}
+details.card summary .st{margin-left:auto}
+details.card .detail{padding:0 0 18px;font-size:.9rem;color:var(--ink)}
+footer{padding:18px 0 32px;border-top:1px solid var(--line)}
+@media (max-width:760px){.drawer,.drawer.from-left{top:auto;left:12px;right:12px;bottom:12px;width:auto;max-height:66vh}}
+@media (prefers-reduced-motion:reduce){.map-item{transition:none}.motion .bb-node{animation:none}}
+@media print{.toolbar,.drawer{display:none}details.card>*:not(summary){display:block!important}}
+</style>
+</head>
+<body data-basename="openmausbot-system.iso">
+<div class="page">
+<div class="toolbar"><div class="group"><label class="caps" for="trace">Trace</label><select id="trace"><option value="all">Show everything</option><option value="chat">A person sends a chat message</option><option value="routine">A scheduled routine starts work</option><option value="paired">A paired device reaches the host</option></select><span class="caps">19 built · 0 partial · 0 planned</span></div>
+<div class="group"><button id="motion" type="button" aria-pressed="true" title="Toggle flow animation (M)">Motion</button><button id="theme" type="button" title="Toggle theme (T)">Light</button>
+<select id="export" aria-label="Export diagram"><option value="">Export…</option><option value="svg">SVG</option><option value="png">PNG (2×)</option><option value="webp">WebP (2×)</option></select></div></div>
+<div class="stage at-fit" id="stage" tabindex="0" aria-label="Diagram canvas. Drag to pan, Ctrl or Cmd plus scroll to zoom, F to fit.">
+<div class="viewport" id="viewport"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4158 2677" width="4158" height="2677" role="group" aria-labelledby="bb-t">
+<title id="bb-t">OpenMausBot: a request through the host</title>
+<style>
+text{font-family:Geist,"Geist Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
+.bb-title{font-size:36px;font-weight:300;letter-spacing:-.015em}
+.bb-subtitle{font-size:14px;font-weight:400}
+.bb-kicker-top{font-size:10.5px;font-weight:500;letter-spacing:2.6px}
+.bb-meta{font-size:11px;font-weight:400;letter-spacing:.03em}
+.bb-meter-big{font-size:42px;font-weight:300;letter-spacing:-.02em}
+.bb-meter-unit{font-size:17px;font-weight:300}
+.bb-meter-track{stroke-width:1;fill:none}
+.bb-meter-solid,.bb-meter-part{stroke-width:3;fill:none}
+.bb-meter-part{stroke-dasharray:2 3}
+.bb-rule{stroke-width:1;fill:none}
+.bb-zone{stroke-width:1}
+.bb-zone-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.6px}
+.bb-zone-title{font-size:21px;font-weight:400;letter-spacing:-.005em}
+.bb-zone-sub{font-size:11.5px}
+.bb-node-box{stroke-width:1}
+.bb-node.status-planned .bb-node-box{stroke-dasharray:4 4}
+.bb-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.4px}
+.bb-node-title{font-size:17px;font-weight:500;letter-spacing:-.005em}
+.bb-copy{font-size:13.5px;font-weight:400}
+.bb-hint{font-size:11.5px;font-weight:400;letter-spacing:.02em}
+.bb-status-text{font-size:9.5px;font-weight:600;letter-spacing:1.9px}
+.bb-dot{stroke-width:1.1;fill:none}
+.bb-edge{fill:none;stroke-width:1.25;stroke-linejoin:round;stroke-linecap:round}
+.bb-edge.control{stroke-dasharray:3 4}
+.bb-edge.failure{stroke-dasharray:.1 4.5;stroke-width:1.8}
+.bb-edge.is-planned{opacity:.4}
+.bb-label{font-size:11.5px;font-weight:500;letter-spacing:.02em;paint-order:stroke;stroke-width:6px;stroke-linejoin:round}
+.bb-legend-text{font-size:12px;font-weight:400}
+.bb-finding-text{font-size:9px;font-weight:600;letter-spacing:1.6px}
+.iso-face{stroke-width:.8;stroke-linejoin:round}
+.bb-node.status-planned .iso-face{fill:none;stroke-dasharray:4 4;stroke-width:1}
+.iso-hatch line{stroke-width:.8;opacity:.45}
+.iso-label-knockout{paint-order:stroke;stroke-width:6px;stroke-linejoin:round}
+html[data-theme=dark] .bb-canvas{fill:#1a1816}
+html[data-theme=dark] .bb-title,html[data-theme=dark] .bb-zone-title,html[data-theme=dark] .bb-node-title,html[data-theme=dark] .bb-meter-big,html[data-theme=dark] .bb-meter-unit{fill:#ead1b5}
+html[data-theme=dark] .bb-subtitle,html[data-theme=dark] .bb-copy,html[data-theme=dark] .bb-hint,html[data-theme=dark] .bb-legend-text,html[data-theme=dark] .bb-meta,html[data-theme=dark] .bb-kicker,html[data-theme=dark] .bb-zone-kicker,html[data-theme=dark] .bb-kicker-top,html[data-theme=dark] .bb-zone-sub{fill:#b09080}
+html[data-theme=dark] .bb-rule,html[data-theme=dark] .bb-meter-track{stroke:#35302b}
+html[data-theme=dark] .bb-meter-solid{stroke:#ead1b5}
+html[data-theme=dark] .bb-meter-part{stroke:#b09080}
+html[data-theme=dark] .bb-zone{fill:#1f1c19;stroke:#35302b}
+html[data-theme=dark] .bb-node-box{fill:#272421;stroke:#35302b}
+html[data-theme=dark] .bb-node.status-planned .bb-node-box{fill:none;stroke:#4c443c}
+html[data-theme=dark] .bb-node.status-planned .bb-node-title{fill:#b09080}
+html[data-theme=dark] .bb-status-text{fill:#b09080}
+html[data-theme=dark] .bb-status.is-implemented .bb-status-text{fill:#b09080}
+html[data-theme=dark] .bb-dot{stroke:#b09080}
+html[data-theme=dark] .bb-dot-fill{fill:#b09080}
+html[data-theme=dark] .bb-status.is-implemented .bb-dot{stroke:#ead1b5}
+html[data-theme=dark] .bb-status.is-implemented .bb-dot-fill{fill:#ead1b5}
+html[data-theme=dark] .bb-edge.data{stroke:#958574}
+html[data-theme=dark] .bb-edge.control{stroke:#6b737e}
+html[data-theme=dark] .bb-edge.failure{stroke:#c27a5c}
+html[data-theme=dark] .bb-arrow.data{fill:#958574}
+html[data-theme=dark] .bb-arrow.control{fill:#6b737e}
+html[data-theme=dark] .bb-arrow.failure{fill:#c27a5c}
+html[data-theme=dark] .bb-label,html[data-theme=dark] .iso-label-knockout{stroke:#1a1816}
+html[data-theme=dark] .bb-label.data{fill:#b09080}
+html[data-theme=dark] .bb-label.control{fill:#a4a8ae}
+html[data-theme=dark] .bb-label.failure{fill:#c27a5c}
+html[data-theme=dark] .bb-flow{stroke:#ead1b5;stroke-opacity:.55}
+html[data-theme=dark] .bb-finding-text,html[data-theme=dark] .bb-finding-inline{fill:#c27a5c}
+html[data-theme=dark] .bb-node.has-finding .bb-node-box{stroke:#c27a5c}
+html[data-theme=dark] .bb-pseudo-fill{fill:#ead1b5}
+html[data-theme=dark] .bb-pseudo-ring{fill:#1a1816;stroke:#ead1b5;stroke-width:1.3}
+html[data-theme=dark] .bb-pseudo-choice{fill:#272421}
+html[data-theme=dark] .bb-node.is-selected .bb-node-box,html[data-theme=dark] .bb-node[tabindex]:focus .bb-node-box{stroke:#ead1b5}
+html[data-theme=dark] .cat-sage .bb-mark,html[data-theme=dark] .bb-mark.cat-sage{fill:#7fbd9e}
+html[data-theme=dark] .cat-sage .bb-kicker,html[data-theme=dark] .cat-sage .bb-zone-kicker{fill:#89b498}
+html[data-theme=dark] .cat-sage .bb-node-box{fill:#353c35;stroke:#475b4e}
+html[data-theme=dark] .cat-sage.status-planned .bb-node-box{fill:none;stroke:#476253}
+html[data-theme=dark] .bb-zone.cat-sage{fill:#212420;stroke:#344339}
+html[data-theme=dark] .cat-sage .iso-roof{fill:#8fb7a3;stroke:#48705c}
+html[data-theme=dark] .cat-sage .iso-left{fill:#70a48a;stroke:#48705c}
+html[data-theme=dark] .cat-sage .iso-right{fill:#5a8c73;stroke:#48705c}
+html[data-theme=dark] .cat-sage.status-planned .iso-face{stroke:#79c39e}
+html[data-theme=dark] .cat-teal .bb-mark,html[data-theme=dark] .bb-mark.cat-teal{fill:#7aadae}
+html[data-theme=dark] .cat-teal .bb-kicker,html[data-theme=dark] .cat-teal .bb-zone-kicker{fill:#85a7a5}
+html[data-theme=dark] .cat-teal .bb-node-box{fill:#343a38;stroke:#455554}
+html[data-theme=dark] .cat-teal.status-planned .bb-node-box{fill:none;stroke:#455b5a}
+html[data-theme=dark] .bb-zone.cat-teal{fill:#212221;stroke:#333f3e}
+html[data-theme=dark] .cat-teal .iso-roof{fill:#8fb7b7;stroke:#486f70}
+html[data-theme=dark] .cat-teal .iso-left{fill:#70a2a4;stroke:#486f70}
+html[data-theme=dark] .cat-teal .iso-right{fill:#5a8b8c;stroke:#486f70}
+html[data-theme=dark] .cat-teal.status-planned .iso-face{stroke:#3f6f70}
+html[data-theme=dark] .cat-rust .bb-mark,html[data-theme=dark] .bb-mark.cat-rust{fill:#c28568}
+html[data-theme=dark] .cat-rust .bb-kicker,html[data-theme=dark] .cat-rust .bb-zone-kicker{fill:#be876d}
+html[data-theme=dark] .cat-rust .bb-node-box{fill:#40342c;stroke:#5f473b}
+html[data-theme=dark] .cat-rust.status-planned .bb-node-box{fill:none;stroke:#66493b}
+html[data-theme=dark] .bb-zone.cat-rust{fill:#26201c;stroke:#46342b}
+html[data-theme=dark] .cat-rust .iso-roof{fill:#b79c8f;stroke:#705548}
+html[data-theme=dark] .cat-rust .iso-left{fill:#a48170;stroke:#705548}
+html[data-theme=dark] .cat-rust .iso-right{fill:#8c6a5a;stroke:#705548}
+html[data-theme=dark] .cat-rust.status-planned .iso-face{stroke:#e77843}
+html[data-theme=dark] .cat-slate .bb-mark,html[data-theme=dark] .bb-mark.cat-slate{fill:#7a92ae}
+html[data-theme=dark] .cat-slate .bb-kicker,html[data-theme=dark] .cat-slate .bb-zone-kicker{fill:#8592a5}
+html[data-theme=dark] .cat-slate .bb-node-box{fill:#343638;stroke:#454c54}
+html[data-theme=dark] .cat-slate.status-planned .bb-node-box{fill:none;stroke:#454f5a}
+html[data-theme=dark] .bb-zone.cat-slate{fill:#212121;stroke:#33383e}
+html[data-theme=dark] .cat-slate .iso-roof{fill:#96a2b0;stroke:#4f5b69}
+html[data-theme=dark] .cat-slate .iso-left{fill:#79889a;stroke:#4f5b69}
+html[data-theme=dark] .cat-slate .iso-right{fill:#637183;stroke:#4f5b69}
+html[data-theme=dark] .cat-slate.status-planned .iso-face{stroke:#617082}
+html[data-theme=dark] .cat-olive .bb-mark,html[data-theme=dark] .bb-mark.cat-olive{fill:#a5ae7a}
+html[data-theme=dark] .cat-olive .bb-kicker,html[data-theme=dark] .cat-olive .bb-zone-kicker{fill:#a7a87b}
+html[data-theme=dark] .cat-olive .bb-node-box{fill:#3b3a2f;stroke:#545641}
+html[data-theme=dark] .cat-olive.status-planned .bb-node-box{fill:none;stroke:#595c43}
+html[data-theme=dark] .bb-zone.cat-olive{fill:#24231d;stroke:#3e3f30}
+html[data-theme=dark] .cat-olive .iso-roof{fill:#acb096;stroke:#65694f}
+html[data-theme=dark] .cat-olive .iso-left{fill:#959a79;stroke:#65694f}
+html[data-theme=dark] .cat-olive .iso-right{fill:#7e8363;stroke:#65694f}
+html[data-theme=dark] .cat-olive.status-planned .iso-face{stroke:#6e7354}
+html[data-theme=dark] .cat-mauve .bb-mark,html[data-theme=dark] .bb-mark.cat-mauve{fill:#ae7a9d}
+html[data-theme=dark] .cat-mauve .bb-kicker,html[data-theme=dark] .cat-mauve .bb-zone-kicker{fill:#ae7e97}
+html[data-theme=dark] .cat-mauve .bb-node-box{fill:#3d3235;stroke:#58434e}
+html[data-theme=dark] .cat-mauve.status-planned .bb-node-box{fill:none;stroke:#5d4453}
+html[data-theme=dark] .bb-zone.cat-mauve{fill:#241f1f;stroke:#403139}
+html[data-theme=dark] .cat-mauve .iso-roof{fill:#b196a8;stroke:#694e61}
+html[data-theme=dark] .cat-mauve .iso-left{fill:#9b7890;stroke:#694e61}
+html[data-theme=dark] .cat-mauve .iso-right{fill:#846279;stroke:#694e61}
+html[data-theme=dark] .cat-mauve.status-planned .iso-face{stroke:#76536b}
+html[data-theme=dark] .iso-shadow{fill:#000000;fill-opacity:0.32}
+html[data-theme=dark] .iso-hatch line{stroke:#1a1816}
+html[data-theme=dark] .iso-tag-bg,html[data-theme=dark] .iso-label-bg{fill:#1a1816;fill-opacity:.9}
+html[data-theme=dark] .bb-label.plain{stroke:none}
+html[data-theme=dark] .bb-node:not([class*=cat-]) .iso-face{fill:#272421;stroke:#35302b}html[data-theme=light] .bb-canvas{fill:#fbf9f6}
+html[data-theme=light] .bb-title,html[data-theme=light] .bb-zone-title,html[data-theme=light] .bb-node-title,html[data-theme=light] .bb-meter-big,html[data-theme=light] .bb-meter-unit{fill:#2f2a27}
+html[data-theme=light] .bb-subtitle,html[data-theme=light] .bb-copy,html[data-theme=light] .bb-hint,html[data-theme=light] .bb-legend-text,html[data-theme=light] .bb-meta,html[data-theme=light] .bb-kicker,html[data-theme=light] .bb-zone-kicker,html[data-theme=light] .bb-kicker-top,html[data-theme=light] .bb-zone-sub{fill:#716961}
+html[data-theme=light] .bb-rule,html[data-theme=light] .bb-meter-track{stroke:#dcdad7}
+html[data-theme=light] .bb-meter-solid{stroke:#2f2a27}
+html[data-theme=light] .bb-meter-part{stroke:#716961}
+html[data-theme=light] .bb-zone{fill:#f5f3f0;stroke:#dcdad7}
+html[data-theme=light] .bb-node-box{fill:#fffdfa;stroke:#dcdad7}
+html[data-theme=light] .bb-node.status-planned .bb-node-box{fill:none;stroke:#c2bfbc}
+html[data-theme=light] .bb-node.status-planned .bb-node-title{fill:#716961}
+html[data-theme=light] .bb-status-text{fill:#716961}
+html[data-theme=light] .bb-status.is-implemented .bb-status-text{fill:#716961}
+html[data-theme=light] .bb-dot{stroke:#716961}
+html[data-theme=light] .bb-dot-fill{fill:#716961}
+html[data-theme=light] .bb-status.is-implemented .bb-dot{stroke:#2f2a27}
+html[data-theme=light] .bb-status.is-implemented .bb-dot-fill{fill:#2f2a27}
+html[data-theme=light] .bb-edge.data{stroke:#888079}
+html[data-theme=light] .bb-edge.control{stroke:#747c86}
+html[data-theme=light] .bb-edge.failure{stroke:#9b4a36}
+html[data-theme=light] .bb-arrow.data{fill:#888079}
+html[data-theme=light] .bb-arrow.control{fill:#747c86}
+html[data-theme=light] .bb-arrow.failure{fill:#9b4a36}
+html[data-theme=light] .bb-label,html[data-theme=light] .iso-label-knockout{stroke:#fbf9f6}
+html[data-theme=light] .bb-label.data{fill:#716961}
+html[data-theme=light] .bb-label.control{fill:#4c535c}
+html[data-theme=light] .bb-label.failure{fill:#9b4a36}
+html[data-theme=light] .bb-flow{stroke:#2f2a27;stroke-opacity:.55}
+html[data-theme=light] .bb-finding-text,html[data-theme=light] .bb-finding-inline{fill:#9b4a36}
+html[data-theme=light] .bb-node.has-finding .bb-node-box{stroke:#9b4a36}
+html[data-theme=light] .bb-pseudo-fill{fill:#2f2a27}
+html[data-theme=light] .bb-pseudo-ring{fill:#fbf9f6;stroke:#2f2a27;stroke-width:1.3}
+html[data-theme=light] .bb-pseudo-choice{fill:#fffdfa}
+html[data-theme=light] .bb-node.is-selected .bb-node-box,html[data-theme=light] .bb-node[tabindex]:focus .bb-node-box{stroke:#2f2a27}
+html[data-theme=light] .cat-sage .bb-mark,html[data-theme=light] .bb-mark.cat-sage{fill:#427f61}
+html[data-theme=light] .cat-sage .bb-kicker,html[data-theme=light] .cat-sage .bb-zone-kicker{fill:#477d61}
+html[data-theme=light] .cat-sage .bb-node-box{fill:#eaefe9;stroke:#b7cdc0}
+html[data-theme=light] .cat-sage.status-planned .bb-node-box{fill:none;stroke:#9fbcac}
+html[data-theme=light] .bb-zone.cat-sage{fill:#f0f2ed;stroke:#c0d2c6}
+html[data-theme=light] .cat-sage .iso-roof{fill:#afd5c2;stroke:#54a17b}
+html[data-theme=light] .cat-sage .iso-left{fill:#8dc3a9;stroke:#54a17b}
+html[data-theme=light] .cat-sage .iso-right{fill:#6fb492;stroke:#54a17b}
+html[data-theme=light] .cat-sage.status-planned .iso-face{stroke:#3d8461}
+html[data-theme=light] .cat-teal .bb-mark,html[data-theme=light] .bb-mark.cat-teal{fill:#3b7273}
+html[data-theme=light] .cat-teal .bb-kicker,html[data-theme=light] .cat-teal .bb-zone-kicker{fill:#407171}
+html[data-theme=light] .cat-teal .bb-node-box{fill:#e9eeeb;stroke:#b5c8c7}
+html[data-theme=light] .cat-teal.status-planned .bb-node-box{fill:none;stroke:#9bb6b5}
+html[data-theme=light] .bb-zone.cat-teal{fill:#eff1ee;stroke:#bececc}
+html[data-theme=light] .cat-teal .iso-roof{fill:#aed5d6;stroke:#53a1a2}
+html[data-theme=light] .cat-teal .iso-left{fill:#8cc3c4;stroke:#53a1a2}
+html[data-theme=light] .cat-teal .iso-right{fill:#6eb4b5;stroke:#53a1a2}
+html[data-theme=light] .cat-teal.status-planned .iso-face{stroke:#2f6869}
+html[data-theme=light] .cat-rust .bb-mark,html[data-theme=light] .bb-mark.cat-rust{fill:#995d3f}
+html[data-theme=light] .cat-rust .bb-kicker,html[data-theme=light] .cat-rust .bb-zone-kicker{fill:#955e42}
+html[data-theme=light] .cat-rust .bb-node-box{fill:#f4ebe5;stroke:#d8c0b3}
+html[data-theme=light] .cat-rust.status-planned .bb-node-box{fill:none;stroke:#caab9b}
+html[data-theme=light] .bb-zone.cat-rust{fill:#f5f0eb;stroke:#dcc7bb}
+html[data-theme=light] .cat-rust .iso-roof{fill:#d6bbae;stroke:#a36d52}
+html[data-theme=light] .cat-rust .iso-left{fill:#c59f8c;stroke:#a36d52}
+html[data-theme=light] .cat-rust .iso-right{fill:#b6866d;stroke:#a36d52}
+html[data-theme=light] .cat-rust.status-planned .iso-face{stroke:#b9531f}
+html[data-theme=light] .cat-slate .bb-mark,html[data-theme=light] .bb-mark.cat-slate{fill:#4a5c73}
+html[data-theme=light] .cat-slate .bb-kicker,html[data-theme=light] .cat-slate .bb-zone-kicker{fill:#4e5d71}
+html[data-theme=light] .cat-slate .bb-node-box{fill:#ebebeb;stroke:#bac0c7}
+html[data-theme=light] .cat-slate.status-planned .bb-node-box{fill:none;stroke:#a3abb5}
+html[data-theme=light] .bb-zone.cat-slate{fill:#f0f0ee;stroke:#c2c7cc}
+html[data-theme=light] .cat-slate .iso-roof{fill:#b5c1cf;stroke:#617894}
+html[data-theme=light] .cat-slate .iso-left{fill:#96a7bb;stroke:#617894}
+html[data-theme=light] .cat-slate .iso-right{fill:#7a8fa8;stroke:#617894}
+html[data-theme=light] .cat-slate.status-planned .iso-face{stroke:#4f5d6e}
+html[data-theme=light] .cat-olive .bb-mark,html[data-theme=light] .bb-mark.cat-olive{fill:#696e40}
+html[data-theme=light] .cat-olive .bb-kicker,html[data-theme=light] .cat-olive .bb-zone-kicker{fill:#6a6e43}
+html[data-theme=light] .cat-olive .bb-node-box{fill:#efede6;stroke:#c6c7b3}
+html[data-theme=light] .cat-olive.status-planned .bb-node-box{fill:none;stroke:#b2b49b}
+html[data-theme=light] .bb-zone.cat-olive{fill:#f2f1eb;stroke:#cccdbc}
+html[data-theme=light] .cat-olive .iso-roof{fill:#cfd2b2;stroke:#949b5a}
+html[data-theme=light] .cat-olive .iso-left{fill:#babf91;stroke:#949b5a}
+html[data-theme=light] .cat-olive .iso-right{fill:#a8ae74;stroke:#949b5a}
+html[data-theme=light] .cat-olive.status-planned .iso-face{stroke:#5e6334}
+html[data-theme=light] .cat-mauve .bb-mark,html[data-theme=light] .bb-mark.cat-mauve{fill:#7b4e6d}
+html[data-theme=light] .cat-mauve .bb-kicker,html[data-theme=light] .cat-mauve .bb-zone-kicker{fill:#7a516c}
+html[data-theme=light] .cat-mauve .bb-node-box{fill:#f0eaea;stroke:#cdbbc4}
+html[data-theme=light] .cat-mauve.status-planned .bb-node-box{fill:none;stroke:#bba4b2}
+html[data-theme=light] .bb-zone.cat-mauve{fill:#f3efee;stroke:#d2c2ca}
+html[data-theme=light] .cat-mauve .iso-roof{fill:#cfb5c7;stroke:#946184}
+html[data-theme=light] .cat-mauve .iso-left{fill:#bb96af;stroke:#946184}
+html[data-theme=light] .cat-mauve .iso-right{fill:#a87a9a;stroke:#946184}
+html[data-theme=light] .cat-mauve.status-planned .iso-face{stroke:#76536b}
+html[data-theme=light] .iso-shadow{fill:#3b2f26;fill-opacity:0.08}
+html[data-theme=light] .iso-hatch line{stroke:#fbf9f6}
+html[data-theme=light] .iso-tag-bg,html[data-theme=light] .iso-label-bg{fill:#fbf9f6;fill-opacity:.9}
+html[data-theme=light] .bb-label.plain{stroke:none}
+html[data-theme=light] .bb-node:not([class*=cat-]) .iso-face{fill:#fffdfa;stroke:#dcdad7}
+.bb-flow{fill:none;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:.1 28;animation:bb-flow 2.6s linear infinite}
+@keyframes bb-flow{to{stroke-dashoffset:-28.1}}
+@media (prefers-reduced-motion:reduce){.bb-flow{animation:none;opacity:0}}
+</style>
+<defs><marker id="bb-arrow-data" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow data" d="M 0 1 L 10 5 L 0 9 z"/></marker><marker id="bb-arrow-control" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow control" d="M 0 1 L 10 5 L 0 9 z"/></marker><marker id="bb-arrow-failure" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow failure" d="M 0 1 L 10 5 L 0 9 z"/></marker></defs>
+<rect class="bb-canvas" x="0" y="0" width="4158" height="2677"/>
+<path class="bb-rule" d="M 48 48 H 70"/>
+<text class="bb-kicker-top" x="82" y="52">PRODUCT ARCHITECTURE / HOST MODE</text>
+<text class="bb-title" x="48" y="100">OpenMausBot: a request through the host</text>
+<text class="bb-subtitle" x="48" y="130">Follow a chat turn, a scheduled run, or a paired device from the client boundary to durable results.</text>
+<g class="bb-meter" aria-label="100% built"><text class="bb-kicker-top" x="4110" y="52" text-anchor="end">COMPLETION</text><text x="4110" y="96" text-anchor="end"><tspan class="bb-meter-big">100</tspan><tspan class="bb-meter-unit" dx="3">%</tspan></text><path class="bb-meter-track" d="M 3890 110 H 4110"/><path class="bb-meter-solid" d="M 3890 110 H 4110"/><text class="bb-meta" x="4110" y="132" text-anchor="end">19 built · 0 partial · 0 planned</text></g>
+<g class="bb-zone-group cat-sage"><polygon class="bb-zone cat-sage" points="688,246 1351.2,628.9 711.2,998.4 48,615.5"/>
+</g>
+<g class="bb-zone-group cat-teal"><polygon class="bb-zone cat-teal" points="1481,703.8 2144.2,1086.7 1504.2,1456.2 841,1073.3"/>
+</g>
+<g class="bb-zone-group cat-slate"><polygon class="bb-zone cat-slate" points="2273.9,1161.6 3316.3,1763.5 2676.3,2133 1633.9,1531.1"/>
+</g>
+<g class="bb-zone-group cat-mauve"><polygon class="bb-zone cat-mauve" points="3446.1,1838.4 4109.3,2221.3 3469.3,2590.8 2806.1,2207.9"/>
+</g>
+<polygon class="iso-shadow" points="641.1,305 894,451 742.4,538.5 489.5,392.5"/>
+<polygon class="iso-shadow" points="1020.3,523.9 1273.1,669.9 1121.6,757.4 868.7,611.4"/>
+<polygon class="iso-shadow" points="242.7,535 495.6,681 344.1,768.5 91.2,622.5"/>
+<polygon class="iso-shadow" points="1434.1,762.8 1686.9,908.8 1535.4,996.3 1282.5,850.3"/>
+<polygon class="iso-shadow" points="1813.2,981.7 2066.1,1127.7 1914.6,1215.2 1661.7,1069.2"/>
+<polygon class="iso-shadow" points="1035.7,992.8 1288.6,1138.8 1137,1226.3 884.1,1080.3"/>
+<polygon class="iso-shadow" points="1614,1096.7 1866.9,1242.7 1715.4,1330.2 1462.5,1184.2"/>
+<polygon class="iso-shadow" points="2227,1220.6 2479.9,1366.6 2328.4,1454.1 2075.5,1308.1"/>
+<polygon class="iso-shadow" points="2027.9,1335.6 2280.7,1481.6 2129.2,1569.1 1876.3,1423.1"/>
+<polygon class="iso-shadow" points="2606.2,1439.5 2859.1,1585.6 2707.5,1673.1 2454.6,1527"/>
+<polygon class="iso-shadow" points="1828.7,1450.6 2081.5,1596.6 1930,1684.1 1677.1,1538.1"/>
+<polygon class="iso-shadow" points="2407,1554.5 2659.9,1700.6 2508.3,1788.1 2255.5,1642"/>
+<polygon class="iso-shadow" points="2985.4,1658.5 3238.2,1804.5 3086.7,1892 2833.8,1746"/>
+<polygon class="iso-shadow" points="2786.2,1773.5 3039.1,1919.5 2887.5,2007 2634.6,1861"/>
+<polygon class="iso-shadow" points="3399.2,1897.4 3652,2043.4 3500.5,2130.9 3247.6,1984.9"/>
+<polygon class="iso-shadow" points="3200,2012.4 3452.9,2158.4 3301.3,2245.9 3048.4,2099.9"/>
+<polygon class="iso-shadow" points="3778.3,2116.3 4031.2,2262.3 3879.7,2349.8 3626.8,2203.8"/>
+<polygon class="iso-shadow" points="3000.8,2127.4 3253.7,2273.4 3102.1,2360.9 2849.2,2214.9"/>
+<polygon class="iso-shadow" points="3380,2346.3 3632.8,2492.3 3481.3,2579.8 3228.4,2433.8"/>
+<g class="bb-node map-item cat-sage status-implemented" data-id="desktop" data-traces="chat" tabindex="0" role="button" aria-label="Open details for Desktop shell">
+<polygon class="iso-focus" points="477.5,347.5 629.1,260 882,406 882,444 730.4,531.5 477.5,385.5" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="477.5,347.5 730.4,493.5 730.4,531.5 477.5,385.5"/>
+<polygon class="iso-face iso-right" points="882,406 730.4,493.5 730.4,531.5 882,444"/>
+<polygon class="iso-face iso-roof" points="629.1,260 882,406 730.4,493.5 477.5,347.5"/>
+</g>
+<g class="bb-node map-item cat-sage status-implemented" data-id="renderer" data-traces="chat paired" tabindex="0" role="button" aria-label="Open details for Conversation UI">
+<polygon class="iso-focus" points="856.7,566.4 1008.3,478.9 1261.1,624.9 1261.1,662.9 1109.6,750.4 856.7,604.4" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="856.7,566.4 1109.6,712.4 1109.6,750.4 856.7,604.4"/>
+<polygon class="iso-face iso-right" points="1261.1,624.9 1109.6,712.4 1109.6,750.4 1261.1,662.9"/>
+<polygon class="iso-face iso-roof" points="1008.3,478.9 1261.1,624.9 1109.6,712.4 856.7,566.4"/>
+</g>
+<g class="bb-node map-item cat-sage status-implemented" data-id="paired" data-traces="paired" tabindex="0" role="button" aria-label="Open details for Paired device">
+<polygon class="iso-focus" points="79.2,577.5 230.7,490 483.6,636 483.6,674 332.1,761.5 79.2,615.5" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="79.2,577.5 332.1,723.5 332.1,761.5 79.2,615.5"/>
+<polygon class="iso-face iso-right" points="483.6,636 332.1,723.5 332.1,761.5 483.6,674"/>
+<polygon class="iso-face iso-roof" points="230.7,490 483.6,636 332.1,723.5 79.2,577.5"/>
+</g>
+<g class="bb-node map-item cat-rust status-implemented" data-id="authentication" data-traces="chat paired" tabindex="0" role="button" aria-label="Open details for Request trust">
+<polygon class="iso-focus" points="1270.5,805.3 1422.1,717.8 1674.9,863.8 1674.9,901.8 1523.4,989.3 1270.5,843.3" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="1270.5,805.3 1523.4,951.3 1523.4,989.3 1270.5,843.3"/>
+<polygon class="iso-face iso-right" points="1674.9,863.8 1523.4,951.3 1523.4,989.3 1674.9,901.8"/>
+<polygon class="iso-face iso-roof" points="1422.1,717.8 1674.9,863.8 1523.4,951.3 1270.5,805.3"/>
+</g>
+<g class="bb-node map-item cat-teal status-implemented" data-id="http" data-traces="chat paired" tabindex="0" role="button" aria-label="Open details for Harness API">
+<polygon class="iso-focus" points="1649.7,1024.2 1801.2,936.7 2054.1,1082.7 2054.1,1120.7 1902.6,1208.2 1649.7,1062.2" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="1649.7,1024.2 1902.6,1170.2 1902.6,1208.2 1649.7,1062.2"/>
+<polygon class="iso-face iso-right" points="2054.1,1082.7 1902.6,1170.2 1902.6,1208.2 2054.1,1120.7"/>
+<polygon class="iso-face iso-roof" points="1801.2,936.7 2054.1,1082.7 1902.6,1170.2 1649.7,1024.2"/>
+</g>
+<g class="bb-node map-item cat-olive status-implemented" data-id="scheduler" data-traces="routine" tabindex="0" role="button" aria-label="Open details for Routine scheduler">
+<polygon class="iso-focus" points="872.1,1035.3 1023.7,947.8 1276.6,1093.8 1276.6,1131.8 1125,1219.3 872.1,1073.3" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="872.1,1035.3 1125,1181.3 1125,1219.3 872.1,1073.3"/>
+<polygon class="iso-face iso-right" points="1276.6,1093.8 1125,1181.3 1125,1219.3 1276.6,1131.8"/>
+<polygon class="iso-face iso-roof" points="1023.7,947.8 1276.6,1093.8 1125,1181.3 872.1,1035.3"/>
+</g>
+<g class="bb-node map-item cat-teal status-implemented" data-id="messages" data-traces="chat paired" tabindex="0" role="button" aria-label="Open details for Message intake">
+<polygon class="iso-focus" points="1450.5,1139.2 1602,1051.7 1854.9,1197.7 1854.9,1235.7 1703.4,1323.2 1450.5,1177.2" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="1450.5,1139.2 1703.4,1285.2 1703.4,1323.2 1450.5,1177.2"/>
+<polygon class="iso-face iso-right" points="1854.9,1197.7 1703.4,1285.2 1703.4,1323.2 1854.9,1235.7"/>
+<polygon class="iso-face iso-roof" points="1602,1051.7 1854.9,1197.7 1703.4,1285.2 1450.5,1139.2"/>
+</g>
+<g class="bb-node map-item cat-slate status-implemented" data-id="turn" data-traces="chat routine paired" tabindex="0" role="button" aria-label="Open details for Turn host">
+<polygon class="iso-focus" points="2063.5,1263.1 2215,1175.6 2467.9,1321.6 2467.9,1359.6 2316.4,1447.1 2063.5,1301.1" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2063.5,1263.1 2316.4,1409.1 2316.4,1447.1 2063.5,1301.1"/>
+<polygon class="iso-face iso-right" points="2467.9,1321.6 2316.4,1409.1 2316.4,1447.1 2467.9,1359.6"/>
+<polygon class="iso-face iso-roof" points="2215,1175.6 2467.9,1321.6 2316.4,1409.1 2063.5,1263.1"/>
+</g>
+<g class="bb-node map-item cat-slate status-implemented" data-id="bus" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Live event bus">
+<polygon class="iso-focus" points="1864.3,1378.1 2015.9,1290.6 2268.7,1436.6 2268.7,1474.6 2117.2,1562.1 1864.3,1416.1" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="1864.3,1378.1 2117.2,1524.1 2117.2,1562.1 1864.3,1416.1"/>
+<polygon class="iso-face iso-right" points="2268.7,1436.6 2117.2,1524.1 2117.2,1562.1 2268.7,1474.6"/>
+<polygon class="iso-face iso-roof" points="2015.9,1290.6 2268.7,1436.6 2117.2,1524.1 1864.3,1378.1"/>
+</g>
+<g class="bb-node map-item cat-slate status-implemented" data-id="providers" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Provider registry">
+<polygon class="iso-focus" points="2442.6,1482 2594.2,1394.5 2847.1,1540.6 2847.1,1578.6 2695.5,1666.1 2442.6,1520" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2442.6,1482 2695.5,1628.1 2695.5,1666.1 2442.6,1520"/>
+<polygon class="iso-face iso-right" points="2847.1,1540.6 2695.5,1628.1 2695.5,1666.1 2847.1,1578.6"/>
+<polygon class="iso-face iso-roof" points="2594.2,1394.5 2847.1,1540.6 2695.5,1628.1 2442.6,1482"/>
+</g>
+<g class="bb-node map-item cat-slate status-implemented" data-id="runtime" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Assignment runtime">
+<polygon class="iso-focus" points="1665.1,1493.1 1816.7,1405.6 2069.5,1551.6 2069.5,1589.6 1918,1677.1 1665.1,1531.1" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="1665.1,1493.1 1918,1639.1 1918,1677.1 1665.1,1531.1"/>
+<polygon class="iso-face iso-right" points="2069.5,1551.6 1918,1639.1 1918,1677.1 2069.5,1589.6"/>
+<polygon class="iso-face iso-roof" points="1816.7,1405.6 2069.5,1551.6 1918,1639.1 1665.1,1493.1"/>
+</g>
+<g class="bb-node map-item cat-rust status-implemented" data-id="tool" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Tool boundary">
+<polygon class="iso-focus" points="2243.5,1597 2395,1509.5 2647.9,1655.6 2647.9,1693.6 2496.3,1781.1 2243.5,1635" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2243.5,1597 2496.3,1743.1 2496.3,1781.1 2243.5,1635"/>
+<polygon class="iso-face iso-right" points="2647.9,1655.6 2496.3,1743.1 2496.3,1781.1 2647.9,1693.6"/>
+<polygon class="iso-face iso-roof" points="2395,1509.5 2647.9,1655.6 2496.3,1743.1 2243.5,1597"/>
+</g>
+<g class="bb-node map-item cat-slate status-implemented" data-id="driver" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Engine drivers">
+<polygon class="iso-focus" points="2821.8,1701 2973.4,1613.5 3226.2,1759.5 3226.2,1797.5 3074.7,1885 2821.8,1739" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2821.8,1701 3074.7,1847 3074.7,1885 2821.8,1739"/>
+<polygon class="iso-face iso-right" points="3226.2,1759.5 3074.7,1847 3074.7,1885 3226.2,1797.5"/>
+<polygon class="iso-face iso-roof" points="2973.4,1613.5 3226.2,1759.5 3074.7,1847 2821.8,1701"/>
+</g>
+<g class="bb-node map-item cat-rust status-implemented" data-id="approval" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Permission broker">
+<polygon class="iso-focus" points="2622.6,1816 2774.2,1728.5 3027.1,1874.5 3027.1,1912.5 2875.5,2000 2622.6,1854" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2622.6,1816 2875.5,1962 2875.5,2000 2622.6,1854"/>
+<polygon class="iso-face iso-right" points="3027.1,1874.5 2875.5,1962 2875.5,2000 3027.1,1912.5"/>
+<polygon class="iso-face iso-roof" points="2774.2,1728.5 3027.1,1874.5 2875.5,1962 2622.6,1816"/>
+</g>
+<g class="bb-node map-item cat-mauve status-implemented" data-id="store" data-traces="chat routine paired" tabindex="0" role="button" aria-label="Open details for Bot and thread store">
+<polygon class="iso-focus" points="3235.6,1939.9 3387.2,1852.4 3640,1998.4 3640,2036.4 3488.5,2123.9 3235.6,1977.9" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="3235.6,1939.9 3488.5,2085.9 3488.5,2123.9 3235.6,1977.9"/>
+<polygon class="iso-face iso-right" points="3640,1998.4 3488.5,2085.9 3488.5,2123.9 3640,2036.4"/>
+<polygon class="iso-face iso-roof" points="3387.2,1852.4 3640,1998.4 3488.5,2085.9 3235.6,1939.9"/>
+</g>
+<g class="bb-node map-item cat-mauve status-implemented" data-id="eventlog" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Thread event log">
+<polygon class="iso-focus" points="3036.4,2054.9 3188,1967.4 3440.9,2113.4 3440.9,2151.4 3289.3,2238.9 3036.4,2092.9" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="3036.4,2054.9 3289.3,2200.9 3289.3,2238.9 3036.4,2092.9"/>
+<polygon class="iso-face iso-right" points="3440.9,2113.4 3289.3,2200.9 3289.3,2238.9 3440.9,2151.4"/>
+<polygon class="iso-face iso-roof" points="3188,1967.4 3440.9,2113.4 3289.3,2200.9 3036.4,2054.9"/>
+</g>
+<g class="bb-node map-item cat-mauve status-implemented" data-id="transcript" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Message database">
+<polygon class="iso-focus" points="3614.8,2158.8 3766.3,2071.3 4019.2,2217.3 4019.2,2255.3 3867.7,2342.8 3614.8,2196.8" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="3614.8,2158.8 3867.7,2304.8 3867.7,2342.8 3614.8,2196.8"/>
+<polygon class="iso-face iso-right" points="4019.2,2217.3 3867.7,2304.8 3867.7,2342.8 4019.2,2255.3"/>
+<polygon class="iso-face iso-roof" points="3766.3,2071.3 4019.2,2217.3 3867.7,2304.8 3614.8,2158.8"/>
+</g>
+<g class="bb-node map-item cat-mauve status-implemented" data-id="assignments" data-traces="chat routine" tabindex="0" role="button" aria-label="Open details for Assignment ledger">
+<polygon class="iso-focus" points="2837.2,2169.9 2988.8,2082.4 3241.7,2228.4 3241.7,2266.4 3090.1,2353.9 2837.2,2207.9" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="2837.2,2169.9 3090.1,2315.9 3090.1,2353.9 2837.2,2207.9"/>
+<polygon class="iso-face iso-right" points="3241.7,2228.4 3090.1,2315.9 3090.1,2353.9 3241.7,2266.4"/>
+<polygon class="iso-face iso-roof" points="2988.8,2082.4 3241.7,2228.4 3090.1,2315.9 2837.2,2169.9"/>
+</g>
+<g class="bb-node map-item cat-mauve status-implemented" data-id="schedule" data-traces="routine" tabindex="0" role="button" aria-label="Open details for Routine records">
+<polygon class="iso-focus" points="3216.4,2388.8 3368,2301.3 3620.8,2447.3 3620.8,2485.3 3469.3,2572.8 3216.4,2426.8" fill="none" stroke="none"/>
+<polygon class="iso-face iso-left" points="3216.4,2388.8 3469.3,2534.8 3469.3,2572.8 3216.4,2426.8"/>
+<polygon class="iso-face iso-right" points="3620.8,2447.3 3469.3,2534.8 3469.3,2572.8 3620.8,2485.3"/>
+<polygon class="iso-face iso-roof" points="3368,2301.3 3620.8,2447.3 3469.3,2534.8 3216.4,2388.8"/>
+</g>
+<g class="bb-edges">
+<path class="bb-edge control map-item" d="M 806.2 449.8 L 932.5 522.7" marker-end="url(#bb-arrow-control)" data-traces="chat"/>
+<path class="bb-flow map-item" d="M 806.2 449.8 L 932.5 522.7" data-traces="chat"/>
+<path class="bb-edge data map-item" d="M 1185.4 668.7 L 1328.1 751.1 Q 1332.4 753.6 1336.8 751.1 L 1350.8 742.9 Q 1355.2 740.4 1359.5 742.9 L 1369 748.4" marker-end="url(#bb-arrow-data)" data-traces="chat paired"/>
+<path class="bb-flow map-item" d="M 1185.4 668.7 L 1328.1 751.1 Q 1332.4 753.6 1336.8 751.1 L 1350.8 742.9 Q 1355.2 740.4 1359.5 742.9 L 1369 748.4" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 407.8 679.7 L 929.7 981.1 Q 934.1 983.6 938.4 981.1 L 1305.4 769.2 Q 1309.7 766.7 1314 769.2 L 1323.6 774.7" marker-end="url(#bb-arrow-control)" data-traces="paired"/>
+<path class="bb-flow map-item" d="M 407.8 679.7 L 929.7 981.1 Q 934.1 983.6 938.4 981.1 L 1305.4 769.2 Q 1309.7 766.7 1314 769.2 L 1323.6 774.7" data-traces="paired"/>
+<path class="bb-edge control map-item" d="M 1599.2 907.6 L 1725.5 980.5" marker-end="url(#bb-arrow-control)" data-traces="chat paired"/>
+<path class="bb-flow map-item" d="M 1599.2 907.6 L 1725.5 980.5" data-traces="chat paired"/>
+<path class="bb-edge data map-item" d="M 1776.1 1097.2 L 1728.5 1124.7" marker-end="url(#bb-arrow-data)" data-traces="chat paired"/>
+<path class="bb-flow map-item" d="M 1776.1 1097.2 L 1728.5 1124.7" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 1779.2 1241.5 L 1921.9 1323.9 Q 1926.2 1326.4 1930.5 1323.9 L 2143.8 1200.8 Q 2148.1 1198.3 2152.5 1200.8 L 2162 1206.3" marker-end="url(#bb-arrow-control)" data-traces="chat paired"/>
+<path class="bb-flow map-item" d="M 1779.2 1241.5 L 1921.9 1323.9 Q 1926.2 1326.4 1930.5 1323.9 L 2143.8 1200.8 Q 2148.1 1198.3 2152.5 1200.8 L 2162 1206.3" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 1223.5 1124.4 L 1678.8 1387.3 Q 1683.2 1389.8 1687.5 1387.3 L 2031.7 1188.6 Q 2036.1 1186.1 2040.4 1188.6 L 2116.5 1232.5" marker-end="url(#bb-arrow-control)" data-traces="routine"/>
+<path class="bb-flow map-item" d="M 1223.5 1124.4 L 1678.8 1387.3 Q 1683.2 1389.8 1687.5 1387.3 L 2031.7 1188.6 Q 2036.1 1186.1 2040.4 1188.6 L 2116.5 1232.5" data-traces="routine"/>
+<path class="bb-edge control map-item" d="M 2414.9 1352.3 L 2523 1414.7 Q 2527.3 1417.2 2523 1419.7 L 2508.9 1427.8 Q 2504.6 1430.3 2508.9 1432.8 L 2518.4 1438.3" marker-end="url(#bb-arrow-control)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2414.9 1352.3 L 2523 1414.7 Q 2527.3 1417.2 2523 1419.7 L 2508.9 1427.8 Q 2504.6 1430.3 2508.9 1432.8 L 2518.4 1438.3" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2771.3 1584.3 L 2879.4 1646.7 Q 2883.7 1649.2 2888.1 1646.7 L 2909.7 1634.2 Q 2914 1631.7 2918.4 1634.2 L 2927.9 1639.7" marker-end="url(#bb-arrow-control)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2771.3 1584.3 L 2879.4 1646.7 Q 2883.7 1649.2 2888.1 1646.7 L 2909.7 1634.2 Q 2914 1631.7 2918.4 1634.2 L 2927.9 1639.7" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2897.6 1657.2 L 2888.1 1651.7 Q 2883.7 1649.2 2879.4 1651.7 L 2711.6 1748.6 Q 2707.3 1751.1 2702.9 1748.6 L 2594.9 1686.2" marker-end="url(#bb-arrow-control)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2897.6 1657.2 L 2888.1 1651.7 Q 2883.7 1649.2 2879.4 1651.7 L 2711.6 1748.6 Q 2707.3 1751.1 2702.9 1748.6 L 2594.9 1686.2" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2549.4 1712.4 L 2657.5 1774.8 Q 2661.8 1777.3 2666.1 1774.8 L 2680.2 1766.7 Q 2684.5 1764.2 2688.9 1766.7 L 2698.4 1772.2" marker-end="url(#bb-arrow-control)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2549.4 1712.4 L 2657.5 1774.8 Q 2661.8 1777.3 2666.1 1774.8 L 2680.2 1766.7 Q 2684.5 1764.2 2688.9 1766.7 L 2698.4 1772.2" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2189.9 1336.1 L 2158.7 1354.1 Q 2154.4 1356.6 2150.1 1354.1 L 2020.2 1279.1 Q 2015.9 1276.6 2011.5 1279.1 L 1822.7 1388.1 Q 1818.4 1390.6 1822.7 1393.1 L 1952.6 1468.1 Q 1957 1470.6 1952.6 1473.1 L 1943.1 1478.6" marker-end="url(#bb-arrow-control)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2189.9 1336.1 L 2158.7 1354.1 Q 2154.4 1356.6 2150.1 1354.1 L 2020.2 1279.1 Q 2015.9 1276.6 2011.5 1279.1 L 1822.7 1388.1 Q 1818.4 1390.6 1822.7 1393.1 L 1952.6 1468.1 Q 1957 1470.6 1952.6 1473.1 L 1943.1 1478.6" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 2867.3 1674.7 L 2757.4 1611.3 Q 2753.1 1608.8 2748.8 1611.3 L 2676.5 1653.1 Q 2672.1 1655.6 2667.8 1653.1 L 2299 1440.1 Q 2294.7 1437.6 2290.4 1440.1 L 2233.9 1472.8 Q 2229.5 1475.3 2225.2 1472.8 L 2215.7 1467.3" marker-end="url(#bb-arrow-data)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2867.3 1674.7 L 2757.4 1611.3 Q 2753.1 1608.8 2748.8 1611.3 L 2676.5 1653.1 Q 2672.1 1655.6 2667.8 1653.1 L 2299 1440.1 Q 2294.7 1437.6 2290.4 1440.1 L 2233.9 1472.8 Q 2229.5 1475.3 2225.2 1472.8 L 2215.7 1467.3" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 2369.4 1378.5 L 2479.2 1441.9 Q 2483.6 1444.4 2479.2 1446.9 L 2422.7 1479.5 Q 2418.4 1482 2422.7 1484.5 L 3205.3 1936.4 Q 3209.6 1938.9 3214 1936.4 L 3293.2 1890.6 Q 3297.5 1888.1 3301.9 1890.6 L 3311.4 1896.1" marker-end="url(#bb-arrow-data)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2369.4 1378.5 L 2479.2 1441.9 Q 2483.6 1444.4 2479.2 1446.9 L 2422.7 1479.5 Q 2418.4 1482 2422.7 1484.5 L 3205.3 1936.4 Q 3209.6 1938.9 3214 1936.4 L 3293.2 1890.6 Q 3297.5 1888.1 3301.9 1890.6 L 3311.4 1896.1" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 3564.3 2042.1 L 3690.6 2115" marker-end="url(#bb-arrow-data)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 3564.3 2042.1 L 3690.6 2115" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 1993.8 1595.4 L 2913 2126.1" marker-end="url(#bb-arrow-data)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 1993.8 1595.4 L 2913 2126.1" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 1178.1 1150.7 L 1701.7 1453 Q 1706 1455.5 1701.7 1458 L 1645.2 1490.6 Q 1640.9 1493.1 1645.2 1495.6 L 3186.1 2385.3 Q 3190.4 2387.8 3194.8 2385.3 L 3274 2339.5 Q 3278.3 2337 3282.7 2339.5 L 3292.2 2345" marker-end="url(#bb-arrow-data)" data-traces="routine"/>
+<path class="bb-flow map-item" d="M 1178.1 1150.7 L 1701.7 1453 Q 1706 1455.5 1701.7 1458 L 1645.2 1490.6 Q 1640.9 1493.1 1645.2 1495.6 L 3186.1 2385.3 Q 3190.4 2387.8 3194.8 2385.3 L 3274 2339.5 Q 3278.3 2337 3282.7 2339.5 L 3292.2 2345" data-traces="routine"/>
+<path class="bb-edge data map-item" d="M 2170.2 1493.5 L 2280.1 1556.9 Q 2284.4 1559.4 2280.1 1561.9 L 2223.5 1594.5 Q 2219.2 1597 2223.5 1599.5 L 3006.1 2051.4 Q 3010.4 2053.9 3014.8 2051.4 L 3094 2005.6 Q 3098.3 2003.1 3102.7 2005.6 L 3112.2 2011.1" marker-end="url(#bb-arrow-data)" data-traces="chat routine"/>
+<path class="bb-flow map-item" d="M 2170.2 1493.5 L 2280.1 1556.9 Q 2284.4 1559.4 2280.1 1561.9 L 2223.5 1594.5 Q 2219.2 1597 2223.5 1599.5 L 3006.1 2051.4 Q 3010.4 2053.9 3014.8 2051.4 L 3094 2005.6 Q 3098.3 2003.1 3102.7 2005.6 L 3112.2 2011.1" data-traces="chat routine"/>
+<g class="bb-edge-label map-item" data-traces="chat"><rect class="iso-label-bg" x="834.8" y="477.7" width="69" height="17" rx="3"/><text class="bb-label control plain" x="869.3" y="489.8" text-anchor="middle">loads UI</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><rect class="iso-label-bg" x="1210.1" y="702.6" width="97.6" height="17" rx="3"/><text class="bb-label data plain" x="1258.9" y="714.7" text-anchor="middle">chat request</text></g>
+<g class="bb-edge-label map-item" data-traces="paired"><rect class="iso-label-bg" x="625.7" y="823.2" width="90.4" height="17" rx="3"/><text class="bb-label control plain" x="670.9" y="835.3" text-anchor="middle">allowlisted</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><rect class="iso-label-bg" x="1606.4" y="935.5" width="111.8" height="17" rx="3"/><text class="bb-label control plain" x="1662.3" y="947.6" text-anchor="middle">scoped request</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><rect class="iso-label-bg" x="1717.8" y="1110.7" width="40.5" height="17" rx="3"/><text class="bb-label data plain" x="1738" y="1122.8" text-anchor="middle">send</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><rect class="iso-label-bg" x="2002.7" y="1253.8" width="69" height="17" rx="3"/><text class="bb-label control plain" x="2037.2" y="1265.9" text-anchor="middle">admitted</text></g>
+<g class="bb-edge-label map-item" data-traces="routine"><rect class="iso-label-bg" x="1411.7" y="1248.6" width="83.3" height="17" rx="3"/><text class="bb-label control plain" x="1453.3" y="1260.7" text-anchor="middle">run starts</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2440.1" y="1376.2" width="61.9" height="17" rx="3"/><text class="bb-label control plain" x="2471.1" y="1388.3" text-anchor="middle">selects</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2793" y="1608.3" width="69" height="17" rx="3"/><text class="bb-label control plain" x="2827.5" y="1620.4" text-anchor="middle">launches</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2757.4" y="1691.6" width="76.2" height="17" rx="3"/><text class="bb-label control plain" x="2795.5" y="1703.7" text-anchor="middle">tool call</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2560.4" y="1736.4" width="90.4" height="17" rx="3"/><text class="bb-label control plain" x="2605.6" y="1748.5" text-anchor="middle">needs grant</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="1849.4" y="1342.2" width="76.2" height="17" rx="3"/><text class="bb-label control plain" x="1887.5" y="1354.3" text-anchor="middle">hands off</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2456" y="1538.1" width="54.8" height="17" rx="3"/><text class="bb-label data plain" x="2483.4" y="1550.2" text-anchor="middle">events</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="3088.9" y="1884.7" width="83.3" height="17" rx="3"/><text class="bb-label data plain" x="3130.5" y="1896.8" text-anchor="middle">turn state</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="3592.9" y="2070.1" width="69" height="17" rx="3"/><text class="bb-label data plain" x="3627.4" y="2082.2" text-anchor="middle">messages</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2408.2" y="1852.3" width="90.4" height="17" rx="3"/><text class="bb-label data plain" x="2453.4" y="1864.4" text-anchor="middle">transitions</text></g>
+<g class="bb-edge-label map-item" data-traces="routine"><rect class="iso-label-bg" x="2366.9" y="1932" width="97.6" height="17" rx="3"/><text class="bb-label data plain" x="2415.6" y="1944.1" text-anchor="middle">run receipts</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><rect class="iso-label-bg" x="2580.3" y="1817" width="69" height="17" rx="3"/><text class="bb-label data plain" x="2614.8" y="1829.1" text-anchor="middle">redacted</text></g>
+</g>
+<g class="iso-tag map-item cat-sage" data-for="desktop" data-traces="chat" pointer-events="none">
+<rect class="iso-tag-bg" x="598.3" y="350.8" width="163" height="42" rx="3"/>
+<circle class="bb-mark" cx="611" cy="363.3" r="3"/>
+<text class="bb-kicker" x="679.8" y="366.8" text-anchor="middle">PROCESS · BUILT</text>
+<text class="bb-node-title" x="679.8" y="385.8" text-anchor="middle">Desktop shell</text>
+</g>
+<g class="iso-tag map-item cat-sage" data-for="renderer" data-traces="chat paired" pointer-events="none">
+<rect class="iso-tag-bg" x="966.9" y="569.7" width="184.1" height="42" rx="3"/>
+<circle class="bb-mark" cx="1010.4" cy="582.2" r="3"/>
+<text class="bb-kicker" x="1058.9" y="585.7" text-anchor="middle">UI · BUILT</text>
+<text class="bb-node-title" x="1058.9" y="604.7" text-anchor="middle">Conversation UI</text>
+</g>
+<g class="iso-tag map-item cat-sage" data-for="paired" data-traces="paired" pointer-events="none">
+<rect class="iso-tag-bg" x="199.9" y="580.7" width="163" height="42" rx="3"/>
+<circle class="bb-mark" cx="212.6" cy="593.2" r="3"/>
+<text class="bb-kicker" x="281.4" y="596.7" text-anchor="middle">GATEWAY · BUILT</text>
+<text class="bb-node-title" x="281.4" y="615.7" text-anchor="middle">Paired device</text>
+</g>
+<g class="iso-tag map-item cat-rust" data-for="authentication" data-traces="chat paired" pointer-events="none">
+<rect class="iso-tag-bg" x="1391.2" y="808.6" width="163" height="42" rx="3"/>
+<circle class="bb-mark" cx="1416.1" cy="821.1" r="3"/>
+<text class="bb-kicker" x="1472.7" y="824.6" text-anchor="middle">GATE · BUILT</text>
+<text class="bb-node-title" x="1472.7" y="843.6" text-anchor="middle">Request trust</text>
+</g>
+<g class="iso-tag map-item cat-teal" data-for="http" data-traces="chat paired" pointer-events="none">
+<rect class="iso-tag-bg" x="1778.1" y="1027.5" width="147.5" height="42" rx="3"/>
+<circle class="bb-mark" cx="1783.1" cy="1040" r="3"/>
+<text class="bb-kicker" x="1851.9" y="1043.5" text-anchor="middle">SERVICE · BUILT</text>
+<text class="bb-node-title" x="1851.9" y="1062.5" text-anchor="middle">Harness API</text>
+</g>
+<g class="iso-tag map-item cat-olive" data-for="scheduler" data-traces="routine" pointer-events="none">
+<rect class="iso-tag-bg" x="971.8" y="1038.6" width="205.2" height="42" rx="3"/>
+<circle class="bb-mark" cx="997.5" cy="1051.1" r="3"/>
+<text class="bb-kicker" x="1074.4" y="1054.6" text-anchor="middle">SCHEDULER · BUILT</text>
+<text class="bb-node-title" x="1074.4" y="1073.6" text-anchor="middle">Routine scheduler</text>
+</g>
+<g class="iso-tag map-item cat-teal" data-for="messages" data-traces="chat paired" pointer-events="none">
+<rect class="iso-tag-bg" x="1565.9" y="1142.5" width="173.6" height="42" rx="3"/>
+<circle class="bb-mark" cx="1592.1" cy="1155" r="3"/>
+<text class="bb-kicker" x="1652.7" y="1158.5" text-anchor="middle">ROUTE · BUILT</text>
+<text class="bb-node-title" x="1652.7" y="1177.5" text-anchor="middle">Message intake</text>
+</g>
+<g class="iso-tag map-item cat-slate" data-for="turn" data-traces="chat routine paired" pointer-events="none">
+<rect class="iso-tag-bg" x="2171.7" y="1266.4" width="188" height="42" rx="3"/>
+<circle class="bb-mark" cx="2176.7" cy="1278.9" r="3"/>
+<text class="bb-kicker" x="2265.7" y="1282.4" text-anchor="middle">ORCHESTRATOR · BUILT</text>
+<text class="bb-node-title" x="2265.7" y="1301.4" text-anchor="middle">Turn host</text>
+</g>
+<g class="iso-tag map-item cat-slate" data-for="bus" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="1979.7" y="1381.4" width="173.6" height="42" rx="3"/>
+<circle class="bb-mark" cx="1989.7" cy="1393.9" r="3"/>
+<text class="bb-kicker" x="2066.5" y="1397.4" text-anchor="middle">EVENT-BUS · BUILT</text>
+<text class="bb-node-title" x="2066.5" y="1416.4" text-anchor="middle">Live event bus</text>
+</g>
+<g class="iso-tag map-item cat-slate" data-for="providers" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="2542.3" y="1485.3" width="205.2" height="42" rx="3"/>
+<circle class="bb-mark" cx="2572.1" cy="1497.8" r="3"/>
+<text class="bb-kicker" x="2644.9" y="1501.3" text-anchor="middle">REGISTRY · BUILT</text>
+<text class="bb-node-title" x="2644.9" y="1520.3" text-anchor="middle">Provider registry</text>
+</g>
+<g class="iso-tag map-item cat-slate" data-for="runtime" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="1759.5" y="1496.4" width="215.7" height="42" rx="3"/>
+<circle class="bb-mark" cx="1778.3" cy="1508.9" r="3"/>
+<text class="bb-kicker" x="1867.3" y="1512.4" text-anchor="middle">ORCHESTRATOR · BUILT</text>
+<text class="bb-node-title" x="1867.3" y="1531.4" text-anchor="middle">Assignment runtime</text>
+</g>
+<g class="iso-tag map-item cat-rust" data-for="tool" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="2364.2" y="1600.3" width="163" height="42" rx="3"/>
+<circle class="bb-mark" cx="2376.9" cy="1612.8" r="3"/>
+<text class="bb-kicker" x="2445.7" y="1616.3" text-anchor="middle">GATEWAY · BUILT</text>
+<text class="bb-node-title" x="2445.7" y="1635.3" text-anchor="middle">Tool boundary</text>
+</g>
+<g class="iso-tag map-item cat-slate" data-for="driver" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="2937.2" y="1704.2" width="173.6" height="42" rx="3"/>
+<circle class="bb-mark" cx="2955.3" cy="1716.7" r="3"/>
+<text class="bb-kicker" x="3024" y="1720.2" text-anchor="middle">ADAPTER · BUILT</text>
+<text class="bb-node-title" x="3024" y="1739.2" text-anchor="middle">Engine drivers</text>
+</g>
+<g class="iso-tag map-item cat-rust" data-for="approval" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="2722.3" y="1819.2" width="205.2" height="42" rx="3"/>
+<circle class="bb-mark" cx="2768.2" cy="1831.7" r="3"/>
+<text class="bb-kicker" x="2824.8" y="1835.2" text-anchor="middle">GATE · BUILT</text>
+<text class="bb-node-title" x="2824.8" y="1854.2" text-anchor="middle">Permission broker</text>
+</g>
+<g class="iso-tag map-item cat-mauve" data-for="store" data-traces="chat routine paired" pointer-events="none">
+<rect class="iso-tag-bg" x="3319.4" y="1943.1" width="236.8" height="42" rx="3"/>
+<circle class="bb-mark" cx="3369.1" cy="1955.6" r="3"/>
+<text class="bb-kicker" x="3437.8" y="1959.1" text-anchor="middle">STORAGE · BUILT</text>
+<text class="bb-node-title" x="3437.8" y="1978.1" text-anchor="middle">Bot and thread store</text>
+</g>
+<g class="iso-tag map-item cat-mauve" data-for="eventlog" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="3141.3" y="2058.1" width="194.6" height="42" rx="3"/>
+<circle class="bb-mark" cx="3186.1" cy="2070.6" r="3"/>
+<text class="bb-kicker" x="3238.6" y="2074.1" text-anchor="middle">LOG · BUILT</text>
+<text class="bb-node-title" x="3238.6" y="2093.1" text-anchor="middle">Thread event log</text>
+</g>
+<g class="iso-tag map-item cat-mauve" data-for="transcript" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="3719.7" y="2162" width="194.6" height="42" rx="3"/>
+<circle class="bb-mark" cx="3744.2" cy="2174.5" r="3"/>
+<text class="bb-kicker" x="3817" y="2178" text-anchor="middle">DATABASE · BUILT</text>
+<text class="bb-node-title" x="3817" y="2197" text-anchor="middle">Message database</text>
+</g>
+<g class="iso-tag map-item cat-mauve" data-for="assignments" data-traces="chat routine" pointer-events="none">
+<rect class="iso-tag-bg" x="2936.9" y="2173.1" width="205.2" height="42" rx="3"/>
+<circle class="bb-mark" cx="2966.7" cy="2185.6" r="3"/>
+<text class="bb-kicker" x="3039.5" y="2189.1" text-anchor="middle">DATABASE · BUILT</text>
+<text class="bb-node-title" x="3039.5" y="2208.1" text-anchor="middle">Assignment ledger</text>
+</g>
+<g class="iso-tag map-item cat-mauve" data-for="schedule" data-traces="routine" pointer-events="none">
+<rect class="iso-tag-bg" x="3326.6" y="2392" width="184.1" height="42" rx="3"/>
+<circle class="bb-mark" cx="3349.9" cy="2404.5" r="3"/>
+<text class="bb-kicker" x="3418.6" y="2408" text-anchor="middle">STORAGE · BUILT</text>
+<text class="bb-node-title" x="3418.6" y="2427" text-anchor="middle">Routine records</text>
+</g>
+<g class="bb-zone-group cat-sage">
+<text class="bb-zone-kicker iso-label-knockout" x="688" y="212" text-anchor="middle">01 / CLIENTS</text>
+<text class="bb-zone-title iso-label-knockout" x="688" y="234" text-anchor="middle">The person and their device</text></g>
+<g class="bb-zone-group cat-teal">
+<text class="bb-zone-kicker iso-label-knockout" x="1481" y="669.8" text-anchor="middle">02 / TRUST AND ROUTING</text>
+<text class="bb-zone-title iso-label-knockout" x="1481" y="691.8" text-anchor="middle">The host&#39;s front door</text></g>
+<g class="bb-zone-group cat-slate">
+<text class="bb-zone-kicker iso-label-knockout" x="2273.9" y="1127.6" text-anchor="middle">03 / WORK AND TOOLS</text>
+<text class="bb-zone-title iso-label-knockout" x="2273.9" y="1149.6" text-anchor="middle">A turn on the host</text></g>
+<g class="bb-zone-group cat-mauve">
+<text class="bb-zone-kicker iso-label-knockout" x="3446.1" y="1804.4" text-anchor="middle">04 / LOCAL STATE</text>
+<text class="bb-zone-title iso-label-knockout" x="3446.1" y="1826.4" text-anchor="middle">What survives a turn</text></g>
+<g class="bb-legend" aria-label="Legend"><path class="bb-rule" d="M 40 2625 H 4118"/><circle class="bb-mark cat-sage" cx="52" cy="2643" r="4"/><text class="bb-legend-text" x="64" y="2647">Client</text><circle class="bb-mark cat-teal" cx="123.94999999999999" cy="2643" r="4"/><text class="bb-legend-text" x="135.95" y="2647">Ingress</text><circle class="bb-mark cat-rust" cx="202.22499999999997" cy="2643" r="4"/><text class="bb-legend-text" x="214.22499999999997" y="2647">Trust boundary</text><circle class="bb-mark cat-slate" cx="324.775" cy="2643" r="4"/><text class="bb-legend-text" x="336.775" y="2647">Execution</text><circle class="bb-mark cat-olive" cx="415.7" cy="2643" r="4"/><text class="bb-legend-text" x="427.7" y="2647">Automation</text><circle class="bb-mark cat-mauve" cx="512.95" cy="2643" r="4"/><text class="bb-legend-text" x="524.95" y="2647">Durable state</text><text class="bb-legend-text" x="625.175" y="2647">Built = solid</text><text class="bb-legend-text" x="725.4" y="2647">Partial = hatched roof</text><text class="bb-legend-text" x="882.55" y="2647">Planned = wireframe</text></g>
+</svg>
+</div>
+<div class="nav" role="toolbar" aria-label="Zoom and navigation"><button id="zoom-out" type="button" aria-label="Zoom out (−)">−</button><button id="zoom-level" type="button" aria-label="Actual size (1)">100%</button><button id="zoom-in" type="button" aria-label="Zoom in (+)">+</button><button id="zoom-fit" type="button" aria-label="Fit to screen (F)">Fit</button><button id="fullscreen" type="button" aria-label="Fullscreen">⤢</button></div>
+<div class="minimap" id="minimap" aria-hidden="true"><img id="minimap-img" alt=""><div class="minimap-frame" id="minimap-frame"></div></div>
+<p class="stage-hint caps">Drag to pan · ⌘/Ctrl + scroll to zoom · F to fit</p>
+</div>
+<aside class="drawer" id="drawer" role="region" aria-labelledby="drawer-title" aria-live="polite" hidden><div class="drawer-head"><div><p class="caps" id="drawer-kicker">Component</p><h2 id="drawer-title"></h2></div><button id="drawer-close" type="button" aria-label="Close details">×</button></div><div class="drawer-body" id="drawer-body"></div></aside>
+<section class="details" aria-labelledby="details-h"><h2 id="details-h">Components</h2><details class="card" id="detail-desktop" data-kicker="process"><summary><span class="t">Desktop shell</span><span class="st caps">implemented</span></summary><div class="detail"><p>The desktop main process starts and supervises the local server in host mode. In paired client mode, it runs a loopback relay instead of another local host.</p>
+<h4>Source</h4><ul><li><a href="../../electron/main.mjs">Desktop process</a></li><li><a href="../../electron/server-child-launch.mjs">Server child lifecycle</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../electron/main.mjs"><code>electron/main.mjs</code></a></li><li><a href="../../electron/server-child-launch.mjs"><code>electron/server-child-launch.mjs</code></a></li><li>test: <a href="../../electron/server-child-launch.node-test.mjs"><code>electron/server-child-launch.node-test.mjs</code></a></li></ul></div></div></details>
+<details class="card" id="detail-renderer" data-kicker="ui"><summary><span class="t">Conversation UI</span><span class="st caps">implemented</span></summary><div class="detail"><p>The browser renderer selects a session or pairing screen before mounting App. Its store sends API requests and consumes live frames; the renderer does not hold a paired-device bearer token.</p>
+<h4>Source</h4><ul><li><a href="../../src/main.tsx">Session and app entry</a></li><li><a href="../../src/state/store.tsx">Client state</a></li><li><a href="../../src/lib/live-events.ts">Live frames</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../src/main.tsx"><code>src/main.tsx</code></a></li><li><a href="../../src/App.tsx"><code>src/App.tsx</code></a></li><li><a href="../../src/state/store.tsx"><code>src/state/store.tsx</code></a></li><li>test: <a href="../../src/state/store.test.ts"><code>src/state/store.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-paired" data-kicker="gateway"><summary><span class="t">Paired device</span><span class="st caps">implemented</span></summary><div class="detail"><p>An optional paired phone or desktop reaches a host through the companion sidecar. It checks device identity, permits only reviewed routes, and scrubs responses before forwarding to the host. It is not the unrestricted harness API.</p>
+<h4>Source</h4><ul><li><a href="../../companion/src/index.ts">Companion listener</a></li><li><a href="../../companion/src/proxy.ts">Proxy</a></li><li><a href="../../companion/src/routes.ts">Route allowlist</a></li><li><a href="../desktop-companion.md">Client/host separation</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../companion/src/index.ts"><code>companion/src/index.ts</code></a></li><li><a href="../../companion/src/proxy.ts"><code>companion/src/proxy.ts</code></a></li><li><a href="../../companion/src/routes.ts"><code>companion/src/routes.ts</code></a></li><li>test: <a href="../../companion/test/proxy.test.ts"><code>companion/test/proxy.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-authentication" data-kicker="gate"><summary><span class="t">Request trust</span><span class="st caps">implemented</span></summary><div class="detail"><p>The HTTP boundary distinguishes authenticated sessions from loopback callers. A hosted service-trust loopback has a narrow route set; a browser on the machine is not automatically trusted as its owner. Companion clients first pass the sidecar&#39;s separate device boundary.</p>
+<h4>Source</h4><ul><li><a href="../../server/request-auth.ts">Request authentication</a></li><li><a href="../../server/sessions.ts">Session registry</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/request-auth.ts"><code>server/request-auth.ts</code></a></li><li><a href="../../server/sessions.ts"><code>server/sessions.ts</code></a></li><li>test: <a href="../../server/request-auth.test.ts"><code>server/request-auth.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-http" data-kicker="service"><summary><span class="t">Harness API</span><span class="st caps">implemented</span></summary><div class="detail"><p>The host composes route handlers and the live event stream. The HTTP helpers bound request bodies and serialize responses; routes operate after the request&#39;s trust and visibility checks.</p>
+<h4>Source</h4><ul><li><a href="../../server/index.ts">Host composition</a></li><li><a href="../../server/routes/table.ts">Route table</a></li><li><a href="../../server/harness/http.ts">HTTP helpers</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/index.ts"><code>server/index.ts</code></a></li><li><a href="../../server/routes/table.ts"><code>server/routes/table.ts</code></a></li><li><a href="../../server/harness/http.ts"><code>server/harness/http.ts</code></a></li><li>test: <a href="../../server/index.test.ts"><code>server/index.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-messages" data-kicker="route"><summary><span class="t">Message intake</span><span class="st caps">implemented</span></summary><div class="detail"><p>The bot-message route validates the requested thread and sender, handles guarded sends and card answers, and calls the host&#39;s turn starter only when admission permits it. A send receipt can report a queued steer instead of a new turn.</p>
+<h4>Source</h4><ul><li><a href="../../server/routes/bot-messages.ts">Message routes</a></li><li><a href="../../server/admission.ts">Admission</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/routes/bot-messages.ts"><code>server/routes/bot-messages.ts</code></a></li><li><a href="../../server/admission.ts"><code>server/admission.ts</code></a></li><li>test: <a href="../../server/routes/bot-messages.test.ts"><code>server/routes/bot-messages.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-scheduler" data-kicker="scheduler"><summary><span class="t">Routine scheduler</span><span class="st caps">implemented</span></summary><div class="detail"><p>A saved routine selects a future occurrence or a manual run. The host dispatches its execution as a turn, records a run receipt, and reports results to the chosen conversation or the bot&#39;s main thread. A routine is not itself a separate agent engine.</p>
+<h4>Source</h4><ul><li><a href="../../server/routines.ts">Schedule and run manager</a></li><li><a href="../../server/routine-execution.ts">Execution prompt</a></li><li><a href="../verification/routines.md">Routines behavior</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/routines.ts"><code>server/routines.ts</code></a></li><li><a href="../../server/routine-execution.ts"><code>server/routine-execution.ts</code></a></li><li>test: <a href="../../server/routines-startup.test.ts"><code>server/routines-startup.test.ts</code></a></li><li>test: <a href="../../server/routines.test.ts"><code>server/routines.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-turn" data-kicker="orchestrator"><summary><span class="t">Turn host</span><span class="st caps">implemented</span></summary><div class="detail"><p>The host&#39;s startTurn entry selects the bot, thread, model and permission mode, prepares its tools, and records the turn. The same host handles person-initiated and scheduled work; it does not delegate trust decisions to model text.</p>
+<h4>Source</h4><ul><li><a href="../../server/index.ts">Turn entry</a></li><li><a href="../../server/turn-context.ts">Turn context</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/index.ts"><code>server/index.ts</code></a></li><li><a href="../../server/turn-context.ts"><code>server/turn-context.ts</code></a></li><li>test: <a href="../../server/main-thread.test.ts"><code>server/main-thread.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-providers" data-kicker="registry"><summary><span class="t">Provider registry</span><span class="st caps">implemented</span></summary><div class="detail"><p>The registry loads configured provider instances, exposes status and access, and retains a separate identity for each instance. The host chooses a configured instance before launching its driver.</p>
+<h4>Source</h4><ul><li><a href="../../server/harness/registry.ts">Provider registry</a></li><li><a href="../../server/contracts.ts">Driver contracts</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/harness/registry.ts"><code>server/harness/registry.ts</code></a></li><li><a href="../../server/contracts.ts"><code>server/contracts.ts</code></a></li><li>test: <a href="../../server/harness/registry.test.ts"><code>server/harness/registry.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-driver" data-kicker="adapter"><summary><span class="t">Engine drivers</span><span class="st caps">implemented</span></summary><div class="detail"><p>Drivers adapt provider-specific sessions, prompts, permission modes and events to the host contract. The diagram does not imply every engine has the same native capabilities.</p>
+<h4>Source</h4><ul><li><a href="../../server/drivers/claude.ts">CLI driver</a></li><li><a href="../../server/drivers/codex.ts">Another CLI route</a></li><li><a href="../../server/drivers/pi.ts">Pi route</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/drivers/claude.ts"><code>server/drivers/claude.ts</code></a></li><li><a href="../../server/drivers/codex.ts"><code>server/drivers/codex.ts</code></a></li><li><a href="../../server/drivers/pi.ts"><code>server/drivers/pi.ts</code></a></li><li>test: <a href="../../server/drivers/pi.test.ts"><code>server/drivers/pi.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-tool" data-kicker="gateway"><summary><span class="t">Tool boundary</span><span class="st caps">implemented</span></summary><div class="detail"><p>The host offers bot-scoped tools through its agents proxy; external MCP calls can pass a tool-selection and result-budget gate. A tool&#39;s availability is not permission to bypass provider or host approvals.</p>
+<h4>Source</h4><ul><li><a href="../../server/drivers/agents-proxy.ts">Agents tool proxy</a></li><li><a href="../../server/mcp-gate.ts">MCP selection gate</a></li><li><a href="../../server/bot-tool-scope.ts">Bot tool scope</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/drivers/agents-proxy.ts"><code>server/drivers/agents-proxy.ts</code></a></li><li><a href="../../server/mcp-gate.ts"><code>server/mcp-gate.ts</code></a></li><li><a href="../../server/bot-tool-scope.ts"><code>server/bot-tool-scope.ts</code></a></li><li>test: <a href="../../server/mcp-gate.test.ts"><code>server/mcp-gate.test.ts</code></a></li><li>test: <a href="../../server/drivers/agents-proxy.test.ts"><code>server/drivers/agents-proxy.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-approval" data-kicker="gate"><summary><span class="t">Permission broker</span><span class="st caps">implemented</span></summary><div class="detail"><p>Provider-native permission requests reach the host&#39;s broker. It answers from the effective conversation mode or an explicit grant; missing or broken broker connections deny rather than silently allowing an action.</p>
+<h4>Source</h4><ul><li><a href="../../server/permission-proxy.ts">Permission proxy</a></li><li><a href="../../shared/approval-mode.ts">Approval modes</a></li><li><a href="../approval-levels.md">User-facing levels</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/permission-proxy.ts"><code>server/permission-proxy.ts</code></a></li><li><a href="../../shared/approval-mode.ts"><code>shared/approval-mode.ts</code></a></li><li>test: <a href="../../server/permission-proxy.test.ts"><code>server/permission-proxy.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-runtime" data-kicker="orchestrator"><summary><span class="t">Assignment runtime</span><span class="st caps">implemented</span></summary><div class="detail"><p>When a turn hands work to another bot, the runtime records an assignment tree, admits a free assignee, waits for terminal results or input, then resumes the requester. Ordinary single-bot chat does not require a teammate assignment.</p>
+<h4>Source</h4><ul><li><a href="../../server/runtime/runtime.ts">Assignment lifecycle</a></li><li><a href="../../server/coordinator.ts">Host coordination adapter</a></li><li><a href="../runtime-contract.md">Lifecycle contract</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/runtime/runtime.ts"><code>server/runtime/runtime.ts</code></a></li><li><a href="../../server/coordinator.ts"><code>server/coordinator.ts</code></a></li><li>test: <a href="../../server/runtime/scenarios.test.ts"><code>server/runtime/scenarios.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-bus" data-kicker="event-bus"><summary><span class="t">Live event bus</span><span class="st caps">implemented</span></summary><div class="detail"><p>Provider events enter a host-side bus. It batches text deltas, feeds live listeners, and appends redacted events to the thread event log. The renderer receives live frames separately from stored transcripts.</p>
+<h4>Source</h4><ul><li><a href="../../server/harness/bus.ts">Bus and log</a></li><li><a href="../../src/lib/live-events.ts">Renderer live frames</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/harness/bus.ts"><code>server/harness/bus.ts</code></a></li><li><a href="../../src/lib/live-events.ts"><code>src/lib/live-events.ts</code></a></li><li>test: <a href="../../server/harness/bus.test.ts"><code>server/harness/bus.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-store" data-kicker="storage"><summary><span class="t">Bot and thread store</span><span class="st caps">implemented</span></summary><div class="detail"><p>The host store owns bot profiles and conversation tasks and projects private records into wire-safe shapes. It invokes the message database for transcript persistence; do not treat the renderer&#39;s store as the source of truth.</p>
+<h4>Source</h4><ul><li><a href="../../server/store.ts">Host store</a></li><li><a href="../../server/bots-save.ts">Bot persistence</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/store.ts"><code>server/store.ts</code></a></li><li><a href="../../server/bots-save.ts"><code>server/bots-save.ts</code></a></li><li>test: <a href="../../server/store.test.ts"><code>server/store.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-transcript" data-kicker="database"><summary><span class="t">Message database</span><span class="st caps">implemented</span></summary><div class="detail"><p>The host stores messages and thread state in an owner-only SQLite database. The schema also holds send receipts and notification records; a live delta is not a substitute for a persisted message.</p>
+<h4>Source</h4><ul><li><a href="../../server/message-db.ts">Database schema</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/message-db.ts"><code>server/message-db.ts</code></a></li><li>test: <a href="../../server/message-db.test.ts"><code>server/message-db.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-assignments" data-kicker="database"><summary><span class="t">Assignment ledger</span><span class="st caps">implemented</span></summary><div class="detail"><p>Assignment state, append-only transitions and pending wakes are committed together in runtime.db. On restart the runtime reconciles interrupted turns from these rows before dispatching work.</p>
+<h4>Source</h4><ul><li><a href="../../server/runtime/store.ts">Runtime SQLite store</a></li><li><a href="../../server/runtime/runtime.ts">Restart behavior</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/runtime/store.ts"><code>server/runtime/store.ts</code></a></li><li><a href="../../server/runtime/runtime.ts"><code>server/runtime/runtime.ts</code></a></li><li>test: <a href="../../server/runtime/store.test.ts"><code>server/runtime/store.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-schedule" data-kicker="storage"><summary><span class="t">Routine records</span><span class="st caps">implemented</span></summary><div class="detail"><p>The routine manager persists definitions and run history in its validated routine file. Startup recovery reconciles interrupted scheduled work instead of interpreting a past timestamp as proof of success.</p>
+<h4>Source</h4><ul><li><a href="../../server/routines.ts">Routine manager</a></li><li><a href="../../server/routine-file-validation.ts">File validation</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/routines.ts"><code>server/routines.ts</code></a></li><li><a href="../../server/routine-file-validation.ts"><code>server/routine-file-validation.ts</code></a></li><li>test: <a href="../../server/routines-startup.test.ts"><code>server/routines-startup.test.ts</code></a></li></ul></div></div></details>
+<details class="card" id="detail-eventlog" data-kicker="log"><summary><span class="t">Thread event log</span><span class="st caps">implemented</span></summary><div class="detail"><p>The event bus appends redacted per-thread activity to disk with bounded queues and rotation. If a write fails, live updates may continue while the canonical event history is marked incomplete.</p>
+<h4>Source</h4><ul><li><a href="../../server/harness/bus.ts">Bus logging</a></li><li><a href="../../server/thread-log-rotation.ts">Log rotation</a></li></ul><div class="evidence-list"><b>Evidence</b><ul><li><a href="../../server/harness/bus.ts"><code>server/harness/bus.ts</code></a></li><li><a href="../../server/thread-log-rotation.ts"><code>server/thread-log-rotation.ts</code></a></li><li>test: <a href="../../server/harness/bus.test.ts"><code>server/harness/bus.test.ts</code></a></li></ul></div></div></details></section>
+<footer class="caps">OpenMausBot: a request through the host · generated by bowerbird from <code>openmausbot-system.bower.json</code> · standalone HTML</footer>
+</div>
+<script type="application/json" id="bb-standalone-css">{"dark":"\ntext{font-family:Geist,\"Geist Sans\",ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}\n.bb-title{font-size:36px;font-weight:300;letter-spacing:-.015em}\n.bb-subtitle{font-size:14px;font-weight:400}\n.bb-kicker-top{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-meta{font-size:11px;font-weight:400;letter-spacing:.03em}\n.bb-meter-big{font-size:42px;font-weight:300;letter-spacing:-.02em}\n.bb-meter-unit{font-size:17px;font-weight:300}\n.bb-meter-track{stroke-width:1;fill:none}\n.bb-meter-solid,.bb-meter-part{stroke-width:3;fill:none}\n.bb-meter-part{stroke-dasharray:2 3}\n.bb-rule{stroke-width:1;fill:none}\n.bb-zone{stroke-width:1}\n.bb-zone-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-zone-title{font-size:21px;font-weight:400;letter-spacing:-.005em}\n.bb-zone-sub{font-size:11.5px}\n.bb-node-box{stroke-width:1}\n.bb-node.status-planned .bb-node-box{stroke-dasharray:4 4}\n.bb-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.4px}\n.bb-node-title{font-size:17px;font-weight:500;letter-spacing:-.005em}\n.bb-copy{font-size:13.5px;font-weight:400}\n.bb-hint{font-size:11.5px;font-weight:400;letter-spacing:.02em}\n.bb-status-text{font-size:9.5px;font-weight:600;letter-spacing:1.9px}\n.bb-dot{stroke-width:1.1;fill:none}\n.bb-edge{fill:none;stroke-width:1.25;stroke-linejoin:round;stroke-linecap:round}\n.bb-edge.control{stroke-dasharray:3 4}\n.bb-edge.failure{stroke-dasharray:.1 4.5;stroke-width:1.8}\n.bb-edge.is-planned{opacity:.4}\n.bb-label{font-size:11.5px;font-weight:500;letter-spacing:.02em;paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-legend-text{font-size:12px;font-weight:400}\n.bb-finding-text{font-size:9px;font-weight:600;letter-spacing:1.6px}\n.iso-face{stroke-width:.8;stroke-linejoin:round}\n.bb-node.status-planned .iso-face{fill:none;stroke-dasharray:4 4;stroke-width:1}\n.iso-hatch line{stroke-width:.8;opacity:.45}\n.iso-label-knockout{paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-canvas{fill:#1a1816}\n.bb-title,.bb-zone-title,.bb-node-title,.bb-meter-big,.bb-meter-unit{fill:#ead1b5}\n.bb-subtitle,.bb-copy,.bb-hint,.bb-legend-text,.bb-meta,.bb-kicker,.bb-zone-kicker,.bb-kicker-top,.bb-zone-sub{fill:#b09080}\n.bb-rule,.bb-meter-track{stroke:#35302b}\n.bb-meter-solid{stroke:#ead1b5}\n.bb-meter-part{stroke:#b09080}\n.bb-zone{fill:#1f1c19;stroke:#35302b}\n.bb-node-box{fill:#272421;stroke:#35302b}\n.bb-node.status-planned .bb-node-box{fill:none;stroke:#4c443c}\n.bb-node.status-planned .bb-node-title{fill:#b09080}\n.bb-status-text{fill:#b09080}\n.bb-status.is-implemented .bb-status-text{fill:#b09080}\n.bb-dot{stroke:#b09080}\n.bb-dot-fill{fill:#b09080}\n.bb-status.is-implemented .bb-dot{stroke:#ead1b5}\n.bb-status.is-implemented .bb-dot-fill{fill:#ead1b5}\n.bb-edge.data{stroke:#958574}\n.bb-edge.control{stroke:#6b737e}\n.bb-edge.failure{stroke:#c27a5c}\n.bb-arrow.data{fill:#958574}\n.bb-arrow.control{fill:#6b737e}\n.bb-arrow.failure{fill:#c27a5c}\n.bb-label,.iso-label-knockout{stroke:#1a1816}\n.bb-label.data{fill:#b09080}\n.bb-label.control{fill:#a4a8ae}\n.bb-label.failure{fill:#c27a5c}\n.bb-flow{stroke:#ead1b5;stroke-opacity:.55}\n.bb-finding-text,.bb-finding-inline{fill:#c27a5c}\n.bb-node.has-finding .bb-node-box{stroke:#c27a5c}\n.bb-pseudo-fill{fill:#ead1b5}\n.bb-pseudo-ring{fill:#1a1816;stroke:#ead1b5;stroke-width:1.3}\n.bb-pseudo-choice{fill:#272421}\n.bb-node.is-selected .bb-node-box,.bb-node[tabindex]:focus .bb-node-box{stroke:#ead1b5}\n.cat-sage .bb-mark,.bb-mark.cat-sage{fill:#7fbd9e}\n.cat-sage .bb-kicker,.cat-sage .bb-zone-kicker{fill:#89b498}\n.cat-sage .bb-node-box{fill:#353c35;stroke:#475b4e}\n.cat-sage.status-planned .bb-node-box{fill:none;stroke:#476253}\n.bb-zone.cat-sage{fill:#212420;stroke:#344339}\n.cat-sage .iso-roof{fill:#8fb7a3;stroke:#48705c}\n.cat-sage .iso-left{fill:#70a48a;stroke:#48705c}\n.cat-sage .iso-right{fill:#5a8c73;stroke:#48705c}\n.cat-sage.status-planned .iso-face{stroke:#79c39e}\n.cat-teal .bb-mark,.bb-mark.cat-teal{fill:#7aadae}\n.cat-teal .bb-kicker,.cat-teal .bb-zone-kicker{fill:#85a7a5}\n.cat-teal .bb-node-box{fill:#343a38;stroke:#455554}\n.cat-teal.status-planned .bb-node-box{fill:none;stroke:#455b5a}\n.bb-zone.cat-teal{fill:#212221;stroke:#333f3e}\n.cat-teal .iso-roof{fill:#8fb7b7;stroke:#486f70}\n.cat-teal .iso-left{fill:#70a2a4;stroke:#486f70}\n.cat-teal .iso-right{fill:#5a8b8c;stroke:#486f70}\n.cat-teal.status-planned .iso-face{stroke:#3f6f70}\n.cat-rust .bb-mark,.bb-mark.cat-rust{fill:#c28568}\n.cat-rust .bb-kicker,.cat-rust .bb-zone-kicker{fill:#be876d}\n.cat-rust .bb-node-box{fill:#40342c;stroke:#5f473b}\n.cat-rust.status-planned .bb-node-box{fill:none;stroke:#66493b}\n.bb-zone.cat-rust{fill:#26201c;stroke:#46342b}\n.cat-rust .iso-roof{fill:#b79c8f;stroke:#705548}\n.cat-rust .iso-left{fill:#a48170;stroke:#705548}\n.cat-rust .iso-right{fill:#8c6a5a;stroke:#705548}\n.cat-rust.status-planned .iso-face{stroke:#e77843}\n.cat-slate .bb-mark,.bb-mark.cat-slate{fill:#7a92ae}\n.cat-slate .bb-kicker,.cat-slate .bb-zone-kicker{fill:#8592a5}\n.cat-slate .bb-node-box{fill:#343638;stroke:#454c54}\n.cat-slate.status-planned .bb-node-box{fill:none;stroke:#454f5a}\n.bb-zone.cat-slate{fill:#212121;stroke:#33383e}\n.cat-slate .iso-roof{fill:#96a2b0;stroke:#4f5b69}\n.cat-slate .iso-left{fill:#79889a;stroke:#4f5b69}\n.cat-slate .iso-right{fill:#637183;stroke:#4f5b69}\n.cat-slate.status-planned .iso-face{stroke:#617082}\n.cat-olive .bb-mark,.bb-mark.cat-olive{fill:#a5ae7a}\n.cat-olive .bb-kicker,.cat-olive .bb-zone-kicker{fill:#a7a87b}\n.cat-olive .bb-node-box{fill:#3b3a2f;stroke:#545641}\n.cat-olive.status-planned .bb-node-box{fill:none;stroke:#595c43}\n.bb-zone.cat-olive{fill:#24231d;stroke:#3e3f30}\n.cat-olive .iso-roof{fill:#acb096;stroke:#65694f}\n.cat-olive .iso-left{fill:#959a79;stroke:#65694f}\n.cat-olive .iso-right{fill:#7e8363;stroke:#65694f}\n.cat-olive.status-planned .iso-face{stroke:#6e7354}\n.cat-mauve .bb-mark,.bb-mark.cat-mauve{fill:#ae7a9d}\n.cat-mauve .bb-kicker,.cat-mauve .bb-zone-kicker{fill:#ae7e97}\n.cat-mauve .bb-node-box{fill:#3d3235;stroke:#58434e}\n.cat-mauve.status-planned .bb-node-box{fill:none;stroke:#5d4453}\n.bb-zone.cat-mauve{fill:#241f1f;stroke:#403139}\n.cat-mauve .iso-roof{fill:#b196a8;stroke:#694e61}\n.cat-mauve .iso-left{fill:#9b7890;stroke:#694e61}\n.cat-mauve .iso-right{fill:#846279;stroke:#694e61}\n.cat-mauve.status-planned .iso-face{stroke:#76536b}\n.iso-shadow{fill:#000000;fill-opacity:0.32}\n.iso-hatch line{stroke:#1a1816}\n.iso-tag-bg,.iso-label-bg{fill:#1a1816;fill-opacity:.9}\n.bb-label.plain{stroke:none}\n.bb-node:not([class*=cat-]) .iso-face{fill:#272421;stroke:#35302b}","light":"\ntext{font-family:Geist,\"Geist Sans\",ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}\n.bb-title{font-size:36px;font-weight:300;letter-spacing:-.015em}\n.bb-subtitle{font-size:14px;font-weight:400}\n.bb-kicker-top{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-meta{font-size:11px;font-weight:400;letter-spacing:.03em}\n.bb-meter-big{font-size:42px;font-weight:300;letter-spacing:-.02em}\n.bb-meter-unit{font-size:17px;font-weight:300}\n.bb-meter-track{stroke-width:1;fill:none}\n.bb-meter-solid,.bb-meter-part{stroke-width:3;fill:none}\n.bb-meter-part{stroke-dasharray:2 3}\n.bb-rule{stroke-width:1;fill:none}\n.bb-zone{stroke-width:1}\n.bb-zone-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-zone-title{font-size:21px;font-weight:400;letter-spacing:-.005em}\n.bb-zone-sub{font-size:11.5px}\n.bb-node-box{stroke-width:1}\n.bb-node.status-planned .bb-node-box{stroke-dasharray:4 4}\n.bb-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.4px}\n.bb-node-title{font-size:17px;font-weight:500;letter-spacing:-.005em}\n.bb-copy{font-size:13.5px;font-weight:400}\n.bb-hint{font-size:11.5px;font-weight:400;letter-spacing:.02em}\n.bb-status-text{font-size:9.5px;font-weight:600;letter-spacing:1.9px}\n.bb-dot{stroke-width:1.1;fill:none}\n.bb-edge{fill:none;stroke-width:1.25;stroke-linejoin:round;stroke-linecap:round}\n.bb-edge.control{stroke-dasharray:3 4}\n.bb-edge.failure{stroke-dasharray:.1 4.5;stroke-width:1.8}\n.bb-edge.is-planned{opacity:.4}\n.bb-label{font-size:11.5px;font-weight:500;letter-spacing:.02em;paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-legend-text{font-size:12px;font-weight:400}\n.bb-finding-text{font-size:9px;font-weight:600;letter-spacing:1.6px}\n.iso-face{stroke-width:.8;stroke-linejoin:round}\n.bb-node.status-planned .iso-face{fill:none;stroke-dasharray:4 4;stroke-width:1}\n.iso-hatch line{stroke-width:.8;opacity:.45}\n.iso-label-knockout{paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-canvas{fill:#fbf9f6}\n.bb-title,.bb-zone-title,.bb-node-title,.bb-meter-big,.bb-meter-unit{fill:#2f2a27}\n.bb-subtitle,.bb-copy,.bb-hint,.bb-legend-text,.bb-meta,.bb-kicker,.bb-zone-kicker,.bb-kicker-top,.bb-zone-sub{fill:#716961}\n.bb-rule,.bb-meter-track{stroke:#dcdad7}\n.bb-meter-solid{stroke:#2f2a27}\n.bb-meter-part{stroke:#716961}\n.bb-zone{fill:#f5f3f0;stroke:#dcdad7}\n.bb-node-box{fill:#fffdfa;stroke:#dcdad7}\n.bb-node.status-planned .bb-node-box{fill:none;stroke:#c2bfbc}\n.bb-node.status-planned .bb-node-title{fill:#716961}\n.bb-status-text{fill:#716961}\n.bb-status.is-implemented .bb-status-text{fill:#716961}\n.bb-dot{stroke:#716961}\n.bb-dot-fill{fill:#716961}\n.bb-status.is-implemented .bb-dot{stroke:#2f2a27}\n.bb-status.is-implemented .bb-dot-fill{fill:#2f2a27}\n.bb-edge.data{stroke:#888079}\n.bb-edge.control{stroke:#747c86}\n.bb-edge.failure{stroke:#9b4a36}\n.bb-arrow.data{fill:#888079}\n.bb-arrow.control{fill:#747c86}\n.bb-arrow.failure{fill:#9b4a36}\n.bb-label,.iso-label-knockout{stroke:#fbf9f6}\n.bb-label.data{fill:#716961}\n.bb-label.control{fill:#4c535c}\n.bb-label.failure{fill:#9b4a36}\n.bb-flow{stroke:#2f2a27;stroke-opacity:.55}\n.bb-finding-text,.bb-finding-inline{fill:#9b4a36}\n.bb-node.has-finding .bb-node-box{stroke:#9b4a36}\n.bb-pseudo-fill{fill:#2f2a27}\n.bb-pseudo-ring{fill:#fbf9f6;stroke:#2f2a27;stroke-width:1.3}\n.bb-pseudo-choice{fill:#fffdfa}\n.bb-node.is-selected .bb-node-box,.bb-node[tabindex]:focus .bb-node-box{stroke:#2f2a27}\n.cat-sage .bb-mark,.bb-mark.cat-sage{fill:#427f61}\n.cat-sage .bb-kicker,.cat-sage .bb-zone-kicker{fill:#477d61}\n.cat-sage .bb-node-box{fill:#eaefe9;stroke:#b7cdc0}\n.cat-sage.status-planned .bb-node-box{fill:none;stroke:#9fbcac}\n.bb-zone.cat-sage{fill:#f0f2ed;stroke:#c0d2c6}\n.cat-sage .iso-roof{fill:#afd5c2;stroke:#54a17b}\n.cat-sage .iso-left{fill:#8dc3a9;stroke:#54a17b}\n.cat-sage .iso-right{fill:#6fb492;stroke:#54a17b}\n.cat-sage.status-planned .iso-face{stroke:#3d8461}\n.cat-teal .bb-mark,.bb-mark.cat-teal{fill:#3b7273}\n.cat-teal .bb-kicker,.cat-teal .bb-zone-kicker{fill:#407171}\n.cat-teal .bb-node-box{fill:#e9eeeb;stroke:#b5c8c7}\n.cat-teal.status-planned .bb-node-box{fill:none;stroke:#9bb6b5}\n.bb-zone.cat-teal{fill:#eff1ee;stroke:#bececc}\n.cat-teal .iso-roof{fill:#aed5d6;stroke:#53a1a2}\n.cat-teal .iso-left{fill:#8cc3c4;stroke:#53a1a2}\n.cat-teal .iso-right{fill:#6eb4b5;stroke:#53a1a2}\n.cat-teal.status-planned .iso-face{stroke:#2f6869}\n.cat-rust .bb-mark,.bb-mark.cat-rust{fill:#995d3f}\n.cat-rust .bb-kicker,.cat-rust .bb-zone-kicker{fill:#955e42}\n.cat-rust .bb-node-box{fill:#f4ebe5;stroke:#d8c0b3}\n.cat-rust.status-planned .bb-node-box{fill:none;stroke:#caab9b}\n.bb-zone.cat-rust{fill:#f5f0eb;stroke:#dcc7bb}\n.cat-rust .iso-roof{fill:#d6bbae;stroke:#a36d52}\n.cat-rust .iso-left{fill:#c59f8c;stroke:#a36d52}\n.cat-rust .iso-right{fill:#b6866d;stroke:#a36d52}\n.cat-rust.status-planned .iso-face{stroke:#b9531f}\n.cat-slate .bb-mark,.bb-mark.cat-slate{fill:#4a5c73}\n.cat-slate .bb-kicker,.cat-slate .bb-zone-kicker{fill:#4e5d71}\n.cat-slate .bb-node-box{fill:#ebebeb;stroke:#bac0c7}\n.cat-slate.status-planned .bb-node-box{fill:none;stroke:#a3abb5}\n.bb-zone.cat-slate{fill:#f0f0ee;stroke:#c2c7cc}\n.cat-slate .iso-roof{fill:#b5c1cf;stroke:#617894}\n.cat-slate .iso-left{fill:#96a7bb;stroke:#617894}\n.cat-slate .iso-right{fill:#7a8fa8;stroke:#617894}\n.cat-slate.status-planned .iso-face{stroke:#4f5d6e}\n.cat-olive .bb-mark,.bb-mark.cat-olive{fill:#696e40}\n.cat-olive .bb-kicker,.cat-olive .bb-zone-kicker{fill:#6a6e43}\n.cat-olive .bb-node-box{fill:#efede6;stroke:#c6c7b3}\n.cat-olive.status-planned .bb-node-box{fill:none;stroke:#b2b49b}\n.bb-zone.cat-olive{fill:#f2f1eb;stroke:#cccdbc}\n.cat-olive .iso-roof{fill:#cfd2b2;stroke:#949b5a}\n.cat-olive .iso-left{fill:#babf91;stroke:#949b5a}\n.cat-olive .iso-right{fill:#a8ae74;stroke:#949b5a}\n.cat-olive.status-planned .iso-face{stroke:#5e6334}\n.cat-mauve .bb-mark,.bb-mark.cat-mauve{fill:#7b4e6d}\n.cat-mauve .bb-kicker,.cat-mauve .bb-zone-kicker{fill:#7a516c}\n.cat-mauve .bb-node-box{fill:#f0eaea;stroke:#cdbbc4}\n.cat-mauve.status-planned .bb-node-box{fill:none;stroke:#bba4b2}\n.bb-zone.cat-mauve{fill:#f3efee;stroke:#d2c2ca}\n.cat-mauve .iso-roof{fill:#cfb5c7;stroke:#946184}\n.cat-mauve .iso-left{fill:#bb96af;stroke:#946184}\n.cat-mauve .iso-right{fill:#a87a9a;stroke:#946184}\n.cat-mauve.status-planned .iso-face{stroke:#76536b}\n.iso-shadow{fill:#3b2f26;fill-opacity:0.08}\n.iso-hatch line{stroke:#fbf9f6}\n.iso-tag-bg,.iso-label-bg{fill:#fbf9f6;fill-opacity:.9}\n.bb-label.plain{stroke:none}\n.bb-node:not([class*=cat-]) .iso-face{fill:#fffdfa;stroke:#dcdad7}","lightFilled":"\ntext{font-family:Geist,\"Geist Sans\",ui-sans-serif,system-ui,-apple-system,\"Segoe UI\",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}\n.bb-title{font-size:36px;font-weight:300;letter-spacing:-.015em}\n.bb-subtitle{font-size:14px;font-weight:400}\n.bb-kicker-top{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-meta{font-size:11px;font-weight:400;letter-spacing:.03em}\n.bb-meter-big{font-size:42px;font-weight:300;letter-spacing:-.02em}\n.bb-meter-unit{font-size:17px;font-weight:300}\n.bb-meter-track{stroke-width:1;fill:none}\n.bb-meter-solid,.bb-meter-part{stroke-width:3;fill:none}\n.bb-meter-part{stroke-dasharray:2 3}\n.bb-rule{stroke-width:1;fill:none}\n.bb-zone{stroke-width:1}\n.bb-zone-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.6px}\n.bb-zone-title{font-size:21px;font-weight:400;letter-spacing:-.005em}\n.bb-zone-sub{font-size:11.5px}\n.bb-node-box{stroke-width:1}\n.bb-node.status-planned .bb-node-box{stroke-dasharray:4 4}\n.bb-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.4px}\n.bb-node-title{font-size:17px;font-weight:500;letter-spacing:-.005em}\n.bb-copy{font-size:13.5px;font-weight:400}\n.bb-hint{font-size:11.5px;font-weight:400;letter-spacing:.02em}\n.bb-status-text{font-size:9.5px;font-weight:600;letter-spacing:1.9px}\n.bb-dot{stroke-width:1.1;fill:none}\n.bb-edge{fill:none;stroke-width:1.25;stroke-linejoin:round;stroke-linecap:round}\n.bb-edge.control{stroke-dasharray:3 4}\n.bb-edge.failure{stroke-dasharray:.1 4.5;stroke-width:1.8}\n.bb-edge.is-planned{opacity:.4}\n.bb-label{font-size:11.5px;font-weight:500;letter-spacing:.02em;paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-legend-text{font-size:12px;font-weight:400}\n.bb-finding-text{font-size:9px;font-weight:600;letter-spacing:1.6px}\n.iso-face{stroke-width:.8;stroke-linejoin:round}\n.bb-node.status-planned .iso-face{fill:none;stroke-dasharray:4 4;stroke-width:1}\n.iso-hatch line{stroke-width:.8;opacity:.45}\n.iso-label-knockout{paint-order:stroke;stroke-width:6px;stroke-linejoin:round}\n.bb-canvas{fill:#fbf9f6}\n.bb-title,.bb-zone-title,.bb-node-title,.bb-meter-big,.bb-meter-unit{fill:#2f2a27}\n.bb-subtitle,.bb-copy,.bb-hint,.bb-legend-text,.bb-meta,.bb-kicker,.bb-zone-kicker,.bb-kicker-top,.bb-zone-sub{fill:#716961}\n.bb-rule,.bb-meter-track{stroke:#dcdad7}\n.bb-meter-solid{stroke:#2f2a27}\n.bb-meter-part{stroke:#716961}\n.bb-zone{fill:#f5f3f0;stroke:#dcdad7}\n.bb-node-box{fill:#fffdfa;stroke:#dcdad7}\n.bb-node.status-planned .bb-node-box{fill:none;stroke:#c2bfbc}\n.bb-node.status-planned .bb-node-title{fill:#716961}\n.bb-status-text{fill:#716961}\n.bb-status.is-implemented .bb-status-text{fill:#716961}\n.bb-dot{stroke:#716961}\n.bb-dot-fill{fill:#716961}\n.bb-status.is-implemented .bb-dot{stroke:#2f2a27}\n.bb-status.is-implemented .bb-dot-fill{fill:#2f2a27}\n.bb-edge.data{stroke:#888079}\n.bb-edge.control{stroke:#747c86}\n.bb-edge.failure{stroke:#9b4a36}\n.bb-arrow.data{fill:#888079}\n.bb-arrow.control{fill:#747c86}\n.bb-arrow.failure{fill:#9b4a36}\n.bb-label,.iso-label-knockout{stroke:#fbf9f6}\n.bb-label.data{fill:#716961}\n.bb-label.control{fill:#4c535c}\n.bb-label.failure{fill:#9b4a36}\n.bb-flow{stroke:#2f2a27;stroke-opacity:.55}\n.bb-finding-text,.bb-finding-inline{fill:#9b4a36}\n.bb-node.has-finding .bb-node-box{stroke:#9b4a36}\n.bb-pseudo-fill{fill:#2f2a27}\n.bb-pseudo-ring{fill:#fbf9f6;stroke:#2f2a27;stroke-width:1.3}\n.bb-pseudo-choice{fill:#fffdfa}\n.bb-node.is-selected .bb-node-box,.bb-node[tabindex]:focus .bb-node-box{stroke:#2f2a27}\n.cat-sage .bb-mark,.bb-mark.cat-sage{fill:#427f61}\n.cat-sage .bb-kicker,.cat-sage .bb-zone-kicker{fill:#477d61}\n.cat-sage .bb-node-box{fill:#eaefe9;stroke:#b7cdc0}\n.cat-sage.status-planned .bb-node-box{fill:none;stroke:#9fbcac}\n.bb-zone.cat-sage{fill:#f0f2ed;stroke:#c0d2c6}\n.cat-sage .iso-roof{fill:#afd5c2;stroke:#54a17b}\n.cat-sage .iso-left{fill:#8dc3a9;stroke:#54a17b}\n.cat-sage .iso-right{fill:#6fb492;stroke:#54a17b}\n.cat-sage.status-planned .iso-face{stroke:#3d8461}\n.cat-teal .bb-mark,.bb-mark.cat-teal{fill:#3b7273}\n.cat-teal .bb-kicker,.cat-teal .bb-zone-kicker{fill:#407171}\n.cat-teal .bb-node-box{fill:#e9eeeb;stroke:#b5c8c7}\n.cat-teal.status-planned .bb-node-box{fill:none;stroke:#9bb6b5}\n.bb-zone.cat-teal{fill:#eff1ee;stroke:#bececc}\n.cat-teal .iso-roof{fill:#aed5d6;stroke:#53a1a2}\n.cat-teal .iso-left{fill:#8cc3c4;stroke:#53a1a2}\n.cat-teal .iso-right{fill:#6eb4b5;stroke:#53a1a2}\n.cat-teal.status-planned .iso-face{stroke:#2f6869}\n.cat-rust .bb-mark,.bb-mark.cat-rust{fill:#995d3f}\n.cat-rust .bb-kicker,.cat-rust .bb-zone-kicker{fill:#955e42}\n.cat-rust .bb-node-box{fill:#f4ebe5;stroke:#d8c0b3}\n.cat-rust.status-planned .bb-node-box{fill:none;stroke:#caab9b}\n.bb-zone.cat-rust{fill:#f5f0eb;stroke:#dcc7bb}\n.cat-rust .iso-roof{fill:#d6bbae;stroke:#a36d52}\n.cat-rust .iso-left{fill:#c59f8c;stroke:#a36d52}\n.cat-rust .iso-right{fill:#b6866d;stroke:#a36d52}\n.cat-rust.status-planned .iso-face{stroke:#b9531f}\n.cat-slate .bb-mark,.bb-mark.cat-slate{fill:#4a5c73}\n.cat-slate .bb-kicker,.cat-slate .bb-zone-kicker{fill:#4e5d71}\n.cat-slate .bb-node-box{fill:#ebebeb;stroke:#bac0c7}\n.cat-slate.status-planned .bb-node-box{fill:none;stroke:#a3abb5}\n.bb-zone.cat-slate{fill:#f0f0ee;stroke:#c2c7cc}\n.cat-slate .iso-roof{fill:#b5c1cf;stroke:#617894}\n.cat-slate .iso-left{fill:#96a7bb;stroke:#617894}\n.cat-slate .iso-right{fill:#7a8fa8;stroke:#617894}\n.cat-slate.status-planned .iso-face{stroke:#4f5d6e}\n.cat-olive .bb-mark,.bb-mark.cat-olive{fill:#696e40}\n.cat-olive .bb-kicker,.cat-olive .bb-zone-kicker{fill:#6a6e43}\n.cat-olive .bb-node-box{fill:#efede6;stroke:#c6c7b3}\n.cat-olive.status-planned .bb-node-box{fill:none;stroke:#b2b49b}\n.bb-zone.cat-olive{fill:#f2f1eb;stroke:#cccdbc}\n.cat-olive .iso-roof{fill:#cfd2b2;stroke:#949b5a}\n.cat-olive .iso-left{fill:#babf91;stroke:#949b5a}\n.cat-olive .iso-right{fill:#a8ae74;stroke:#949b5a}\n.cat-olive.status-planned .iso-face{stroke:#5e6334}\n.cat-mauve .bb-mark,.bb-mark.cat-mauve{fill:#7b4e6d}\n.cat-mauve .bb-kicker,.cat-mauve .bb-zone-kicker{fill:#7a516c}\n.cat-mauve .bb-node-box{fill:#f0eaea;stroke:#cdbbc4}\n.cat-mauve.status-planned .bb-node-box{fill:none;stroke:#bba4b2}\n.bb-zone.cat-mauve{fill:#f3efee;stroke:#d2c2ca}\n.cat-mauve .iso-roof{fill:#cfb5c7;stroke:#946184}\n.cat-mauve .iso-left{fill:#bb96af;stroke:#946184}\n.cat-mauve .iso-right{fill:#a87a9a;stroke:#946184}\n.cat-mauve.status-planned .iso-face{stroke:#76536b}\n.iso-shadow{fill:#3b2f26;fill-opacity:0.08}\n.iso-hatch line{stroke:#fbf9f6}\n.iso-tag-bg,.iso-label-bg{fill:#fbf9f6;fill-opacity:.9}\n.bb-label.plain{stroke:none}\n.bb-node:not([class*=cat-]) .iso-face{fill:#fffdfa;stroke:#dcdad7}"}</script>
+<script>(() => {
+  const root = document.documentElement;
+  const svg = document.querySelector("#viewport svg");
+  const themeHooks = [];
+  const drawer = document.getElementById("drawer");
+  const dTitle = document.getElementById("drawer-title");
+  const dBody = document.getElementById("drawer-body");
+  const items = [...svg.querySelectorAll(".map-item")];
+  let active = null;
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+  const key = "bowerbird:" + location.pathname;
+
+  function setTheme(t) { root.dataset.theme = t; store.set(key + ":theme", t); document.getElementById("theme").textContent = t === "dark" ? "Light" : "Dark"; themeHooks.forEach((f) => f()); }
+  function setLightFlatFill(fill) { root.dataset.lightFlatFill = fill; document.getElementById("light-flat-fill")?.setAttribute("aria-pressed", String(fill === "filled")); store.set(key + ":light-flat-fill", fill); themeHooks.forEach((f) => f()); }
+  function setMotion(on) { root.classList.toggle("motion", on); document.getElementById("motion").setAttribute("aria-pressed", String(on)); store.set(key + ":motion", on ? "1" : "0"); }
+  setTheme(store.get(key + ":theme") || root.dataset.theme);
+  if (document.getElementById("light-flat-fill")) setLightFlatFill(store.get(key + ":light-flat-fill") || root.dataset.lightFlatFill);
+  setMotion((store.get(key + ":motion") ?? (root.classList.contains("motion") ? "1" : "0")) === "1" && !matchMedia("(prefers-reduced-motion: reduce)").matches);
+  document.getElementById("theme").onclick = () => setTheme(root.dataset.theme === "dark" ? "light" : "dark");
+  document.getElementById("motion").onclick = () => setMotion(!root.classList.contains("motion"));
+  if (document.getElementById("light-flat-fill")) document.getElementById("light-flat-fill").onclick = () => setLightFlatFill(root.dataset.lightFlatFill === "filled" ? "dots" : "filled");
+
+  const trace = document.getElementById("trace");
+  function applyTrace(v) {
+    for (const el of items) {
+      el.classList.remove("is-dimmed");
+      if (v === "all") continue;
+      const t = (el.dataset.traces || "").split(/\s+/);
+      if (!t.includes(v)) el.classList.add("is-dimmed");
+    }
+  }
+  if (trace) trace.onchange = () => applyTrace(trace.value);
+
+  function close(focus = true) {
+    if (drawer.hidden) return;
+    drawer.hidden = true; dBody.replaceChildren();
+    if (active) { active.classList.remove("is-selected"); active.setAttribute("aria-expanded", "false"); if (focus) active.focus({ preventScroll: true }); }
+    active = null;
+  }
+  function open(node) {
+    if (active === node && !drawer.hidden) return close();
+    const card = document.getElementById("detail-" + node.dataset.id);
+    if (!card) return;
+    if (active) { active.classList.remove("is-selected"); active.setAttribute("aria-expanded", "false"); }
+    active = node; node.classList.add("is-selected"); node.setAttribute("aria-expanded", "true");
+    dTitle.textContent = card.querySelector("summary .t").textContent;
+    document.getElementById("drawer-kicker").textContent = card.dataset.kicker || "Component";
+    dBody.innerHTML = card.querySelector(".detail").innerHTML;
+    const b = node.getBoundingClientRect();
+    drawer.classList.toggle("from-left", b.left + b.width / 2 > innerWidth / 2);
+    drawer.hidden = false;
+    document.getElementById("drawer-close").focus({ preventScroll: true });
+  }
+  for (const node of svg.querySelectorAll(".bb-node[data-id]")) {
+    node.setAttribute("aria-controls", "drawer"); node.setAttribute("aria-expanded", "false");
+    node.addEventListener("click", () => open(node));
+    node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(node); } });
+  }
+  document.getElementById("drawer-close").onclick = () => close();
+  document.addEventListener("click", (e) => {
+    if (!drawer.hidden && !drawer.contains(e.target) && !e.target.closest(".bb-node[data-id]")) close(false);
+  });
+  addEventListener("keydown", (e) => {
+    if (e.target.closest && e.target.closest("input,select,textarea")) return;
+    if (e.key === "Escape") close();
+    if (e.key === "t" || e.key === "T") document.getElementById("theme").click();
+    if (e.key === "m" || e.key === "M") document.getElementById("motion").click();
+  });
+
+  // Client-side export: rebuild a standalone SVG with the active theme's
+  // resolved CSS (no viewer state), then rasterise through a canvas.
+  const styles = JSON.parse(document.getElementById("bb-standalone-css").textContent);
+  function standalone() {
+    const clone = svg.cloneNode(true);
+    clone.querySelectorAll(".is-dimmed,.is-selected").forEach((el) => el.classList.remove("is-dimmed", "is-selected"));
+    clone.querySelectorAll(".bb-flow").forEach((el) => el.remove());
+    clone.querySelector("style").textContent = styles[root.dataset.theme === "light" && root.dataset.lightFlatFill === "filled" ? "lightFilled" : root.dataset.theme];
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    return new XMLSerializer().serializeToString(clone);
+  }
+  const base = document.body.dataset.basename;
+  function save(blob, ext) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = base + "." + root.dataset.theme + "." + ext; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
+  function raster(type, ext) {
+    const img = new Image();
+    const vb = svg.viewBox.baseVal;
+    img.onload = () => {
+      const c = document.createElement("canvas"); c.width = vb.width * 2; c.height = vb.height * 2;
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => b && save(b, ext), type, 0.92);
+    };
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(standalone());
+  }
+  document.getElementById("export").onchange = (e) => {
+    const v = e.target.value; e.target.value = "";
+    if (v === "svg") save(new Blob([standalone()], { type: "image/svg+xml" }), "svg");
+    if (v === "png") raster("image/png", "png");
+    if (v === "webp") raster("image/webp", "webp");
+  };
+
+  // ---- Navigation: zoom, pan, fit, fullscreen, minimap ---------------------
+  // The SVG keeps its natural size inside a transformed viewport, so text stays
+  // crisp at any zoom and node positions map 1:1 to diagram coordinates.
+  const stage = document.getElementById("stage");
+  const vp = document.getElementById("viewport");
+  const level = document.getElementById("zoom-level");
+  const vb = svg.viewBox.baseVal;
+  const W = vb.width, H = vb.height;
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  const MIN = 0.08, MAX = 4;
+  let k = 1, tx = 0, ty = 0, atFit = true;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const box = () => stage.getBoundingClientRect();
+  const fitScale = () => { const r = box(); return Math.min((r.width - 40) / W, (r.height - 40) / H); };
+
+  function apply() {
+    vp.style.transform = "translate(" + tx + "px," + ty + "px) scale(" + k + ")";
+    level.textContent = Math.round(k * 100) + "%";
+    stage.classList.toggle("at-fit", atFit);
+    drawMiniFrame();
+  }
+  function fit() {
+    const r = box();
+    k = clamp(fitScale(), MIN, MAX);
+    tx = (r.width - W * k) / 2; ty = (r.height - H * k) / 2;
+    atFit = true; apply();
+  }
+  function zoomAt(factor, cx, cy) {
+    const nk = clamp(k * factor, MIN, MAX);
+    tx = cx - (cx - tx) * (nk / k); ty = cy - (cy - ty) * (nk / k);
+    k = nk; atFit = false; apply();
+  }
+  const zoomCenter = (f) => { const r = box(); zoomAt(f, r.width / 2, r.height / 2); };
+  function actual() { const r = box(); zoomAt(1 / k, r.width / 2, r.height / 2); }
+  function panBy(dx, dy) { tx += dx; ty += dy; atFit = false; apply(); }
+
+  document.getElementById("zoom-in").onclick = () => zoomCenter(1.25);
+  document.getElementById("zoom-out").onclick = () => zoomCenter(0.8);
+  document.getElementById("zoom-fit").onclick = fit;
+  level.onclick = actual;
+  document.getElementById("fullscreen").onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (stage.requestFullscreen) stage.requestFullscreen();
+  };
+  document.addEventListener("fullscreenchange", () => requestAnimationFrame(fit));
+
+  // Ctrl/Cmd + wheel (and trackpad pinch, which reports ctrlKey) zooms at the
+  // cursor. A plain wheel pans only once zoomed in, so the page still scrolls.
+  stage.addEventListener("wheel", (e) => {
+    const r = box();
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); zoomAt(Math.exp(-e.deltaY * 0.0022), e.clientX - r.left, e.clientY - r.top); }
+    else if (!atFit) { e.preventDefault(); panBy(-e.deltaX, -e.deltaY); }
+  }, { passive: false });
+
+  // Drag to pan anywhere; two pointers pinch-zoom. A drag never opens a node.
+  const pointers = new Map();
+  let moved = 0, pinch = null;
+  stage.addEventListener("pointerdown", (e) => {
+    // Every press starts fresh: a finished drag must never swallow the next
+    // click (that broke the zoom buttons after panning).
+    moved = 0;
+    if (e.target.closest(".nav,.minimap")) return;
+    // A new primary pointer means any earlier gesture is over; stale entries
+    // would otherwise turn the next drag into a phantom pinch.
+    if (e.isPrimary) { pointers.clear(); pinch = null; }
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) };
+    }
+  });
+  stage.addEventListener("pointermove", (e) => {
+    const p = pointers.get(e.pointerId);
+    if (!p) return;
+    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2 && pinch) {
+      const [a, b] = [...pointers.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y), r = box();
+      zoomAt(d / pinch.d, (a.x + b.x) / 2 - r.left, (a.y + b.y) / 2 - r.top);
+      pinch.d = d; moved += 10; return;
+    }
+    moved += Math.abs(dx) + Math.abs(dy);
+    // Capture only once this is really a drag: capturing on pointerdown would
+    // retarget the click away from the node and break the detail drawer.
+    if (moved > 4) {
+      if (!stage.hasPointerCapture(e.pointerId)) stage.setPointerCapture(e.pointerId);
+      stage.classList.add("panning"); panBy(dx, dy);
+    }
+  });
+  const release = (e) => { pointers.delete(e.pointerId); if (pointers.size < 2) pinch = null; if (!pointers.size) stage.classList.remove("panning"); };
+  stage.addEventListener("pointerup", release);
+  stage.addEventListener("pointercancel", release);
+  stage.addEventListener("click", (e) => {
+    if (moved > 4 && !e.target.closest(".nav,.minimap")) { e.stopPropagation(); e.preventDefault(); }
+    moved = 0;
+  }, true);
+
+  // The stage must never scroll: focusing a node would scroll it to "reveal"
+  // the node and shift every coordinate the transform relies on. CSS uses
+  // overflow:clip; this guard covers browsers without it.
+  stage.addEventListener("scroll", () => { stage.scrollLeft = 0; stage.scrollTop = 0; });
+  // Keyboard focus on an off-screen node pans the view to it instead.
+  stage.addEventListener("focusin", (e) => {
+    const node = e.target.closest && e.target.closest(".bb-node");
+    if (!node) return;
+    const r = box(), b = node.getBoundingClientRect(), m = 40;
+    let dx = 0, dy = 0;
+    if (b.left < r.left + m) dx = r.left + m - b.left; else if (b.right > r.right - m) dx = r.right - m - b.right;
+    if (b.top < r.top + m) dy = r.top + m - b.top; else if (b.bottom > r.bottom - m) dy = r.bottom - m - b.bottom;
+    if (dx || dy) panBy(dx, dy);
+  });
+  stage.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".bb-node,.nav,.minimap")) return;
+    const r = box(); zoomAt(e.shiftKey ? 0.6 : 1.6, e.clientX - r.left, e.clientY - r.top);
+  });
+
+  addEventListener("keydown", (e) => {
+    if (e.target.closest && e.target.closest("input,select,textarea")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === "+" || e.key === "=") zoomCenter(1.25);
+    else if (e.key === "-" || e.key === "_") zoomCenter(0.8);
+    else if (e.key === "0" || e.key === "f" || e.key === "F") fit();
+    else if (e.key === "1") actual();
+    else if (document.activeElement === stage && e.key.startsWith("Arrow")) {
+      e.preventDefault();
+      const s = e.shiftKey ? 200 : 60;
+      panBy(e.key === "ArrowLeft" ? s : e.key === "ArrowRight" ? -s : 0, e.key === "ArrowUp" ? s : e.key === "ArrowDown" ? -s : 0);
+    }
+  });
+
+  // Minimap: the standalone render as an image, with the current view framed.
+  const mini = document.getElementById("minimap");
+  const miniImg = document.getElementById("minimap-img");
+  const frame = document.getElementById("minimap-frame");
+  function paintMini() { miniImg.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(standalone()); }
+  function drawMiniFrame() {
+    const r = box(), m = mini.clientWidth / W;
+    frame.style.left = (-tx / k) * m + "px"; frame.style.top = (-ty / k) * m + "px";
+    frame.style.width = (r.width / k) * m + "px"; frame.style.height = (r.height / k) * m + "px";
+  }
+  function jump(e) {
+    const mr = mini.getBoundingClientRect(), m = mini.clientWidth / W, r = box();
+    const px = (e.clientX - mr.left) / m, py = (e.clientY - mr.top) / m;
+    tx = r.width / 2 - px * k; ty = r.height / 2 - py * k; atFit = false; apply();
+  }
+  let miniDrag = false;
+  mini.addEventListener("pointerdown", (e) => { miniDrag = true; mini.setPointerCapture(e.pointerId); jump(e); });
+  mini.addEventListener("pointermove", (e) => { if (miniDrag) jump(e); });
+  mini.addEventListener("pointerup", () => { miniDrag = false; });
+  themeHooks.push(paintMini);
+  paintMini();
+
+  new ResizeObserver(() => { if (atFit) fit(); else drawMiniFrame(); }).observe(stage);
+  fit();
+})();</script>
+</body>
+</html>
