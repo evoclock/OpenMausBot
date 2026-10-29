@@ -1,0 +1,402 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4104 1001" width="4104" height="1001" role="img" aria-labelledby="bb-t bb-d">
+<title id="bb-t">OpenMausBot: a request through the host</title><desc id="bb-d">Follow a chat turn, a scheduled run, or a paired device from the client boundary to durable results.</desc>
+<style>
+text{font-family:Geist,"Geist Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;font-variant-numeric:tabular-nums}
+.bb-title{font-size:36px;font-weight:300;letter-spacing:-.015em}
+.bb-subtitle{font-size:14px;font-weight:400}
+.bb-kicker-top{font-size:10.5px;font-weight:500;letter-spacing:2.6px}
+.bb-meta{font-size:11px;font-weight:400;letter-spacing:.03em}
+.bb-meter-big{font-size:42px;font-weight:300;letter-spacing:-.02em}
+.bb-meter-unit{font-size:17px;font-weight:300}
+.bb-meter-track{stroke-width:1;fill:none}
+.bb-meter-solid,.bb-meter-part{stroke-width:3;fill:none}
+.bb-meter-part{stroke-dasharray:2 3}
+.bb-rule{stroke-width:1;fill:none}
+.bb-zone{stroke-width:1}
+.bb-zone-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.6px}
+.bb-zone-title{font-size:21px;font-weight:400;letter-spacing:-.005em}
+.bb-zone-sub{font-size:11.5px}
+.bb-node-box{stroke-width:1}
+.bb-node.status-planned .bb-node-box{stroke-dasharray:4 4}
+.bb-kicker{font-size:10.5px;font-weight:500;letter-spacing:2.4px}
+.bb-node-title{font-size:17px;font-weight:500;letter-spacing:-.005em}
+.bb-copy{font-size:13.5px;font-weight:400}
+.bb-hint{font-size:11.5px;font-weight:400;letter-spacing:.02em}
+.bb-status-text{font-size:9.5px;font-weight:600;letter-spacing:1.9px}
+.bb-dot{stroke-width:1.1;fill:none}
+.bb-edge{fill:none;stroke-width:1.25;stroke-linejoin:round;stroke-linecap:round}
+.bb-edge.control{stroke-dasharray:3 4}
+.bb-edge.failure{stroke-dasharray:.1 4.5;stroke-width:1.8}
+.bb-edge.is-planned{opacity:.4}
+.bb-label{font-size:11.5px;font-weight:500;letter-spacing:.02em;paint-order:stroke;stroke-width:6px;stroke-linejoin:round}
+.bb-legend-text{font-size:12px;font-weight:400}
+.bb-finding-text{font-size:9px;font-weight:600;letter-spacing:1.6px}
+.iso-face{stroke-width:.8;stroke-linejoin:round}
+.bb-node.status-planned .iso-face{fill:none;stroke-dasharray:4 4;stroke-width:1}
+.iso-hatch line{stroke-width:.8;opacity:.45}
+.iso-label-knockout{paint-order:stroke;stroke-width:6px;stroke-linejoin:round}
+.bb-canvas{fill:#1a1816}
+.bb-title,.bb-zone-title,.bb-node-title,.bb-meter-big,.bb-meter-unit{fill:#ead1b5}
+.bb-subtitle,.bb-copy,.bb-hint,.bb-legend-text,.bb-meta,.bb-kicker,.bb-zone-kicker,.bb-kicker-top,.bb-zone-sub{fill:#b09080}
+.bb-rule,.bb-meter-track{stroke:#35302b}
+.bb-meter-solid{stroke:#ead1b5}
+.bb-meter-part{stroke:#b09080}
+.bb-zone{fill:#1f1c19;stroke:#35302b}
+.bb-node-box{fill:#272421;stroke:#35302b}
+.bb-node.status-planned .bb-node-box{fill:none;stroke:#4c443c}
+.bb-node.status-planned .bb-node-title{fill:#b09080}
+.bb-status-text{fill:#b09080}
+.bb-status.is-implemented .bb-status-text{fill:#b09080}
+.bb-dot{stroke:#b09080}
+.bb-dot-fill{fill:#b09080}
+.bb-status.is-implemented .bb-dot{stroke:#ead1b5}
+.bb-status.is-implemented .bb-dot-fill{fill:#ead1b5}
+.bb-edge.data{stroke:#958574}
+.bb-edge.control{stroke:#6b737e}
+.bb-edge.failure{stroke:#c27a5c}
+.bb-arrow.data{fill:#958574}
+.bb-arrow.control{fill:#6b737e}
+.bb-arrow.failure{fill:#c27a5c}
+.bb-label,.iso-label-knockout{stroke:#1a1816}
+.bb-label.data{fill:#b09080}
+.bb-label.control{fill:#a4a8ae}
+.bb-label.failure{fill:#c27a5c}
+.bb-flow{stroke:#ead1b5;stroke-opacity:.55}
+.bb-finding-text,.bb-finding-inline{fill:#c27a5c}
+.bb-node.has-finding .bb-node-box{stroke:#c27a5c}
+.bb-pseudo-fill{fill:#ead1b5}
+.bb-pseudo-ring{fill:#1a1816;stroke:#ead1b5;stroke-width:1.3}
+.bb-pseudo-choice{fill:#272421}
+.bb-node.is-selected .bb-node-box,.bb-node[tabindex]:focus .bb-node-box{stroke:#ead1b5}
+.cat-sage .bb-mark,.bb-mark.cat-sage{fill:#7fbd9e}
+.cat-sage .bb-kicker,.cat-sage .bb-zone-kicker{fill:#89b498}
+.cat-sage .bb-node-box{fill:#353c35;stroke:#475b4e}
+.cat-sage.status-planned .bb-node-box{fill:none;stroke:#476253}
+.bb-zone.cat-sage{fill:#212420;stroke:#344339}
+.cat-teal .bb-mark,.bb-mark.cat-teal{fill:#7aadae}
+.cat-teal .bb-kicker,.cat-teal .bb-zone-kicker{fill:#85a7a5}
+.cat-teal .bb-node-box{fill:#343a38;stroke:#455554}
+.cat-teal.status-planned .bb-node-box{fill:none;stroke:#455b5a}
+.bb-zone.cat-teal{fill:#212221;stroke:#333f3e}
+.cat-rust .bb-mark,.bb-mark.cat-rust{fill:#c28568}
+.cat-rust .bb-kicker,.cat-rust .bb-zone-kicker{fill:#be876d}
+.cat-rust .bb-node-box{fill:#40342c;stroke:#5f473b}
+.cat-rust.status-planned .bb-node-box{fill:none;stroke:#66493b}
+.bb-zone.cat-rust{fill:#26201c;stroke:#46342b}
+.cat-slate .bb-mark,.bb-mark.cat-slate{fill:#7a92ae}
+.cat-slate .bb-kicker,.cat-slate .bb-zone-kicker{fill:#8592a5}
+.cat-slate .bb-node-box{fill:#343638;stroke:#454c54}
+.cat-slate.status-planned .bb-node-box{fill:none;stroke:#454f5a}
+.bb-zone.cat-slate{fill:#212121;stroke:#33383e}
+.cat-olive .bb-mark,.bb-mark.cat-olive{fill:#a5ae7a}
+.cat-olive .bb-kicker,.cat-olive .bb-zone-kicker{fill:#a7a87b}
+.cat-olive .bb-node-box{fill:#3b3a2f;stroke:#545641}
+.cat-olive.status-planned .bb-node-box{fill:none;stroke:#595c43}
+.bb-zone.cat-olive{fill:#24231d;stroke:#3e3f30}
+.cat-mauve .bb-mark,.bb-mark.cat-mauve{fill:#ae7a9d}
+.cat-mauve .bb-kicker,.cat-mauve .bb-zone-kicker{fill:#ae7e97}
+.cat-mauve .bb-node-box{fill:#3d3235;stroke:#58434e}
+.cat-mauve.status-planned .bb-node-box{fill:none;stroke:#5d4453}
+.bb-zone.cat-mauve{fill:#241f1f;stroke:#403139}
+.bb-flow{fill:none;stroke-width:2.4;stroke-linecap:round;stroke-dasharray:.1 28;animation:bb-flow 2.6s linear infinite}
+@keyframes bb-flow{to{stroke-dashoffset:-28.1}}
+@media (prefers-reduced-motion:reduce){.bb-flow{animation:none;opacity:0}}
+</style>
+<defs><marker id="bb-arrow-data" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow data" d="M 0 1 L 10 5 L 0 9 z"/></marker><marker id="bb-arrow-control" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow control" d="M 0 1 L 10 5 L 0 9 z"/></marker><marker id="bb-arrow-failure" viewBox="0 0 10 10" refX="8.6" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path class="bb-arrow failure" d="M 0 1 L 10 5 L 0 9 z"/></marker></defs>
+<rect class="bb-canvas" x="0" y="0" width="4104" height="1001"/>
+<path class="bb-rule" d="M 40 48 H 62"/>
+<text class="bb-kicker-top" x="74" y="52">PRODUCT ARCHITECTURE / HOST MODE</text>
+<text class="bb-title" x="40" y="100">OpenMausBot: a request through the host</text>
+<text class="bb-subtitle" x="40" y="130">Follow a chat turn, a scheduled run, or a paired device from the client boundary to durable results.</text>
+<g class="bb-meter" aria-label="100% built"><text class="bb-kicker-top" x="4064" y="52" text-anchor="end">COMPLETION</text><text x="4064" y="96" text-anchor="end"><tspan class="bb-meter-big">100</tspan><tspan class="bb-meter-unit" dx="3">%</tspan></text><path class="bb-meter-track" d="M 3844 110 H 4064"/><path class="bb-meter-solid" d="M 3844 110 H 4064"/><text class="bb-meta" x="4064" y="132" text-anchor="end">19 built · 0 partial · 0 planned</text></g>
+<g class="bb-zone-group cat-sage">
+<rect class="bb-zone cat-sage" x="112.9" y="183.5" width="765.8" height="739" rx="6"/>
+<text class="bb-zone-kicker" x="134.9" y="211.5">01 / CLIENTS</text>
+<circle class="bb-mark" cx="139.9" cy="229" r="5"/>
+<text class="bb-zone-title" x="152.9" y="235.5">The person and their device</text>
+</g>
+<g class="bb-zone-group cat-teal">
+<rect class="bb-zone cat-teal" x="1028.6" y="183.5" width="765.8" height="739" rx="6"/>
+<text class="bb-zone-kicker" x="1050.6" y="211.5">02 / TRUST AND ROUTING</text>
+<circle class="bb-mark" cx="1055.6" cy="229" r="5"/>
+<text class="bb-zone-title" x="1068.6" y="235.5">The host&#39;s front door</text>
+</g>
+<g class="bb-zone-group cat-slate">
+<rect class="bb-zone cat-slate" x="1944.2" y="183.5" width="1203.6" height="739" rx="6"/>
+<text class="bb-zone-kicker" x="1966.2" y="211.5">03 / WORK AND TOOLS</text>
+<circle class="bb-mark" cx="1971.2" cy="229" r="5"/>
+<text class="bb-zone-title" x="1984.2" y="235.5">A turn on the host</text>
+</g>
+<g class="bb-zone-group cat-mauve">
+<rect class="bb-zone cat-mauve" x="3297.7" y="183.5" width="765.8" height="739" rx="6"/>
+<text class="bb-zone-kicker" x="3319.7" y="211.5">04 / LOCAL STATE</text>
+<circle class="bb-mark" cx="3324.7" cy="229" r="5"/>
+<text class="bb-zone-title" x="3337.7" y="235.5">What survives a turn</text>
+</g>
+<g class="bb-edges">
+<path class="bb-edge control map-item" d="M 422.9 357 L 568.7 357" marker-end="url(#bb-arrow-control)" data-traces="chat" data-from="desktop" data-to="renderer"/>
+<path class="bb-flow map-item" d="M 422.9 357 L 568.7 357" data-traces="chat"/>
+<path class="bb-edge data map-item" d="M 860.7 357 L 1024.6 357 Q 1030.6 357 1030.6 351 L 1030.6 336.8 Q 1030.6 330.8 1036.6 330.8 L 1046.6 330.8" marker-end="url(#bb-arrow-data)" data-traces="chat paired" data-from="renderer" data-to="authentication"/>
+<path class="bb-flow map-item" d="M 860.7 357 L 1024.6 357 Q 1030.6 357 1030.6 351 L 1030.6 336.8 Q 1030.6 330.8 1036.6 330.8 L 1046.6 330.8" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 422.9 817 L 1024.6 817 Q 1030.6 817 1030.6 811 L 1030.6 389.3 Q 1030.6 383.3 1036.6 383.3 L 1046.6 383.3" marker-end="url(#bb-arrow-control)" data-traces="paired" data-from="paired" data-to="authentication"/>
+<path class="bb-flow map-item" d="M 422.9 817 L 1024.6 817 Q 1030.6 817 1030.6 811 L 1030.6 389.3 Q 1030.6 383.3 1036.6 383.3 L 1046.6 383.3" data-traces="paired"/>
+<path class="bb-edge control map-item" d="M 1338.6 357 L 1484.4 357" marker-end="url(#bb-arrow-control)" data-traces="chat paired" data-from="authentication" data-to="http"/>
+<path class="bb-flow map-item" d="M 1338.6 357 L 1484.4 357" data-traces="chat paired"/>
+<path class="bb-edge data map-item" d="M 1630.4 444.5 L 1630.4 499.5" marker-end="url(#bb-arrow-data)" data-traces="chat paired" data-from="http" data-to="messages"/>
+<path class="bb-flow map-item" d="M 1630.4 444.5 L 1630.4 499.5" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 1776.4 587 L 1940.2 587 Q 1946.2 587 1946.2 581 L 1946.2 336.8 Q 1946.2 330.8 1952.2 330.8 L 1962.2 330.8" marker-end="url(#bb-arrow-control)" data-traces="chat paired" data-from="messages" data-to="turn"/>
+<path class="bb-flow map-item" d="M 1776.4 587 L 1940.2 587 Q 1946.2 587 1946.2 581 L 1946.2 336.8 Q 1946.2 330.8 1952.2 330.8 L 1962.2 330.8" data-traces="chat paired"/>
+<path class="bb-edge control map-item" d="M 1338.6 790.8 L 1863.3 790.8 Q 1869.3 790.8 1869.3 784.8 L 1869.3 389.3 Q 1869.3 383.3 1875.3 383.3 L 1962.2 383.3" marker-end="url(#bb-arrow-control)" data-traces="routine" data-from="scheduler" data-to="turn"/>
+<path class="bb-flow map-item" d="M 1338.6 790.8 L 1863.3 790.8 Q 1869.3 790.8 1869.3 784.8 L 1869.3 389.3 Q 1869.3 383.3 1875.3 383.3 L 1962.2 383.3" data-traces="routine"/>
+<path class="bb-edge control map-item" d="M 2254.2 330.8 L 2378 330.8 Q 2384 330.8 2384 336.8 L 2384 351 Q 2384 357 2390 357 L 2400 357" marker-end="url(#bb-arrow-control)" data-traces="chat routine" data-from="turn" data-to="providers"/>
+<path class="bb-flow map-item" d="M 2254.2 330.8 L 2378 330.8 Q 2384 330.8 2384 336.8 L 2384 351 Q 2384 357 2390 357 L 2400 357" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2692 357 L 2815.8 357 Q 2821.8 357 2821.8 351 L 2821.8 328 Q 2821.8 322 2827.8 322 L 2837.8 322" marker-end="url(#bb-arrow-control)" data-traces="chat routine" data-from="providers" data-to="driver"/>
+<path class="bb-flow map-item" d="M 2692 357 L 2815.8 357 Q 2821.8 357 2821.8 351 L 2821.8 328 Q 2821.8 322 2827.8 322 L 2837.8 322" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2837.8 357 L 2827.8 357 Q 2821.8 357 2821.8 363 L 2821.8 554.8 Q 2821.8 560.8 2815.8 560.8 L 2692 560.8" marker-end="url(#bb-arrow-control)" data-traces="chat routine" data-from="driver" data-to="tool"/>
+<path class="bb-flow map-item" d="M 2837.8 357 L 2827.8 357 Q 2821.8 357 2821.8 363 L 2821.8 554.8 Q 2821.8 560.8 2815.8 560.8 L 2692 560.8" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2692 613.3 L 2815.8 613.3 Q 2821.8 613.3 2821.8 607.3 L 2821.8 593 Q 2821.8 587 2827.8 587 L 2837.8 587" marker-end="url(#bb-arrow-control)" data-traces="chat routine" data-from="tool" data-to="approval"/>
+<path class="bb-flow map-item" d="M 2692 613.3 L 2815.8 613.3 Q 2821.8 613.3 2821.8 607.3 L 2821.8 593 Q 2821.8 587 2827.8 587 L 2837.8 587" data-traces="chat routine"/>
+<path class="bb-edge control map-item" d="M 2108.2 444.5 L 2108.2 479.5 Q 2108.2 485.5 2102.2 485.5 L 1954.2 485.5 Q 1948.2 485.5 1948.2 491.5 L 1948.2 707.5 Q 1948.2 713.5 1954.2 713.5 L 2102.2 713.5 Q 2108.2 713.5 2108.2 719.5 L 2108.2 729.5" marker-end="url(#bb-arrow-control)" data-traces="chat routine" data-from="turn" data-to="runtime"/>
+<path class="bb-flow map-item" d="M 2108.2 444.5 L 2108.2 479.5 Q 2108.2 485.5 2102.2 485.5 L 1954.2 485.5 Q 1948.2 485.5 1948.2 491.5 L 1948.2 707.5 Q 1948.2 713.5 1954.2 713.5 L 2102.2 713.5 Q 2108.2 713.5 2108.2 719.5 L 2108.2 729.5" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 2837.8 392 L 2712 392 Q 2706 392 2706 398 L 2706 479.5 Q 2706 485.5 2700 485.5 L 2276.2 485.5 Q 2270.2 485.5 2270.2 491.5 L 2270.2 554.8 Q 2270.2 560.8 2264.2 560.8 L 2254.2 560.8" marker-end="url(#bb-arrow-data)" data-traces="chat routine" data-from="driver" data-to="bus"/>
+<path class="bb-flow map-item" d="M 2837.8 392 L 2712 392 Q 2706 392 2706 398 L 2706 479.5 Q 2706 485.5 2700 485.5 L 2276.2 485.5 Q 2270.2 485.5 2270.2 491.5 L 2270.2 554.8 Q 2270.2 560.8 2264.2 560.8 L 2254.2 560.8" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 2254.2 383.3 L 2380 383.3 Q 2386 383.3 2386 389.3 L 2386 452.5 Q 2386 458.5 2392 458.5 L 3293.7 458.5 Q 3299.7 458.5 3299.7 452.5 L 3299.7 363 Q 3299.7 357 3305.7 357 L 3315.7 357" marker-end="url(#bb-arrow-data)" data-traces="chat routine" data-from="turn" data-to="store"/>
+<path class="bb-flow map-item" d="M 2254.2 383.3 L 2380 383.3 Q 2386 383.3 2386 389.3 L 2386 452.5 Q 2386 458.5 2392 458.5 L 3293.7 458.5 Q 3299.7 458.5 3299.7 452.5 L 3299.7 363 Q 3299.7 357 3305.7 357 L 3315.7 357" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 3607.7 357 L 3753.5 357" marker-end="url(#bb-arrow-data)" data-traces="chat routine" data-from="store" data-to="transcript"/>
+<path class="bb-flow map-item" d="M 3607.7 357 L 3753.5 357" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 2254.2 817 L 3315.7 817" marker-end="url(#bb-arrow-data)" data-traces="chat routine" data-from="runtime" data-to="assignments"/>
+<path class="bb-flow map-item" d="M 2254.2 817 L 3315.7 817" data-traces="chat routine"/>
+<path class="bb-edge data map-item" d="M 1338.6 843.3 L 1942.2 843.3 Q 1948.2 843.3 1948.2 849.3 L 1948.2 912.5 Q 1948.2 918.5 1954.2 918.5 L 3731.5 918.5 Q 3737.5 918.5 3737.5 912.5 L 3737.5 823 Q 3737.5 817 3743.5 817 L 3753.5 817" marker-end="url(#bb-arrow-data)" data-traces="routine" data-from="scheduler" data-to="schedule"/>
+<path class="bb-flow map-item" d="M 1338.6 843.3 L 1942.2 843.3 Q 1948.2 843.3 1948.2 849.3 L 1948.2 912.5 Q 1948.2 918.5 1954.2 918.5 L 3731.5 918.5 Q 3737.5 918.5 3737.5 912.5 L 3737.5 823 Q 3737.5 817 3743.5 817 L 3753.5 817" data-traces="routine"/>
+<path class="bb-edge data map-item" d="M 2254.2 613.3 L 2380 613.3 Q 2386 613.3 2386 619.3 L 2386 682.5 Q 2386 688.5 2392 688.5 L 3293.7 688.5 Q 3299.7 688.5 3299.7 682.5 L 3299.7 593 Q 3299.7 587 3305.7 587 L 3315.7 587" marker-end="url(#bb-arrow-data)" data-traces="chat routine" data-from="bus" data-to="eventlog"/>
+<path class="bb-flow map-item" d="M 2254.2 613.3 L 2380 613.3 Q 2386 613.3 2386 619.3 L 2386 682.5 Q 2386 688.5 2392 688.5 L 3293.7 688.5 Q 3299.7 688.5 3299.7 682.5 L 3299.7 593 Q 3299.7 587 3305.7 587 L 3315.7 587" data-traces="chat routine"/>
+<g class="bb-edge-label map-item" data-traces="chat"><text class="bb-label control" x="495.8" y="360.6" text-anchor="middle">loads UI</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><text class="bb-label data" x="945.6" y="360.6" text-anchor="middle">chat request</text></g>
+<g class="bb-edge-label map-item" data-traces="paired"><text class="bb-label control" x="726.7" y="820.6" text-anchor="middle">allowlisted</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><text class="bb-label control" x="1411.5" y="360.6" text-anchor="middle">scoped request</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><text class="bb-label data" x="1630.4" y="475.6" text-anchor="middle">send</text></g>
+<g class="bb-edge-label map-item" data-traces="chat paired"><text class="bb-label control" x="1946.2" y="462.5" text-anchor="middle">admitted</text></g>
+<g class="bb-edge-label map-item" data-traces="routine"><text class="bb-label control" x="1603.9" y="794.4" text-anchor="middle">run starts</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label control" x="2319.1" y="334.4" text-anchor="middle">selects</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label control" x="2756.9" y="360.6" text-anchor="middle">launches</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label control" x="2756.9" y="564.4" text-anchor="middle">tool call</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label control" x="2756.9" y="616.9" text-anchor="middle">needs grant</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label control" x="2028.2" y="489.1" text-anchor="middle">hands off</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label data" x="2488.1" y="489.1" text-anchor="middle">events</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label data" x="3007.3" y="462.1" text-anchor="middle">turn state</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label data" x="3680.6" y="360.6" text-anchor="middle">messages</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label data" x="2784.9" y="820.6" text-anchor="middle">transitions</text></g>
+<g class="bb-edge-label map-item" data-traces="routine"><text class="bb-label data" x="2842.8" y="922.1" text-anchor="middle">run receipts</text></g>
+<g class="bb-edge-label map-item" data-traces="chat routine"><text class="bb-label data" x="2842.8" y="692.1" text-anchor="middle">redacted</text></g>
+</g>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/electron/main.mjs" target="_top">
+<g class="bb-node map-item cat-sage status-implemented" data-id="desktop" data-traces="chat">
+<rect class="bb-node-box" x="130.9" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="156.9" cy="295.5" r="4"/>
+<text class="bb-kicker" x="167.9" y="299.5">PROCESS</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="352" cy="424.1" r="3.4"/><text class="bb-status-text" x="400.9" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="152.9" y="327.5">Desktop shell</text>
+<text class="bb-copy" x="152.9" y="352.5">starts the local host</text>
+<text class="bb-copy" x="152.9" y="372.5">or a paired relay</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/src/main.tsx" target="_top">
+<g class="bb-node map-item cat-sage status-implemented" data-id="renderer" data-traces="chat paired">
+<rect class="bb-node-box" x="568.7" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="594.7" cy="295.5" r="4"/>
+<text class="bb-kicker" x="605.7" y="299.5">UI</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="789.8" cy="424.1" r="3.4"/><text class="bb-status-text" x="838.7" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="590.7" y="327.5">Conversation UI</text>
+<text class="bb-copy" x="590.7" y="352.5">chat, cards, routines</text>
+<text class="bb-copy" x="590.7" y="372.5">same-origin API</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/companion/src/index.ts" target="_top">
+<g class="bb-node map-item cat-sage status-implemented" data-id="paired" data-traces="paired">
+<rect class="bb-node-box" x="130.9" y="729.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="156.9" cy="755.5" r="4"/>
+<text class="bb-kicker" x="167.9" y="759.5">GATEWAY</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="352" cy="884.1" r="3.4"/><text class="bb-status-text" x="400.9" y="887.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="152.9" y="787.5">Paired device</text>
+<text class="bb-copy" x="152.9" y="812.5">limited remote routes</text>
+<text class="bb-copy" x="152.9" y="832.5">host owns the work</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/request-auth.ts" target="_top">
+<g class="bb-node map-item cat-rust status-implemented" data-id="authentication" data-traces="chat paired">
+<rect class="bb-node-box" x="1046.6" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1072.6" cy="295.5" r="4"/>
+<text class="bb-kicker" x="1083.6" y="299.5">GATE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="1267.6" cy="424.1" r="3.4"/><text class="bb-status-text" x="1316.6" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1068.6" y="327.5">Request trust</text>
+<text class="bb-copy" x="1068.6" y="352.5">session or loopback</text>
+<text class="bb-copy" x="1068.6" y="372.5">scope before route</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/index.ts" target="_top">
+<g class="bb-node map-item cat-teal status-implemented" data-id="http" data-traces="chat paired">
+<rect class="bb-node-box" x="1484.4" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1510.4" cy="295.5" r="4"/>
+<text class="bb-kicker" x="1521.4" y="299.5">SERVICE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="1705.5" cy="424.1" r="3.4"/><text class="bb-status-text" x="1754.4" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1506.4" y="327.5">Harness API</text>
+<text class="bb-copy" x="1506.4" y="352.5">HTTP and live events</text>
+<text class="bb-copy" x="1506.4" y="372.5">route composition</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/routes/bot-messages.ts" target="_top">
+<g class="bb-node map-item cat-teal status-implemented" data-id="messages" data-traces="chat paired">
+<rect class="bb-node-box" x="1484.4" y="499.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1510.4" cy="525.5" r="4"/>
+<text class="bb-kicker" x="1521.4" y="529.5">ROUTE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="1705.5" cy="654.1" r="3.4"/><text class="bb-status-text" x="1754.4" y="657.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1506.4" y="557.5">Message intake</text>
+<text class="bb-copy" x="1506.4" y="582.5">pin thread and sender</text>
+<text class="bb-copy" x="1506.4" y="602.5">accept or refuse</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/routines.ts" target="_top">
+<g class="bb-node map-item cat-olive status-implemented" data-id="scheduler" data-traces="routine">
+<rect class="bb-node-box" x="1046.6" y="729.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1072.6" cy="755.5" r="4"/>
+<text class="bb-kicker" x="1083.6" y="759.5">SCHEDULER</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="1267.6" cy="884.1" r="3.4"/><text class="bb-status-text" x="1316.6" y="887.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1068.6" y="787.5">Routine scheduler</text>
+<text class="bb-copy" x="1068.6" y="812.5">scheduled or manual</text>
+<text class="bb-copy" x="1068.6" y="832.5">saved run receipts</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/index.ts" target="_top">
+<g class="bb-node map-item cat-slate status-implemented" data-id="turn" data-traces="chat routine paired">
+<rect class="bb-node-box" x="1962.2" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1988.2" cy="295.5" r="4"/>
+<text class="bb-kicker" x="1999.2" y="299.5">ORCHESTRATOR</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="2183.3" cy="424.1" r="3.4"/><text class="bb-status-text" x="2232.2" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1984.2" y="327.5">Turn host</text>
+<text class="bb-copy" x="1984.2" y="352.5">selects bot and thread</text>
+<text class="bb-copy" x="1984.2" y="372.5">starts provider turn</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/harness/registry.ts" target="_top">
+<g class="bb-node map-item cat-slate status-implemented" data-id="providers" data-traces="chat routine">
+<rect class="bb-node-box" x="2400" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="2426" cy="295.5" r="4"/>
+<text class="bb-kicker" x="2437" y="299.5">REGISTRY</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="2621.1" cy="424.1" r="3.4"/><text class="bb-status-text" x="2670" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="2422" y="327.5">Provider registry</text>
+<text class="bb-copy" x="2422" y="352.5">configured instances</text>
+<text class="bb-copy" x="2422" y="372.5">access and capabilities</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/drivers/claude.ts" target="_top">
+<g class="bb-node map-item cat-slate status-implemented" data-id="driver" data-traces="chat routine">
+<rect class="bb-node-box" x="2837.8" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="2863.8" cy="295.5" r="4"/>
+<text class="bb-kicker" x="2874.8" y="299.5">ADAPTER</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3058.9" cy="424.1" r="3.4"/><text class="bb-status-text" x="3107.8" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="2859.8" y="327.5">Engine drivers</text>
+<text class="bb-copy" x="2859.8" y="352.5">native or API turn</text>
+<text class="bb-copy" x="2859.8" y="372.5">stream events back</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/drivers/agents-proxy.ts" target="_top">
+<g class="bb-node map-item cat-rust status-implemented" data-id="tool" data-traces="chat routine">
+<rect class="bb-node-box" x="2400" y="499.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="2426" cy="525.5" r="4"/>
+<text class="bb-kicker" x="2437" y="529.5">GATEWAY</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="2621.1" cy="654.1" r="3.4"/><text class="bb-status-text" x="2670" y="657.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="2422" y="557.5">Tool boundary</text>
+<text class="bb-copy" x="2422" y="582.5">scoped agents tools</text>
+<text class="bb-copy" x="2422" y="602.5">bounded MCP results</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/permission-proxy.ts" target="_top">
+<g class="bb-node map-item cat-rust status-implemented" data-id="approval" data-traces="chat routine">
+<rect class="bb-node-box" x="2837.8" y="499.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="2863.8" cy="525.5" r="4"/>
+<text class="bb-kicker" x="2874.8" y="529.5">GATE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3058.9" cy="654.1" r="3.4"/><text class="bb-status-text" x="3107.8" y="657.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="2859.8" y="557.5">Permission broker</text>
+<text class="bb-copy" x="2859.8" y="582.5">answer native requests</text>
+<text class="bb-copy" x="2859.8" y="602.5">or refuse safely</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/runtime/runtime.ts" target="_top">
+<g class="bb-node map-item cat-slate status-implemented" data-id="runtime" data-traces="chat routine">
+<rect class="bb-node-box" x="1962.2" y="729.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1988.2" cy="755.5" r="4"/>
+<text class="bb-kicker" x="1999.2" y="759.5">ORCHESTRATOR</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="2183.3" cy="884.1" r="3.4"/><text class="bb-status-text" x="2232.2" y="887.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1984.2" y="787.5">Assignment runtime</text>
+<text class="bb-copy" x="1984.2" y="812.5">teammate handoffs</text>
+<text class="bb-copy" x="1984.2" y="832.5">one wake lane</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/harness/bus.ts" target="_top">
+<g class="bb-node map-item cat-slate status-implemented" data-id="bus" data-traces="chat routine">
+<rect class="bb-node-box" x="1962.2" y="499.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="1988.2" cy="525.5" r="4"/>
+<text class="bb-kicker" x="1999.2" y="529.5">EVENT-BUS</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="2183.3" cy="654.1" r="3.4"/><text class="bb-status-text" x="2232.2" y="657.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="1984.2" y="557.5">Live event bus</text>
+<text class="bb-copy" x="1984.2" y="582.5">fan in driver events</text>
+<text class="bb-copy" x="1984.2" y="602.5">stream and log</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/store.ts" target="_top">
+<g class="bb-node map-item cat-mauve status-implemented" data-id="store" data-traces="chat routine paired">
+<rect class="bb-node-box" x="3315.7" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="3341.7" cy="295.5" r="4"/>
+<text class="bb-kicker" x="3352.7" y="299.5">STORAGE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3536.8" cy="424.1" r="3.4"/><text class="bb-status-text" x="3585.7" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="3337.7" y="327.5">Bot and thread store</text>
+<text class="bb-copy" x="3337.7" y="352.5">profile and task state</text>
+<text class="bb-copy" x="3337.7" y="372.5">wire-safe projections</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/message-db.ts" target="_top">
+<g class="bb-node map-item cat-mauve status-implemented" data-id="transcript" data-traces="chat routine">
+<rect class="bb-node-box" x="3753.5" y="269.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="3779.5" cy="295.5" r="4"/>
+<text class="bb-kicker" x="3790.5" y="299.5">DATABASE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3974.6" cy="424.1" r="3.4"/><text class="bb-status-text" x="4023.5" y="427.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="3775.5" y="327.5">Message database</text>
+<text class="bb-copy" x="3775.5" y="352.5">SQLite transcripts</text>
+<text class="bb-copy" x="3775.5" y="372.5">thread read state</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/runtime/store.ts" target="_top">
+<g class="bb-node map-item cat-mauve status-implemented" data-id="assignments" data-traces="chat routine">
+<rect class="bb-node-box" x="3315.7" y="729.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="3341.7" cy="755.5" r="4"/>
+<text class="bb-kicker" x="3352.7" y="759.5">DATABASE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3536.8" cy="884.1" r="3.4"/><text class="bb-status-text" x="3585.7" y="887.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="3337.7" y="787.5">Assignment ledger</text>
+<text class="bb-copy" x="3337.7" y="812.5">rows, events, inbox</text>
+<text class="bb-copy" x="3337.7" y="832.5">restart reconciliation</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/routines.ts" target="_top">
+<g class="bb-node map-item cat-mauve status-implemented" data-id="schedule" data-traces="routine">
+<rect class="bb-node-box" x="3753.5" y="729.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="3779.5" cy="755.5" r="4"/>
+<text class="bb-kicker" x="3790.5" y="759.5">STORAGE</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3974.6" cy="884.1" r="3.4"/><text class="bb-status-text" x="4023.5" y="887.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="3775.5" y="787.5">Routine records</text>
+<text class="bb-copy" x="3775.5" y="812.5">schedule and runs</text>
+<text class="bb-copy" x="3775.5" y="832.5">durable receipts</text>
+</g>
+</a>
+<a href="https://github.com/evoclock/OpenMausBot/blob/main/server/harness/bus.ts" target="_top">
+<g class="bb-node map-item cat-mauve status-implemented" data-id="eventlog" data-traces="chat routine">
+<rect class="bb-node-box" x="3315.7" y="499.5" width="292" height="175" rx="7"/>
+<circle class="bb-mark" cx="3341.7" cy="525.5" r="4"/>
+<text class="bb-kicker" x="3352.7" y="529.5">LOG</text>
+<g class="bb-status is-implemented" aria-label="status: implemented"><circle class="bb-dot bb-dot-fill" cx="3536.8" cy="654.1" r="3.4"/><text class="bb-status-text" x="3585.7" y="657.5" text-anchor="end">BUILT</text></g>
+<text class="bb-node-title" x="3337.7" y="557.5">Thread event log</text>
+<text class="bb-copy" x="3337.7" y="582.5">redacted event trail</text>
+<text class="bb-copy" x="3337.7" y="602.5">bounded disk queue</text>
+</g>
+</a>
+<g class="bb-legend" aria-label="Legend"><path class="bb-rule" d="M 40 949 H 4064"/><circle class="bb-mark cat-sage" cx="44" cy="967" r="4"/><text class="bb-legend-text" x="56" y="971">Client</text><circle class="bb-mark cat-teal" cx="115.94999999999999" cy="967" r="4"/><text class="bb-legend-text" x="127.94999999999999" y="971">Ingress</text><circle class="bb-mark cat-rust" cx="194.22499999999997" cy="967" r="4"/><text class="bb-legend-text" x="206.22499999999997" y="971">Trust boundary</text><circle class="bb-mark cat-slate" cx="316.775" cy="967" r="4"/><text class="bb-legend-text" x="328.775" y="971">Execution</text><circle class="bb-mark cat-olive" cx="407.7" cy="967" r="4"/><text class="bb-legend-text" x="419.7" y="971">Automation</text><circle class="bb-mark cat-mauve" cx="504.95" cy="967" r="4"/><text class="bb-legend-text" x="516.95" y="971">Durable state</text><path class="bb-edge data" d="M 617.175 967 L 639.175 967"/><text class="bb-legend-text" x="647.175" y="971">Data flow</text><path class="bb-edge control" d="M 722.0999999999999 967 L 744.0999999999999 967"/><text class="bb-legend-text" x="752.0999999999999" y="971">Control flow</text><g class="bb-status is-implemented"><circle class="bb-dot bb-dot-fill" cx="850" cy="967" r="3.4"/></g><text class="bb-legend-text" x="861.9999999999999" y="971">Built</text><g class="bb-status is-partial"><circle class="bb-dot" cx="915.6" cy="967" r="3.4"/><path class="bb-dot-fill" d="M 915.6 963.6 A 3.4 3.4 0 0 0 915.6 970.4 Z"/></g><text class="bb-legend-text" x="927.6249999999999" y="971">Partial</text><g class="bb-status is-planned"><circle class="bb-dot" cx="993.9" cy="967" r="3.4"/></g><text class="bb-legend-text" x="1005.8999999999999" y="971">Planned</text></g>
+</svg>

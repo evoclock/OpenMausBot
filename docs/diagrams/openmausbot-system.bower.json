@@ -1,0 +1,170 @@
+{
+  "schema": "bowerbird/v1",
+  "meta": {
+    "title": "OpenMausBot: a request through the host",
+    "kicker": "Product architecture / host mode",
+    "subtitle": "Follow a chat turn, a scheduled run, or a paired device from the client boundary to durable results.",
+    "statusTracking": true,
+    "animation": "trace",
+    "kind": "architecture",
+    "style": "restrained",
+    "direction": "LR",
+    "grid": { "col": 360, "row": 230, "gap": [68, 55] },
+    "repository": { "url": "https://github.com/evoclock/OpenMausBot", "ref": "main" }
+  },
+  "categories": {
+    "sage": { "label": "Client" },
+    "teal": { "label": "Ingress" },
+    "rust": { "label": "Trust boundary" },
+    "slate": { "label": "Execution" },
+    "olive": { "label": "Automation" },
+    "mauve": { "label": "Durable state" }
+  },
+  "zones": [
+    { "id": "client", "title": "The person and their device", "kicker": "01 / clients", "category": "sage" },
+    { "id": "ingress", "title": "The host's front door", "kicker": "02 / trust and routing", "category": "teal" },
+    { "id": "execution", "title": "A turn on the host", "kicker": "03 / work and tools", "category": "slate" },
+    { "id": "durable", "title": "What survives a turn", "kicker": "04 / local state", "category": "mauve" }
+  ],
+  "traces": [
+    { "id": "chat", "label": "A person sends a chat message" },
+    { "id": "routine", "label": "A scheduled routine starts work" },
+    { "id": "paired", "label": "A paired device reaches the host" }
+  ],
+  "nodes": [
+    {
+      "id": "desktop", "zone": "client", "at": [0, 0], "type": "process", "title": "Desktop shell",
+      "lines": ["starts the local host", "or a paired relay"], "category": "sage", "status": "implemented", "traces": ["chat"],
+      "evidence": { "paths": ["electron/main.mjs", "electron/server-child-launch.mjs"], "tests": ["electron/server-child-launch.node-test.mjs"] },
+      "details": "The desktop main process starts and supervises the local server in host mode. In paired client mode, it runs a loopback relay instead of another local host.\n\n#### Source\n- [Desktop process](electron/main.mjs)\n- [Server child lifecycle](electron/server-child-launch.mjs)"
+    },
+    {
+      "id": "renderer", "zone": "client", "at": [1, 0], "type": "ui", "title": "Conversation UI",
+      "lines": ["chat, cards, routines", "same-origin API"], "category": "sage", "status": "implemented", "traces": ["chat", "paired"],
+      "evidence": { "paths": ["src/main.tsx", "src/App.tsx", "src/state/store.tsx"], "tests": ["src/state/store.test.ts"] },
+      "details": "The browser renderer selects a session or pairing screen before mounting App. Its store sends API requests and consumes live frames; the renderer does not hold a paired-device bearer token.\n\n#### Source\n- [Session and app entry](src/main.tsx)\n- [Client state](src/state/store.tsx)\n- [Live frames](src/lib/live-events.ts)"
+    },
+    {
+      "id": "paired", "zone": "client", "at": [0, 2], "type": "gateway", "title": "Paired device",
+      "lines": ["limited remote routes", "host owns the work"], "category": "sage", "status": "implemented", "traces": ["paired"],
+      "evidence": { "paths": ["companion/src/index.ts", "companion/src/proxy.ts", "companion/src/routes.ts"], "tests": ["companion/test/proxy.test.ts"] },
+      "details": "An optional paired phone or desktop reaches a host through the companion sidecar. It checks device identity, permits only reviewed routes, and scrubs responses before forwarding to the host. It is not the unrestricted harness API.\n\n#### Source\n- [Companion listener](companion/src/index.ts)\n- [Proxy](companion/src/proxy.ts)\n- [Route allowlist](companion/src/routes.ts)\n- [Client/host separation](docs/desktop-companion.md)"
+    },
+    {
+      "id": "authentication", "zone": "ingress", "at": [2, 0], "type": "gate", "title": "Request trust",
+      "lines": ["session or loopback", "scope before route"], "category": "rust", "status": "implemented", "traces": ["chat", "paired"],
+      "evidence": { "paths": ["server/request-auth.ts", "server/sessions.ts"], "tests": ["server/request-auth.test.ts"] },
+      "details": "The HTTP boundary distinguishes authenticated sessions from loopback callers. A hosted service-trust loopback has a narrow route set; a browser on the machine is not automatically trusted as its owner. Companion clients first pass the sidecar's separate device boundary.\n\n#### Source\n- [Request authentication](server/request-auth.ts)\n- [Session registry](server/sessions.ts)"
+    },
+    {
+      "id": "http", "zone": "ingress", "at": [3, 0], "type": "service", "title": "Harness API",
+      "lines": ["HTTP and live events", "route composition"], "category": "teal", "status": "implemented", "traces": ["chat", "paired"],
+      "evidence": { "paths": ["server/index.ts", "server/routes/table.ts", "server/harness/http.ts"], "tests": ["server/index.test.ts"] },
+      "details": "The host composes route handlers and the live event stream. The HTTP helpers bound request bodies and serialize responses; routes operate after the request's trust and visibility checks.\n\n#### Source\n- [Host composition](server/index.ts)\n- [Route table](server/routes/table.ts)\n- [HTTP helpers](server/harness/http.ts)"
+    },
+    {
+      "id": "messages", "zone": "ingress", "at": [3, 1], "type": "route", "title": "Message intake",
+      "lines": ["pin thread and sender", "accept or refuse"], "category": "teal", "status": "implemented", "traces": ["chat", "paired"],
+      "evidence": { "paths": ["server/routes/bot-messages.ts", "server/admission.ts"], "tests": ["server/routes/bot-messages.test.ts"] },
+      "details": "The bot-message route validates the requested thread and sender, handles guarded sends and card answers, and calls the host's turn starter only when admission permits it. A send receipt can report a queued steer instead of a new turn.\n\n#### Source\n- [Message routes](server/routes/bot-messages.ts)\n- [Admission](server/admission.ts)"
+    },
+    {
+      "id": "scheduler", "zone": "ingress", "at": [2, 2], "type": "scheduler", "title": "Routine scheduler",
+      "lines": ["scheduled or manual", "saved run receipts"], "category": "olive", "status": "implemented", "traces": ["routine"],
+      "evidence": { "paths": ["server/routines.ts", "server/routine-execution.ts"], "tests": ["server/routines-startup.test.ts", "server/routines.test.ts"] },
+      "details": "A saved routine selects a future occurrence or a manual run. The host dispatches its execution as a turn, records a run receipt, and reports results to the chosen conversation or the bot's main thread. A routine is not itself a separate agent engine.\n\n#### Source\n- [Schedule and run manager](server/routines.ts)\n- [Execution prompt](server/routine-execution.ts)\n- [Routines behavior](docs/verification/routines.md)"
+    },
+    {
+      "id": "turn", "zone": "execution", "at": [4, 0], "type": "orchestrator", "title": "Turn host",
+      "lines": ["selects bot and thread", "starts provider turn"], "category": "slate", "status": "implemented", "traces": ["chat", "routine", "paired"],
+      "evidence": { "paths": ["server/index.ts", "server/turn-context.ts"], "tests": ["server/main-thread.test.ts"] },
+      "details": "The host's startTurn entry selects the bot, thread, model and permission mode, prepares its tools, and records the turn. The same host handles person-initiated and scheduled work; it does not delegate trust decisions to model text.\n\n#### Source\n- [Turn entry](server/index.ts)\n- [Turn context](server/turn-context.ts)"
+    },
+    {
+      "id": "providers", "zone": "execution", "at": [5, 0], "type": "registry", "title": "Provider registry",
+      "lines": ["configured instances", "access and capabilities"], "category": "slate", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/harness/registry.ts", "server/contracts.ts"], "tests": ["server/harness/registry.test.ts"] },
+      "details": "The registry loads configured provider instances, exposes status and access, and retains a separate identity for each instance. The host chooses a configured instance before launching its driver.\n\n#### Source\n- [Provider registry](server/harness/registry.ts)\n- [Driver contracts](server/contracts.ts)"
+    },
+    {
+      "id": "driver", "zone": "execution", "at": [6, 0], "type": "adapter", "title": "Engine drivers",
+      "lines": ["native or API turn", "stream events back"], "category": "slate", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/drivers/claude.ts", "server/drivers/codex.ts", "server/drivers/pi.ts"], "tests": ["server/drivers/pi.test.ts"] },
+      "details": "Drivers adapt provider-specific sessions, prompts, permission modes and events to the host contract. The diagram does not imply every engine has the same native capabilities.\n\n#### Source\n- [CLI driver](server/drivers/claude.ts)\n- [Another CLI route](server/drivers/codex.ts)\n- [Pi route](server/drivers/pi.ts)"
+    },
+    {
+      "id": "tool", "zone": "execution", "at": [5, 1], "type": "gateway", "title": "Tool boundary",
+      "lines": ["scoped agents tools", "bounded MCP results"], "category": "rust", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/drivers/agents-proxy.ts", "server/mcp-gate.ts", "server/bot-tool-scope.ts"], "tests": ["server/mcp-gate.test.ts", "server/drivers/agents-proxy.test.ts"] },
+      "details": "The host offers bot-scoped tools through its agents proxy; external MCP calls can pass a tool-selection and result-budget gate. A tool's availability is not permission to bypass provider or host approvals.\n\n#### Source\n- [Agents tool proxy](server/drivers/agents-proxy.ts)\n- [MCP selection gate](server/mcp-gate.ts)\n- [Bot tool scope](server/bot-tool-scope.ts)"
+    },
+    {
+      "id": "approval", "zone": "execution", "at": [6, 1], "type": "gate", "title": "Permission broker",
+      "lines": ["answer native requests", "or refuse safely"], "category": "rust", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/permission-proxy.ts", "shared/approval-mode.ts"], "tests": ["server/permission-proxy.test.ts"] },
+      "details": "Provider-native permission requests reach the host's broker. It answers from the effective conversation mode or an explicit grant; missing or broken broker connections deny rather than silently allowing an action.\n\n#### Source\n- [Permission proxy](server/permission-proxy.ts)\n- [Approval modes](shared/approval-mode.ts)\n- [User-facing levels](docs/approval-levels.md)"
+    },
+    {
+      "id": "runtime", "zone": "execution", "at": [4, 2], "type": "orchestrator", "title": "Assignment runtime",
+      "lines": ["teammate handoffs", "one wake lane"], "category": "slate", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/runtime/runtime.ts", "server/coordinator.ts"], "tests": ["server/runtime/scenarios.test.ts"] },
+      "details": "When a turn hands work to another bot, the runtime records an assignment tree, admits a free assignee, waits for terminal results or input, then resumes the requester. Ordinary single-bot chat does not require a teammate assignment.\n\n#### Source\n- [Assignment lifecycle](server/runtime/runtime.ts)\n- [Host coordination adapter](server/coordinator.ts)\n- [Lifecycle contract](docs/runtime-contract.md)"
+    },
+    {
+      "id": "bus", "zone": "execution", "at": [4, 1], "type": "event-bus", "title": "Live event bus",
+      "lines": ["fan in driver events", "stream and log"], "category": "slate", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/harness/bus.ts", "src/lib/live-events.ts"], "tests": ["server/harness/bus.test.ts"] },
+      "details": "Provider events enter a host-side bus. It batches text deltas, feeds live listeners, and appends redacted events to the thread event log. The renderer receives live frames separately from stored transcripts.\n\n#### Source\n- [Bus and log](server/harness/bus.ts)\n- [Renderer live frames](src/lib/live-events.ts)"
+    },
+    {
+      "id": "store", "zone": "durable", "at": [7, 0], "type": "storage", "title": "Bot and thread store",
+      "lines": ["profile and task state", "wire-safe projections"], "category": "mauve", "status": "implemented", "traces": ["chat", "routine", "paired"],
+      "evidence": { "paths": ["server/store.ts", "server/bots-save.ts"], "tests": ["server/store.test.ts"] },
+      "details": "The host store owns bot profiles and conversation tasks and projects private records into wire-safe shapes. It invokes the message database for transcript persistence; do not treat the renderer's store as the source of truth.\n\n#### Source\n- [Host store](server/store.ts)\n- [Bot persistence](server/bots-save.ts)"
+    },
+    {
+      "id": "transcript", "zone": "durable", "at": [8, 0], "type": "database", "title": "Message database",
+      "lines": ["SQLite transcripts", "thread read state"], "category": "mauve", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/message-db.ts"], "tests": ["server/message-db.test.ts"] },
+      "details": "The host stores messages and thread state in an owner-only SQLite database. The schema also holds send receipts and notification records; a live delta is not a substitute for a persisted message.\n\n#### Source\n- [Database schema](server/message-db.ts)"
+    },
+    {
+      "id": "assignments", "zone": "durable", "at": [7, 2], "type": "database", "title": "Assignment ledger",
+      "lines": ["rows, events, inbox", "restart reconciliation"], "category": "mauve", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/runtime/store.ts", "server/runtime/runtime.ts"], "tests": ["server/runtime/store.test.ts"] },
+      "details": "Assignment state, append-only transitions and pending wakes are committed together in runtime.db. On restart the runtime reconciles interrupted turns from these rows before dispatching work.\n\n#### Source\n- [Runtime SQLite store](server/runtime/store.ts)\n- [Restart behavior](server/runtime/runtime.ts)"
+    },
+    {
+      "id": "schedule", "zone": "durable", "at": [8, 2], "type": "storage", "title": "Routine records",
+      "lines": ["schedule and runs", "durable receipts"], "category": "mauve", "status": "implemented", "traces": ["routine"],
+      "evidence": { "paths": ["server/routines.ts", "server/routine-file-validation.ts"], "tests": ["server/routines-startup.test.ts"] },
+      "details": "The routine manager persists definitions and run history in its validated routine file. Startup recovery reconciles interrupted scheduled work instead of interpreting a past timestamp as proof of success.\n\n#### Source\n- [Routine manager](server/routines.ts)\n- [File validation](server/routine-file-validation.ts)"
+    },
+    {
+      "id": "eventlog", "zone": "durable", "at": [7, 1], "type": "log", "title": "Thread event log",
+      "lines": ["redacted event trail", "bounded disk queue"], "category": "mauve", "status": "implemented", "traces": ["chat", "routine"],
+      "evidence": { "paths": ["server/harness/bus.ts", "server/thread-log-rotation.ts"], "tests": ["server/harness/bus.test.ts"] },
+      "details": "The event bus appends redacted per-thread activity to disk with bounded queues and rotation. If a write fails, live updates may continue while the canonical event history is marked incomplete.\n\n#### Source\n- [Bus logging](server/harness/bus.ts)\n- [Log rotation](server/thread-log-rotation.ts)"
+    }
+  ],
+  "edges": [
+    { "from": "desktop", "to": "renderer", "kind": "control", "label": "loads UI", "traces": ["chat"] },
+    { "from": "renderer", "to": "authentication", "kind": "data", "label": "chat request", "traces": ["chat", "paired"] },
+    { "from": "paired", "to": "authentication", "kind": "control", "label": "allowlisted", "traces": ["paired"] },
+    { "from": "authentication", "to": "http", "kind": "control", "label": "scoped request", "traces": ["chat", "paired"] },
+    { "from": "http", "to": "messages", "kind": "data", "label": "send", "traces": ["chat", "paired"] },
+    { "from": "messages", "to": "turn", "kind": "control", "label": "admitted", "traces": ["chat", "paired"] },
+    { "from": "scheduler", "to": "turn", "kind": "control", "label": "run starts", "traces": ["routine"] },
+    { "from": "turn", "to": "providers", "kind": "control", "label": "selects", "traces": ["chat", "routine"] },
+    { "from": "providers", "to": "driver", "kind": "control", "label": "launches", "traces": ["chat", "routine"] },
+    { "from": "driver", "to": "tool", "kind": "control", "label": "tool call", "traces": ["chat", "routine"] },
+    { "from": "tool", "to": "approval", "kind": "control", "label": "needs grant", "traces": ["chat", "routine"] },
+    { "from": "turn", "to": "runtime", "kind": "control", "label": "hands off", "traces": ["chat", "routine"] },
+    { "from": "driver", "to": "bus", "kind": "data", "label": "events", "traces": ["chat", "routine"] },
+    { "from": "turn", "to": "store", "kind": "data", "label": "turn state", "traces": ["chat", "routine"] },
+    { "from": "store", "to": "transcript", "kind": "data", "label": "messages", "traces": ["chat", "routine"] },
+    { "from": "runtime", "to": "assignments", "kind": "data", "label": "transitions", "traces": ["chat", "routine"] },
+    { "from": "scheduler", "to": "schedule", "kind": "data", "label": "run receipts", "traces": ["routine"] },
+    { "from": "bus", "to": "eventlog", "kind": "data", "label": "redacted", "traces": ["chat", "routine"] }
+  ]
+}
