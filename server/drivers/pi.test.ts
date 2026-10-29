@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -372,6 +372,9 @@ describe("PiDriver turns (fake CLI)", () => {
   beforeEach(() => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
+    const hostPi = join(process.env.HOME!, ".pi", "pi", "harness", "bin", "pi");
+    mkdirSync(dirname(hostPi), { recursive: true });
+    if (!existsSync(hostPi)) symlinkSync(FAKE_CLI, hostPi);
   });
 
   it("refuses a restricted turn when the loaded extension has not confirmed enforcement", async () => {
