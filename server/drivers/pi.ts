@@ -504,7 +504,10 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       const { threadId } = turn;
       const codingRun = turn.codingRun;
       const agentDir = codingRun ? codingPiAgentDir(DATA_DIR, turn.botId ?? "") : config.agentDir;
-      const turnEnv = codingRun ? { ...catalogEnv, PI_CODING_AGENT_DIR: agentDir } : catalogEnv;
+      const turnEnv = codingRun ? {
+        ...catalogEnv, PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(agentDir!, "sessions"),
+      } : catalogEnv;
+      const turnCli = codingRun ? join(agentDir!, "harness", "bin", "pi") : config.cli;
       const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
       if (!readiness.skill.ready) throw new Error(readiness.skill.action);
       const selection = parseToolScope(turn.toolScope);
@@ -556,7 +559,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
         try {
-          return spawnCli(config.cli, childArgs, {
+          return spawnCli(turnCli, childArgs, {
             stdio: ["pipe", "pipe", "pipe"],
             cwd: turn.cwd,
             env: {
@@ -874,7 +877,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
       }));
       child.on("error", (err) => {
-        const fail = describeSpawnFailure(err as NodeJS.ErrnoException, config.cli, turn.cwd);
+        const fail = describeSpawnFailure(err as NodeJS.ErrnoException, turnCli, turn.cwd);
         rejectWaiters(new Error(fail.message));
         emit({ ...base(threadId, turnId), type: "runtime.error", message: fail.message, setup: fail.setup });
         settle(false);

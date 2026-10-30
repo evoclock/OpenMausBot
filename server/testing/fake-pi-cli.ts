@@ -55,8 +55,9 @@ if (process.env.FAKE_PI_DUMP) {
       process.env.FAKE_PI_DUMP,
       JSON.stringify({
         argv,
+        executable: process.argv[1],
         cwd: process.cwd(),
-        env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER", "PI_CODING_AGENT_DIR"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
+        env: Object.fromEntries(["COMPOSIO_KEY", "OMB_MCP_CONFIG", "OMB_TEST_MARKER", "PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR"].filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
         envConfigured: ["PATH", "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "BOX_TOKEN"].filter(
           (k) => process.env[k] !== undefined,
         ),
@@ -334,7 +335,7 @@ function handle(cmd: any) {
       }
       sessionCounter += 1;
       currentSessionFile = argv.includes("--no-session") ? `/fake/pi-session-${sessionCounter}.json` :
-        join(process.env.PI_CODING_AGENT_DIR ?? "/fake", "sessions", `${process.pid}-${sessionCounter}.jsonl`);
+        join(process.env.PI_CODING_AGENT_SESSION_DIR ?? join(process.env.PI_CODING_AGENT_DIR ?? "/fake", "sessions"), `${process.pid}-${sessionCounter}.jsonl`);
       send({ type: "response", command: "new_session", success: true, data: { sessionId: `s-${sessionCounter}`, sessionFile: currentSessionFile } });
       return;
     case "switch_session":
@@ -382,7 +383,7 @@ function handle(cmd: any) {
       }
       send({ type: "response", command: "prompt", success: true });
       if (!argv.includes("--no-session") && currentSessionFile) {
-        mkdirSync(join(process.env.PI_CODING_AGENT_DIR!, "sessions"), { recursive: true });
+        mkdirSync(process.env.PI_CODING_AGENT_SESSION_DIR ?? join(process.env.PI_CODING_AGENT_DIR!, "sessions"), { recursive: true });
         appendFileSync(currentSessionFile, `${JSON.stringify({ message: cmd.message })}\n`);
       }
       if (mode === "tooluse") streamToolTurn();

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ensureDirs, NATIVE_DIR } from "../config.ts";
+import { DATA_DIR, ensureDirs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
@@ -456,6 +456,37 @@ describe("PiDriver turns (fake CLI)", () => {
     expect(recorder.events).not.toContainEqual(expect.objectContaining({ type: "runtime.error" }));
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "Continued after denied path" }));
+  });
+
+  it("keeps a durable coding session under its bot when the host session directory is inherited", async () => {
+    const hostSessions = join(process.env.HOME!, "host-sessions");
+    const dump = join(mkdtempSync(join(process.cwd(), ".omb-scratch", "pi-session-env-")), "dump.jsonl");
+    const savedSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+    process.env.PI_CODING_AGENT_SESSION_DIR = hostSessions;
+    try {
+      await create(undefined, { FAKE_PI_DUMP: dump, FAKE_PI_SCOPE_ACK: "1", PI_CODING_AGENT_SESSION_DIR: hostSessions });
+      const botId = `fixture-${randomUUID()}`;
+      const agentDir = join(DATA_DIR, "bots", botId, "pi");
+      const { turnId } = await instance.adapter.sendTurn({ threadId: `t-session-${botId}`, botId, text: "Continue", cwd: process.cwd(),
+        approvalMode: "full", toolScope: { allow: ["native:read", "native:write", "native:edit", "native:coding_command"] },
+        codingRun: { id: "fixture-session", branch: "feat/fixture", directory: process.cwd() } });
+      const session = await recorder.until((event) => event.type === "session.started" && event.turnId === turnId);
+      await recorder.until((event) => event.type === "turn.completed" && event.turnId === turnId);
+      const sessionFile = (session as { sessionId: string }).sessionId;
+      expect(sessionFile.startsWith(join(agentDir, "sessions") + "/")).toBe(true);
+      expect(existsSync(sessionFile)).toBe(true);
+      expect(existsSync(hostSessions)).toBe(false);
+      const rows = readFileSync(dump, "utf8").trim().split("\n").map((line) => JSON.parse(line) as {
+        isTurnSpawn?: boolean; executable?: string; env: { PI_CODING_AGENT_DIR?: string; PI_CODING_AGENT_SESSION_DIR?: string };
+      });
+      const spawn = rows.find((row) => row.isTurnSpawn);
+      expect(spawn?.env.PI_CODING_AGENT_DIR).toBe(agentDir);
+      expect(spawn?.env.PI_CODING_AGENT_SESSION_DIR).toBe(join(agentDir, "sessions"));
+      expect(spawn?.executable).toBe(join(agentDir, "harness", "bin", "pi"));
+    } finally {
+      if (savedSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = savedSessionDir;
+    }
   });
 
   // Why: a forbidden tool is a dangerous envelope breach, not a recoverable native path probe.
