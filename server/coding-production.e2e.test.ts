@@ -54,6 +54,8 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
   const hostPi = join(home, ".pi", "pi", "harness", "bin", "pi");
   mkdirSync(dirname(hostPi), { recursive: true });
   symlinkSync(fakePi, hostPi);
+  writeFileSync(join(home, ".pi", "pi", "models-store.json"), JSON.stringify({ providers: { "openai-codex": { models: [{ id: "gpt-6-sol" }] } } }));
+  writeFileSync(join(home, ".pi", "pi", "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth" } }));
   const configFile = join(dataDir, "config.json");
   const config = { instances: { pi: { driver: "piAgent", environment: { FAKE_PI_MODE: mode, FAKE_PI_DUMP: dump, FAKE_PI_MODELS: localOnly ? "dsf41/deepseek-v4.1-flash-tf" : "openai/gpt-5.4-mini,openai-codex/gpt-6-sol",
     FAKE_PI_DRILL_REVIEW_MARKER: join(home, "review-started.json"), FAKE_PI_SCOPE_ACK: "1" },
