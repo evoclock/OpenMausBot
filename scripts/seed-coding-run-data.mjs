@@ -4,6 +4,13 @@ import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSyn
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Placeholder left in operator seed config.json; must never survive prepare. */
+export const LEASE_ITEM_I_DATA_TOKEN = "LEASE_ITEM_I_DATA";
+
+export function leaseRolesFilePath(dataDir) {
+  return join(dataDir, "pi-roles.json");
+}
+
 export function prepareCodingSeed(config, routines, lease, agentsRoot, main, originMain, rolesFile) {
   if (!/^[a-f0-9]{40}$/.test(main) || main !== originMain) throw new Error("agents main must match origin/main");
   const entries = config.codingRuns?.registrations;
@@ -25,15 +32,35 @@ export function prepareCodingSeed(config, routines, lease, agentsRoot, main, ori
     throw new Error("seed requires the approved no-spend 45-minute, eight-iteration budget");
   }
   const dataDir = join(lease, ".omb-scratch", "item-i-data");
+  const rolesFilePath = leaseRolesFilePath(dataDir);
+  if (rolesFilePath.includes(LEASE_ITEM_I_DATA_TOKEN)) {
+    throw new Error("prepared rolesFilePath still contains LEASE_ITEM_I_DATA");
+  }
   return {
     dataDir,
     config: { ...config, codingRuns: { ...config.codingRuns, repositoryRoot: agentsRoot,
-      rolesFilePath: join(dataDir, "pi-roles.json"),
+      rolesFilePath,
       registrations: [{ ...entries[0], ref: "main" }] } },
     routines: { version: routines.version, frozenResultsCleared: true,
       routines: routines.routines.map((routine) => ({ ...routine, enabled: false, nextRunAt: null })),
       runs: [], routineRequestReceipts: [], codingSettlementReceipts: [], webhookRunReceipts: [] },
   };
+}
+
+function assertAllowedSeedSource(source) {
+  const salvage = source.includes(`${sep}.treehouse-salvage${sep}`);
+  const operatorSeed = source.includes(`${sep}.omb-scratch${sep}item-i-data`);
+  if (!salvage && !operatorSeed) {
+    throw new Error(
+      "seed source must be a .treehouse-salvage snapshot or an .omb-scratch/item-i-data operator seed",
+    );
+  }
+  for (const name of ["config.json", "routines.json", "pi-roles.json", "bots.json"]) {
+    if (!existsSync(join(source, name))) throw new Error(`seed source missing ${name}`);
+  }
+  if (!existsSync(join(source, "bots")) || !existsSync(join(source, "providers"))) {
+    throw new Error("seed source missing bots/ or providers/");
+  }
 }
 
 export function seedCodingRunData(leaseArg, sourceArg, agentsArg) {
@@ -43,9 +70,10 @@ export function seedCodingRunData(leaseArg, sourceArg, agentsArg) {
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 10_000 }).trim();
   if (realpathSync(git(lease, "rev-parse", "--show-toplevel")) !== lease ||
     realpathSync(git(agentsRoot, "rev-parse", "--show-toplevel")) !== agentsRoot ||
-    !lease.includes(`${sep}.treehouse${sep}`) || !source.includes(`${sep}.treehouse-salvage${sep}`)) {
-    throw new Error("seed needs an exact Treehouse checkout, salvage source, and agents repository root");
+    !lease.includes(`${sep}.treehouse${sep}`)) {
+    throw new Error("seed needs an exact Treehouse checkout and agents repository root");
   }
+  assertAllowedSeedSource(source);
   const slots = JSON.parse(execFileSync("treehouse", ["status", "--json"],
     { cwd: lease, encoding: "utf8", timeout: 10_000 }));
   if (!slots.some((slot) => slot.status === "leased" && realpathSync(slot.path) === lease)) {
@@ -56,6 +84,9 @@ export function seedCodingRunData(leaseArg, sourceArg, agentsArg) {
   const read = (name) => JSON.parse(readFileSync(join(source, name), "utf8"));
   const seed = prepareCodingSeed(read("config.json"), read("routines.json"), lease, agentsRoot, main, originMain,
     read("pi-roles.json"));
+  if (JSON.stringify(seed.config).includes(LEASE_ITEM_I_DATA_TOKEN)) {
+    throw new Error("prepared config still contains LEASE_ITEM_I_DATA");
+  }
   if (existsSync(seed.dataDir)) throw new Error("destination data already exists; preserve it before seeding");
   mkdirSync(join(lease, ".omb-scratch"), { recursive: true, mode: 0o700 });
   mkdirSync(seed.dataDir, { mode: 0o700 });
@@ -72,6 +103,8 @@ export function seedCodingRunData(leaseArg, sourceArg, agentsArg) {
 }
 
 if (process.argv[1] && realpathSync(resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
-  if (process.argv.length !== 5) throw new Error("Usage: node scripts/seed-coding-run-data.mjs LEASE SALVAGE_DATA AGENTS_REPO");
+  if (process.argv.length !== 5) {
+    throw new Error("Usage: node scripts/seed-coding-run-data.mjs LEASE SEED_DATA AGENTS_REPO");
+  }
   console.log(JSON.stringify(seedCodingRunData(process.argv[2], process.argv[3], process.argv[4])));
 }
