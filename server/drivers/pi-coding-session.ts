@@ -74,6 +74,14 @@ export function codingPiAgentDir(
   return dir;
 }
 
+export function codingPiTurnRuntime(dataDir: string, botId: string, env: Record<string, string | undefined>) {
+  const agentDir = codingPiAgentDir(dataDir, botId);
+  return {
+    env: { ...env, PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(agentDir, "sessions") },
+    cli: join(agentDir, "harness", "bin", "pi"),
+  };
+}
+
 export async function openPiSession(
   send: (frame: Record<string, unknown>) => void,
   response: (command: string) => Promise<unknown>,
