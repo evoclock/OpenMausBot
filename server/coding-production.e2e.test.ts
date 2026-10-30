@@ -189,7 +189,7 @@ test("two coding iterations retain session files in the run record and handover"
 test.each([
   { mode: "coding" as const, expected: "done", released: false, localOnly: false },
   { mode: "coding" as const, expected: "done", released: false, localOnly: true },
-  { mode: "happy" as const, expected: "done", released: false, localOnly: false },
+  { mode: "happy" as const, expected: "done", released: true, localOnly: false },
   { mode: "permission" as const, expected: "blocked", released: true, localOnly: false },
   { mode: "coding-denied" as const, expected: "blocked", released: true, localOnly: false },
 ])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released, localOnly }) => {
@@ -233,6 +233,7 @@ test.each([
     if (mode === "happy") {
       expect(run.output).toContain("already satisfied on base");
       expect(run.output).toContain("nothing to commit");
+      expect(f.git(f.leased, "status", "--porcelain")).toBe("");
     }
     // Why: every composed coding run must publish its terminal snapshot to the owner status feed.
     await f.until(async () => {
@@ -335,7 +336,7 @@ test.each([
       expect(reviewMessages.some((message) => message.role === "bot" && message.turnTerminal &&
         message.text === `ACCEPT ${f.git(f.leased, "rev-parse", "HEAD")}`)).toBe(true);
     }
-    if (mode === "coding") {
+    if (mode === "coding" || mode === "happy") {
       await f.stop();
       await f.start();
       const restoredRuns = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
@@ -344,7 +345,9 @@ test.each([
         turnId?: string;
       }>;
       expect(restoredMessages.filter((message) => message.turnId?.startsWith("coding-result:"))).toHaveLength(1);
-      expect(JSON.parse(readFileSync(f.state, "utf8")).holder).not.toBeNull();
+      expect(JSON.parse(readFileSync(f.state, "utf8")).holder === null).toBe(released);
+      expect(readFileSync(f.calls, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[])
+        .filter((operation) => operation[0] === "return")).toHaveLength(released ? 1 : 0);
     }
     if (process.env.OMB_PARITY_PROOF_DIR) {
       writeFileSync(join(process.env.OMB_PARITY_PROOF_DIR, `coding-${mode}.json`), JSON.stringify({

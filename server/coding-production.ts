@@ -224,27 +224,33 @@ export async function openProductionCodingRuntime(options: {
     if (snapshot.state === "done" && !publicationResults.has(snapshot.contract.id)) {
       const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
       if (!workspace) return false;
-      if (snapshot.hostCheck?.commitSha === workspace.base) {
-        publicationResults.set(snapshot.contract.id, "Already satisfied on base; nothing to publish");
-      } else {
-        let publication = publishing.get(snapshot.contract.id);
-        if (!publication) {
+      if (!publishing.has(snapshot.contract.id)) {
+        let publication: Promise<string>;
+        if (snapshot.hostCheck?.commitSha === workspace.base) {
+          publication = workspaceManager.release(workspace.leaseId)
+            .then(() => "Already satisfied on base; nothing to publish");
+        } else {
           const candidateBranch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
           const hasDestination = (config.gitDestinations?.[snapshot.contract.botId] ?? []).some((grant) =>
             grant.repository === snapshot.contract.repository && candidateBranch.startsWith(grant.branchPrefix));
           publication = publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
             createBranch: (directory, branch, base) => gitHost.port.createBranch(directory, branch, base), gitAction })
-            .then((branch) => branch ? `Published draft branch ${branch}` : "No authorized Git destination was configured")
-            .catch((error) => `Draft publication failed: ${error instanceof Error ? error.message : String(error)}`);
-          publishing.set(snapshot.contract.id, publication);
-          void publication.then((result) => {
-            publicationResults.set(snapshot.contract.id, result);
-            publishing.delete(snapshot.contract.id);
-            reportPending();
-          });
+            .then(async (branch) => {
+              if (!branch) return "No authorized Git destination was configured";
+              await workspaceManager.release(workspace.leaseId);
+              return `Published draft branch ${branch}`;
+            }, (error) => `Draft publication failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-        return false;
+        publishing.set(snapshot.contract.id, publication);
+        void publication.then((result) => {
+          publicationResults.set(snapshot.contract.id, result);
+          publishing.delete(snapshot.contract.id);
+          reportPending();
+        }, (error) => {
+          console.error("Coding workspace release failed:", error);
+        });
       }
+      return false;
     }
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
     const detail = [evidence || "No result was reported.", publicationResults.get(snapshot.contract.id)]
