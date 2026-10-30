@@ -1,5 +1,9 @@
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "vitest";
+import { removeTempDir } from "./testing/cleanup.ts";
 import { createWorkerRoute, type WorkerHost } from "./inner-worker-route.ts";
 import { createIterationContextCompactor } from "./iteration-context-compactor.ts";
 import type { IterationEntry } from "./loop-ledger.ts";
@@ -28,6 +32,16 @@ function host(): WorkerHost & { calls: string[] } {
 }
 
 const signal = new AbortController().signal;
+
+function cleanWorkspace(route: ReturnType<typeof host>): string {
+  const cache = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(cache, { recursive: true });
+  const directory = mkdtempSync(join(cache, "already-satisfied-"));
+  execFileSync("git", ["init", "-q", directory]);
+  const acquire = route.acquire;
+  route.acquire = async (contract, requestId) => ({ ...await acquire(contract, requestId), directory });
+  return directory;
+}
 
 test("independent review and inner acceptance evidence precede completion", async () => {
   const route = host();
@@ -170,10 +184,46 @@ test("verification failure blocks and releases after review", async () => {
   assert.equal(route.calls.at(-1), "release:lease:worker route failed; reconcile outward effects");
 });
 
-test("a worker without progress blocks and releases the lease", async () => {
+test("a clean worker with no commit verifies satisfaction on base", async () => {
+  const route = host();
+  const directory = cleanWorkspace(route);
+  try {
+    route.runPlaybook = async () => { route.calls.push("worker"); return {
+      revision: "", evidence: ["criteria already met"], progress: false, costUsd: 0, sessionFile: "session.json",
+    }; };
+    const result = await createWorkerRoute(route).invoke(contract, 1, "run:base", signal);
+    assert.equal(result.kind, "verified");
+    assert.equal(result.hostCheck?.commitSha, "base");
+    assert.deepEqual(result.evidence, ["criteria already met", "acceptance result", "already satisfied on base base; nothing to commit"]);
+    assert.equal(result.sessionFile, "session.json");
+    assert.deepEqual(route.calls, ["acquire", "worker", "pstack", "host-check"]);
+  } finally { await removeTempDir(directory); }
+});
+
+test("a failed base check blocks without losing the worker's evidence", async () => {
+  const route = host();
+  const directory = cleanWorkspace(route);
+  try {
+    route.runPlaybook = async () => { route.calls.push("worker"); return {
+      revision: "", evidence: ["criteria already met"], progress: false, costUsd: 0,
+    }; };
+    route.runHostCheck = async (_workspace, command, revision) => {
+      route.calls.push("host-check");
+      return { command, exitCode: 1, commitSha: revision, startedAt: Date.now(), durationMs: 1,
+        timedOut: false, outputTail: "failed acceptance" };
+    };
+    const result = await createWorkerRoute(route).invoke(contract, 1, "run:failed-base", signal);
+    assert.equal(result.kind, "blocked");
+    assert.deepEqual(result.evidence, ["worker made no verified progress", "criteria already met", "acceptance result", "host check failed: failed acceptance"]);
+    assert.equal(result.hostCheck?.exitCode, 1);
+    assert.equal(route.calls.at(-1), "release:lease:worker made no verified progress");
+  } finally { await removeTempDir(directory); }
+});
+
+test("a worker without progress and no check command blocks and releases the lease", async () => {
   const route = host();
   route.runPlaybook = async () => { route.calls.push("worker"); return { revision: "", evidence: [], progress: false, costUsd: 0 }; };
-  assert.equal((await createWorkerRoute(route).invoke(contract, 1, "run:1", signal)).kind, "blocked");
+  assert.equal((await createWorkerRoute(route).invoke({ ...contract, checkCommand: undefined }, 1, "run:1", signal)).kind, "blocked");
   assert.deepEqual(route.calls, ["acquire", "worker", "release:lease:worker made no verified progress"]);
 });
 

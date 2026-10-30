@@ -10,7 +10,8 @@ export async function publishVerifiedCodingRun(input: {
   gitAction(request: CodingGitRequest): Promise<"applied" | "owner-eligible">;
 }): Promise<string | null> {
   const { snapshot, workspace } = input;
-  if (snapshot.state !== "done" || !input.hasDestination || !snapshot.evidence.some((line) => line.trim()) ||
+  if (snapshot.state !== "done" || snapshot.hostCheck?.commitSha === workspace.base ||
+    !input.hasDestination || !snapshot.evidence.some((line) => line.trim()) ||
     !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr") ||
     workspace.repository !== snapshot.contract.repository || workspace.baseBranch !== snapshot.contract.ref) return null;
   const branch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
