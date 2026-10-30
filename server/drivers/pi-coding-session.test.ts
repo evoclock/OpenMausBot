@@ -28,6 +28,9 @@ describe("isolated coding Pi agent directory", () => {
     expect(() => accessSync(seededPi, constants.X_OK)).not.toThrow();
     expect(codingPiAgentDir(root, "test-bot", hostPi)).toBe(agentDir);
     expect(realpathSync(seededPi)).toBe(hostPi);
+    const sessions = join(agentDir, "sessions");
+    expect(statSync(sessions).isDirectory()).toBe(true);
+    expect(statSync(sessions).mode & 0o777).toBe(0o700);
   });
 
   it("links the host model catalog and authentication into the isolated profile", () => {
@@ -104,6 +107,18 @@ describe("isolated coding Pi agent directory", () => {
     symlinkSync(external, join(agentDir, "harness"));
     expect(() => codingPiAgentDir(root, "test-bot", hostPi)).toThrow("Coding run denied: Pi harness is redirected");
     expect(existsSync(join(external, "bin"))).toBe(false);
+  });
+
+  it("refuses a redirected session directory before creating sessions outside the profile", () => {
+    const { root, hostPi } = fixture();
+    const external = join(root, "external");
+    mkdirSync(external);
+    const originalMode = statSync(external).mode & 0o777;
+    const agentDir = join(root, "bots", "test-bot", "pi");
+    mkdirSync(agentDir, { recursive: true });
+    symlinkSync(external, join(agentDir, "sessions"));
+    expect(() => codingPiAgentDir(root, "test-bot", hostPi)).toThrow("Coding run denied: Pi sessions are redirected");
+    expect(statSync(external).mode & 0o777).toBe(originalMode);
   });
 
   it("refuses a pre-existing non-executable CLI instead of starting a broken turn", () => {

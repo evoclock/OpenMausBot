@@ -20,7 +20,7 @@ import {
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { PiRpcChunks } from "./pi-rpc-chunks.ts";
-import { codingPiAgentDir, openPiSession } from "./pi-coding-session.ts";
+import { codingPiTurnRuntime, openPiSession } from "./pi-coding-session.ts";
 export { PiRpcChunks } from "./pi-rpc-chunks.ts";
 
 import type {
@@ -503,8 +503,8 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       if (startupModelRefresh) await startupModelRefresh;
       const { threadId } = turn;
       const codingRun = turn.codingRun;
-      const agentDir = codingRun ? codingPiAgentDir(DATA_DIR, turn.botId ?? "") : config.agentDir;
-      const turnEnv = codingRun ? { ...catalogEnv, PI_CODING_AGENT_DIR: agentDir } : catalogEnv;
+      const { env: turnEnv, cli: turnCli } = codingRun ? codingPiTurnRuntime(DATA_DIR, turn.botId ?? "", catalogEnv)
+        : { env: catalogEnv, cli: config.cli };
       const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
       if (!readiness.skill.ready) throw new Error(readiness.skill.action);
       const selection = parseToolScope(turn.toolScope);
@@ -556,7 +556,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
         try {
-          return spawnCli(config.cli, childArgs, {
+          return spawnCli(turnCli, childArgs, {
             stdio: ["pipe", "pipe", "pipe"],
             cwd: turn.cwd,
             env: {
@@ -874,7 +874,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
       }));
       child.on("error", (err) => {
-        const fail = describeSpawnFailure(err as NodeJS.ErrnoException, config.cli, turn.cwd);
+        const fail = describeSpawnFailure(err as NodeJS.ErrnoException, turnCli, turn.cwd);
         rejectWaiters(new Error(fail.message));
         emit({ ...base(threadId, turnId), type: "runtime.error", message: fail.message, setup: fail.setup });
         settle(false);

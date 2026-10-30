@@ -65,7 +65,21 @@ export function codingPiAgentDir(
   const auth = hostProfileFile(hostDir, "auth.json", "authentication");
   linkProfileFile(dir, catalog, "models-store.json", "model catalog");
   linkProfileFile(dir, auth, "auth.json", "authentication");
+  const sessions = join(dir, "sessions");
+  mkdirSync(sessions, { recursive: true, mode: 0o700 });
+  if (realpathSync(sessions) !== sessions || !statSync(sessions).isDirectory()) {
+    throw new Error("Coding run denied: Pi sessions are redirected");
+  }
+  chmodSync(sessions, 0o700);
   return dir;
+}
+
+export function codingPiTurnRuntime(dataDir: string, botId: string, env: Record<string, string | undefined>) {
+  const agentDir = codingPiAgentDir(dataDir, botId);
+  return {
+    env: { ...env, PI_CODING_AGENT_DIR: agentDir, PI_CODING_AGENT_SESSION_DIR: join(agentDir, "sessions") },
+    cli: join(agentDir, "harness", "bin", "pi"),
+  };
 }
 
 export async function openPiSession(

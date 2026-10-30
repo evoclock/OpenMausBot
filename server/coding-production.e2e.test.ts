@@ -72,7 +72,7 @@ async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied"
   const webhookPort = await reservePort();
   const port = mainPort.port;
   const base = `http://127.0.0.1:${port}`;
-  const env = { HOME: home, USERPROFILE: home, OMB_DATA_DIR: dataDir, OMB_PORT: String(port),
+  const env = { HOME: home, USERPROFILE: home, PI_CODING_AGENT_SESSION_DIR: join(home, "host-sessions"), OMB_DATA_DIR: dataDir, OMB_PORT: String(port),
     OMB_WEBHOOK_PORT: String(webhookPort.port), OMB_STATIC_DIR: join(home, "static"), NODE_ENV: "test",
     OMB_TEST_DRIVER_RUN_API_MODULE: pathToFileURL(join(serverDir, "testing", "fake-durable-driver.ts")).href,
     PATH: `${bin}:${process.env.PATH ?? ""}` };
@@ -172,8 +172,9 @@ test("two coding iterations retain session files in the run record and handover"
     }
     expect(iterations[1]?.sessionFile).not.toBe(iterations[0]?.sessionFile);
     const spawns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-      .filter((entry: { isTurnSpawn?: boolean }) => entry.isTurnSpawn) as Array<{ argv: string[]; env: { PI_CODING_AGENT_DIR?: string } }>;
+      .filter((entry: { isTurnSpawn?: boolean }) => entry.isTurnSpawn) as Array<{ argv: string[]; env: { PI_CODING_AGENT_DIR?: string; PI_CODING_AGENT_SESSION_DIR?: string } }>;
     expect(spawns).toHaveLength(4);
+    expect(spawns.every((entry) => entry.env.PI_CODING_AGENT_SESSION_DIR === join(entry.env.PI_CODING_AGENT_DIR!, "sessions"))).toBe(true);
     expect(spawns.every((entry) => !entry.argv.includes("--no-session"))).toBe(true);
     expect(new Set(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).size).toBe(2);
     expect(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).toContain(join(f.dataDir, "bots", reviewer.id, "pi"));
