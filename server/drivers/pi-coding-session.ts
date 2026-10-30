@@ -1,6 +1,30 @@
 import { accessSync, chmodSync, constants, lstatSync, mkdirSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+
+function hostProfileFile(hostDir: string, name: string, label: string): string {
+  const path = resolve(hostDir, name);
+  try {
+    const source = realpathSync(path);
+    const file = statSync(source);
+    if (!file.isFile() || file.size <= 2) throw new Error("empty or not a file");
+    accessSync(source, constants.R_OK);
+  } catch {
+    throw new Error(`Coding run denied: host Pi ${label} is unavailable`);
+  }
+  return path;
+}
+
+function linkProfileFile(agentDir: string, hostFile: string, name: string, label: string): void {
+  const target = join(agentDir, name);
+  if (lstatSync(target, { throwIfNoEntry: false })) {
+    try {
+      if (realpathSync(target) === realpathSync(hostFile) && lstatSync(target).isSymbolicLink()) return;
+    } catch {}
+    throw new Error(`Coding run denied: isolated Pi ${label} is not linked to the host`);
+  }
+  symlinkSync(hostFile, target);
+}
 
 export function codingPiAgentDir(
   dataDir: string,
@@ -36,6 +60,11 @@ export function codingPiAgentDir(
   } catch {
     throw new Error("Coding run denied: isolated Pi CLI is not executable");
   }
+  const hostDir = dirname(dirname(dirname(hostPi)));
+  const catalog = hostProfileFile(hostDir, "models-store.json", "model catalog");
+  const auth = hostProfileFile(hostDir, "auth.json", "authentication");
+  linkProfileFile(dir, catalog, "models-store.json", "model catalog");
+  linkProfileFile(dir, auth, "auth.json", "authentication");
   return dir;
 }
 

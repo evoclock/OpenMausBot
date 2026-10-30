@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ensureDirs, NATIVE_DIR } from "../config.ts";
 import type { ProviderInstance } from "../contracts.ts";
@@ -353,6 +353,7 @@ describe("PiDriver catalog (fake CLI)", () => {
 describe("PiDriver turns (fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
+  let savedHome: string | undefined;
 
   const create = async (
     mode?: string,
@@ -369,12 +370,24 @@ describe("PiDriver turns (fake CLI)", () => {
     recorder = recordEvents(instance.adapter);
   };
 
+  beforeAll(() => {
+    savedHome = process.env.HOME;
+    const scratch = join(process.cwd(), ".omb-scratch");
+    mkdirSync(scratch, { recursive: true });
+    process.env.HOME = mkdtempSync(join(scratch, "pi-driver-home-"));
+    const hostPi = join(process.env.HOME, ".pi", "pi", "harness", "bin", "pi");
+    mkdirSync(dirname(hostPi), { recursive: true });
+    symlinkSync(FAKE_CLI, hostPi);
+    writeFileSync(join(process.env.HOME, ".pi", "pi", "models-store.json"), JSON.stringify({ providers: { "openai-codex": { models: [{ id: "gpt-6-sol" }] } } }));
+    writeFileSync(join(process.env.HOME, ".pi", "pi", "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth" } }));
+  });
   beforeEach(() => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
-    const hostPi = join(process.env.HOME!, ".pi", "pi", "harness", "bin", "pi");
-    mkdirSync(dirname(hostPi), { recursive: true });
-    if (!existsSync(hostPi)) symlinkSync(FAKE_CLI, hostPi);
+  });
+  afterAll(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
   });
 
   it("refuses a restricted turn when the loaded extension has not confirmed enforcement", async () => {
