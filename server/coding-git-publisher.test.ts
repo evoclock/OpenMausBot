@@ -24,6 +24,17 @@ test("verified terminal coding runs publish one checked push then a draft PR", a
     branch, base: "main", action: "pr-open", draft: true });
 });
 
+test("a verified base revision never creates a branch or PR", async () => {
+  let calls = 0;
+  const result = await publishVerifiedCodingRun({ snapshot: { ...snapshot,
+    hostCheck: { command: ["true"], exitCode: 0, commitSha: workspace.base, startedAt: 1,
+      durationMs: 1, timedOut: false, outputTail: "" } }, workspace, hasDestination: true,
+    async createBranch() { calls++; }, async gitAction() { calls++; return "applied"; },
+  });
+  assert.equal(result, null);
+  assert.equal(calls, 0);
+});
+
 test("blocked runs and missing outward-write grants are never published", async () => {
   let calls = 0;
   const input = { workspace, hasDestination: true, async createBranch() { calls++; }, async gitAction() { calls++; return "applied" as const; } };

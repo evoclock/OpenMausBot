@@ -106,7 +106,11 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
             dirty = execFileSync("git", ["status", "--porcelain"], {
               cwd: workspace.directory, encoding: "utf8", timeout: 30_000,
             }).trim();
-          } catch { /* treat as clean */ }
+          } catch (error) {
+            const result = blocked("worker made no verified progress");
+            result.evidence.push(...report.evidence, `workspace status failed: ${error instanceof Error ? error.message : String(error)}`);
+            return result;
+          }
           if (dirty) {
             retainLease = true;
             return {
@@ -116,7 +120,31 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
               ...(modelsUsed.length ? { modelsUsed } : {}),
             };
           }
-          return blocked("worker made no verified progress");
+          const evidence = [...report.evidence];
+          let hostCheck: HostCheckRecord | undefined;
+          if (contract.checkCommand) {
+            try {
+              const verified = await host.verifyWithPstack(workspace, workspace.base, contract.successCriteria, signal);
+              if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
+              evidence.push(...(verified ?? []));
+              hostCheck = await host.runHostCheck(workspace, contract.checkCommand, workspace.base);
+              if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
+              if (verified?.some((item) => item.trim()) && hostCheck.exitCode === 0 && hostCheck.commitSha === workspace.base) {
+                retainLease = true;
+                return { kind: "verified", evidence: [...evidence, `already satisfied on base ${workspace.base}; nothing to commit`],
+                  hostCheck, costUsd: spentUsd, ...(sessionFile ? { sessionFile } : {}),
+                  ...(modelsUsed.length ? { modelsUsed } : {}) };
+              }
+              if (hostCheck.exitCode !== 0 || hostCheck.commitSha !== workspace.base) {
+                evidence.push(`host check failed: ${hostCheck.outputTail}`);
+              }
+            } catch (error) {
+              evidence.push(`base verification failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          const result = blocked("worker made no verified progress");
+          result.evidence.push(...evidence);
+          return { ...result, ...(hostCheck ? { hostCheck } : {}) };
         }
         const review = await host.review(workspace, roles.independentReview, report.revision, signal);
         modelsUsed.push(...(review.modelsUsed?.length ? review.modelsUsed : review.modelUsed ? [review.modelUsed] : []));
