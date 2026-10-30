@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { test } from "vitest";
-import { prepareCodingSeed } from "./seed-coding-run-data.mjs";
+import { LEASE_ITEM_I_DATA_TOKEN, leaseRolesFilePath, prepareCodingSeed } from "./seed-coding-run-data.mjs";
 
 const lease = "/fixture/.treehouse/openmausbot/1/openmausbot";
 const agents = "/fixture/pi-agentic-driver-agents";
@@ -32,6 +32,14 @@ test("seed rebases the roles file and agents base to the acquired lease and curr
   assert.deepEqual(result.routines.codingSettlementReceipts, []);
   assert.equal(config.codingRuns.rolesFilePath, "/old/.treehouse/1/pi-roles.json");
   assert.equal(config.codingRuns.registrations[0].ref, "docs/stale-branch");
+});
+
+test("seed resolves LEASE_ITEM_I_DATA placeholder to the lease pi-roles.json", () => {
+  const placeholder = `${LEASE_ITEM_I_DATA_TOKEN}/pi-roles.json`;
+  const result = seed({ codingRuns: { ...config.codingRuns, rolesFilePath: placeholder } });
+  assert.equal(result.config.codingRuns.rolesFilePath, leaseRolesFilePath(result.dataDir));
+  assert.equal(JSON.stringify(result.config).includes(LEASE_ITEM_I_DATA_TOKEN), false);
+  assert.equal(result.config.codingRuns.rolesFilePath.includes(LEASE_ITEM_I_DATA_TOKEN), false);
 });
 
 test("seed accepts one model shared by the worker and reviewer roles", () => {
