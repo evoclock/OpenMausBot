@@ -189,7 +189,7 @@ test("two coding iterations retain session files in the run record and handover"
 test.each([
   { mode: "coding" as const, expected: "done", released: false, localOnly: false },
   { mode: "coding" as const, expected: "done", released: false, localOnly: true },
-  { mode: "happy" as const, expected: "blocked", released: true, localOnly: false },
+  { mode: "happy" as const, expected: "done", released: false, localOnly: false },
   { mode: "permission" as const, expected: "blocked", released: true, localOnly: false },
   { mode: "coding-denied" as const, expected: "blocked", released: true, localOnly: false },
 ])("composed scheduled coding run uses Pi turns and %s workspace reconciliation", async ({ mode, expected, released, localOnly }) => {
@@ -229,7 +229,11 @@ test.each([
     }, "scheduled coding result");
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     expect(run.triggerSource).toBe("schedule");
-    expect(run.status, JSON.stringify(run)).toBe(mode === "coding" ? "completed" : "failed");
+    expect(run.status, JSON.stringify(run)).toBe(mode === "coding" || mode === "happy" ? "completed" : "failed");
+    if (mode === "happy") {
+      expect(run.output).toContain("already satisfied on base");
+      expect(run.output).toContain("nothing to commit");
+    }
     // Why: every composed coding run must publish its terminal snapshot to the owner status feed.
     await f.until(async () => {
       const feed = await f.api("GET", "/api/session-status") as { sessions: Array<{ sessionId: string; state: string }> };
