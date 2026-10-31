@@ -149,6 +149,11 @@ test.each(["clean", "dirty", "bundle-failure", "unpushed-clean", "ignored", "ign
 else if(a[0]==='ls-files' && ${JSON.stringify(condition === "ignored" || condition === "ignored-unreadable")}) process.stdout.write('ignored.txt\\0');\nelse if(a[0]==='-c') writeFileSync(${JSON.stringify(join(dir, "committed"))}, 'yes');\n\nelse if(a[0]==='bundle' && a[1]==='create') writeFileSync(a[2], 'bundle');\nelse if(a[0]==='bundle' && a[1]==='verify' && ${JSON.stringify(condition === "bundle-failure")}) process.exit(1);\n`);
   chmodSync(fakeTreehouse, 0o755);
   chmodSync(fakeGit, 0o755);
+  if (condition === "ignored") {
+    const legacy = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
+    legacy.exec("CREATE TABLE coding_workspaces (request_id TEXT PRIMARY KEY, contract TEXT NOT NULL, path TEXT, lease_id TEXT, base_sha TEXT)");
+    legacy.close();
+  }
   const workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: dir,
     executable: fakeTreehouse, gitExecutable: fakeGit, salvageDir: join(dir, "salvage") });
   const db = new DatabaseSync(join(dir, "coding-workspaces.sqlite"));
@@ -175,7 +180,11 @@ else if(a[0]==='ls-files' && ${JSON.stringify(condition === "ignored" || conditi
   } finally { workspace.close(); }
 });
 
-test("acquire creates and pushes a named upstream branch when Treehouse returns a detached slot", async () => {
+test.each([
+  { baselineCount: 10_001, newCount: 0, blocked: false },
+  { baselineCount: 2, newCount: 2, blocked: false },
+  { baselineCount: 0, newCount: 10_001, blocked: true },
+])("release salvages only newly ignored files (baseline $baselineCount, new $newCount)", async ({ baselineCount, newCount, blocked }) => {
   const cache = join(process.cwd(), ".omb-scratch", "coding-treehouse-tests");
   mkdirSync(cache, { recursive: true });
   const dir = mkdtempSync(join(cache, "coding-branch-"));
@@ -191,11 +200,13 @@ test("acquire creates and pushes a named upstream branch when Treehouse returns 
     git(root, "init", "-b", "main");
     git(root, "remote", "add", "origin", bare);
     writeFileSync(join(root, "TASKS.md"), "base\n");
-    git(root, "add", "TASKS.md");
+    writeFileSync(join(root, ".gitignore"), "*.ignored\n");
+    git(root, "add", "TASKS.md", ".gitignore");
     git(root, "-c", "user.name=evoclock", "-c", "user.email=52983349+evoclock@users.noreply.github.com", "commit", "-m", "base");
     git(root, "push", "--set-upstream", "origin", "main");
     git(dir, "clone", "--branch", "main", bare, slot);
     git(slot, "checkout", "--detach", "main");
+    for (let index = 0; index < baselineCount; index++) writeFileSync(join(slot, `baseline-${index}.ignored`), "preexisting");
     const state = join(dir, "state.json");
     const executable = join(dir, "fake-treehouse.mjs");
     const pushCalls: string[] = [];
@@ -211,6 +222,10 @@ if (args[0] === 'status') {
  const holder = args[args.indexOf('--lease-holder') + 1];
  writeFileSync(state, JSON.stringify({ holder }));
  console.log(JSON.stringify({ path, lease_id: 'coding-lease' }));
+} else if (args[0] === 'return') {
+ if (args[args.indexOf('--if-lease-id') + 1] !== 'coding-lease' ||
+   args[args.indexOf('--if-lease-holder') + 1] !== JSON.parse(readFileSync(state, 'utf8')).holder) process.exit(2);
+ writeFileSync(state, JSON.stringify({ holder: null }));
 } else process.exit(1);
 `, { mode: 0o755 });
     workspace = new CodingTreehouseWorkspace({
@@ -232,6 +247,28 @@ if (args[0] === 'status') {
     assert.equal(git(bare, "rev-parse", `refs/heads/${expectedBranch}`), git(slot, "rev-parse", "HEAD"));
     assert.deepEqual(pushCalls, [expectedBranch]);
     assert.deepEqual(workspace.findForRun(contract.id), acquired);
+    workspace.close();
+    workspace = new CodingTreehouseWorkspace({ repository: contract.repository, root, dataDir: join(dir, "data"),
+      executable, salvageDir: join(dir, "salvage"), verifyRepository: () => true, verifySlot: () => true });
+    for (let index = 0; index < newCount; index++) writeFileSync(join(slot, `created-${index}.ignored`), "new");
+    if (blocked) {
+      await assert.rejects(workspace.release(acquired.leaseId), /Too many ignored files to salvage; lease retained/);
+      assert.equal(JSON.parse(readFileSync(state, "utf8")).holder !== null, true);
+      assert.deepEqual(workspace.findForRun(contract.id), acquired);
+    } else {
+      await workspace.release(acquired.leaseId);
+      assert.equal(JSON.parse(readFileSync(state, "utf8")).holder, null);
+      assert.equal(workspace.findForRun(contract.id), undefined);
+      if (newCount) {
+        const salvage = join(dir, "salvage");
+        const folder = readdirSync(salvage).find((name) => name.startsWith("ignored-"));
+        assert.ok(folder);
+        assert.equal(readdirSync(join(salvage, folder)).length, newCount);
+        assert.equal(readFileSync(join(salvage, folder, "created-0.ignored"), "utf8"), "new");
+        assert.match(readFileSync(join(salvage, "INDEX.md"), "utf8"), /ignored files/);
+        assert.equal(existsSync(join(salvage, folder, "baseline-0.ignored")), false);
+      } else assert.equal(existsSync(join(dir, "salvage")), false);
+    }
   } finally {
     workspace?.close();
     await removeTempDir(dir);
