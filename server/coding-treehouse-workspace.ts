@@ -61,9 +61,10 @@ export class CodingTreehouseWorkspace {
     });
     mkdirSync(options.dataDir, { recursive: true });
     this.db = new DatabaseSync(join(options.dataDir, "coding-workspaces.sqlite"));
-    this.db.exec("CREATE TABLE IF NOT EXISTS coding_workspaces (request_id TEXT PRIMARY KEY, contract TEXT NOT NULL, path TEXT, lease_id TEXT, base_sha TEXT)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS coding_workspaces (request_id TEXT PRIMARY KEY, contract TEXT NOT NULL, path TEXT, lease_id TEXT, base_sha TEXT, ignored_baseline TEXT)");
     const columns = this.db.prepare("PRAGMA table_info(coding_workspaces)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "base_sha")) this.db.exec("ALTER TABLE coding_workspaces ADD COLUMN base_sha TEXT");
+    if (!columns.some((column) => column.name === "ignored_baseline")) this.db.exec("ALTER TABLE coding_workspaces ADD COLUMN ignored_baseline TEXT");
   }
   private readonly repository: string;
   private readonly executable: string;
@@ -118,8 +119,9 @@ export class CodingTreehouseWorkspace {
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.prepare("INSERT OR IGNORE INTO coding_workspaces (request_id, contract) VALUES (?, ?)").run(requestId, identity);
-      const row = this.db.prepare("SELECT contract, path, lease_id, base_sha FROM coding_workspaces WHERE request_id = ?")
-        .get(requestId) as { contract: string; path: string | null; lease_id: string | null; base_sha: string | null };
+      const row = this.db.prepare("SELECT contract, path, lease_id, base_sha, ignored_baseline FROM coding_workspaces WHERE request_id = ?")
+        .get(requestId) as { contract: string; path: string | null; lease_id: string | null; base_sha: string | null;
+          ignored_baseline: string | null };
       if (row.contract !== identity) throw new Error("workspace request conflicts with its original contract");
       const matching = this.slots().filter((slot) => slot.status === "leased" && slot.lease_holder === holder);
       if (matching.length > 1) throw new Error("multiple leased workspaces match the coding request");
@@ -153,8 +155,9 @@ export class CodingTreehouseWorkspace {
       }
       const base = row.base_sha ?? currentHead;
       await this.ensureWorkspaceBranch(slot.path, contract, requestId, branch, currentHead, base, currentStatus);
-      this.db.prepare("UPDATE coding_workspaces SET path = ?, lease_id = ?, base_sha = ? WHERE request_id = ?")
-        .run(slot.path, slot.lease_id, base, requestId);
+      const baseline = row.base_sha ? row.ignored_baseline : JSON.stringify(this.ignoredFiles(slot.path));
+      this.db.prepare("UPDATE coding_workspaces SET path = ?, lease_id = ?, base_sha = ?, ignored_baseline = ? WHERE request_id = ?")
+        .run(slot.path, slot.lease_id, base, baseline, requestId);
       this.db.exec("COMMIT");
       return { repository: contract.repository, directory: slot.path, branch, baseBranch: contract.ref,
         base, leaseId: slot.lease_id };
@@ -219,6 +222,10 @@ export class CodingTreehouseWorkspace {
     })();
     if (upstream !== `origin/${branch}`) throw new Error("coding workspace upstream does not resolve to its remote-tracking branch");
   }
+  private ignoredFiles(path: string): string[] {
+    return execFileSync(this.gitExecutable, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+      { cwd: path, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }).toString("utf8").split("\0").filter(Boolean);
+  }
   private gitCommonDir(path: string): string {
     const output = execFileSync(this.gitExecutable, ["rev-parse", "--path-format=absolute", "--git-common-dir"],
       { cwd: path, encoding: "utf8", timeout: 10_000 }).trim();
@@ -229,8 +236,9 @@ export class CodingTreehouseWorkspace {
     if (!slot || !slot.lease_holder?.startsWith("omb-coding-") || !this.verifySlot(slot.path)) {
       throw new Error("workspace lease cannot be verified for release");
     }
-    const recorded = this.db.prepare("SELECT request_id, contract, base_sha FROM coding_workspaces WHERE path = ? AND lease_id = ?")
-      .get(slot.path, leaseId) as { request_id: string; contract: string; base_sha: string | null } | undefined;
+    const recorded = this.db.prepare("SELECT request_id, contract, base_sha, ignored_baseline FROM coding_workspaces WHERE path = ? AND lease_id = ?")
+      .get(slot.path, leaseId) as { request_id: string; contract: string; base_sha: string | null;
+        ignored_baseline: string | null } | undefined;
     if (!recorded?.base_sha || slot.lease_holder !== `omb-coding-${createHash("sha256").update(recorded.request_id).digest("hex").slice(0, 24)}`) {
       throw new Error("workspace lease does not belong to this request");
     }
@@ -264,8 +272,8 @@ export class CodingTreehouseWorkspace {
       appendFileSync(join(dir, "INDEX.md"), `- ${activeBranch} | ${bundle} | ${slot.path}\n`);
     }
     if (git("status", "--porcelain", "--untracked-files=all")) throw new Error("workspace changed during reconciliation");
-    const ignored = execFileSync(this.gitExecutable, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
-      { cwd: slot.path, timeout: 30_000, maxBuffer: 16 * 1024 * 1024 }).toString("utf8").split("\0").filter(Boolean);
+    const baseline = new Set<string>(recorded.ignored_baseline ? JSON.parse(recorded.ignored_baseline) as string[] : []);
+    const ignored = this.ignoredFiles(slot.path).filter((name) => !baseline.has(name));
     if (ignored.length > 10_000) throw new Error("Too many ignored files to salvage; lease retained");
     if (ignored.length) {
       const target = join(this.salvageDir, `ignored-${suffix}-${randomUUID()}`);
