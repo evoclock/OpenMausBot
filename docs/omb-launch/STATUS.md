@@ -1,6 +1,6 @@
 # OMB launch chase — five items (4 open + 1 final parked)
 
-Updated: 2026-11-05 ~18:52 Europe/London · Julen Accept FM t228u (poteto prove + launchd Q defaults); #82 Tip CI tests pending; Ralph local commit, no DRAFT yet
+Updated: 2026-11-05 ~18:54 Europe/London · CORRECTION t228u = poteto PROBE only; Item 3 PARITY OPEN (roles RED); #82 tip fix pending
 
 **Parity bar:** OMB coding replacement = items 1–4 (incl. launchd REQUIRED). **Full fleet automation parity** also needs Item 5 tracker cadence → OMB after Julen confirms OMB works as planned (Julen HARD ~18:41).
 
@@ -23,17 +23,17 @@ Updated: 2026-11-05 ~18:52 Europe/London · Julen Accept FM t228u (poteto prove 
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/` |
 | Target | ONE DRAFT PR on evoclock/OpenMausBot (effectInspector + crash-safe publish) |
 
-## 3. poteto-mode Pi parity — PROVE DONE (skill gate)
+## 3. poteto-mode Pi parity — PROBE ACCEPTED / PARITY OPEN
 
 | | |
 |---|---|
-| Status | **DONE for launch-bar skill gate** — Accept FM t228u; skill GREEN; roles RED noted (non-blocking this Accept) |
-| Accept | FM voice ~18:35 + t203s889 (ff) · **t228u prove** |
+| Status | **PROBE ACCEPTED** (FM t228u CORRECTION) — skill GREEN on `:8799`; **Item 3 still OPEN** |
+| Blocking for parity | roles development + independent-review **RED** — need `.pi/pstack-model-roles.v1.json` (blocking, not optional) |
+| Accept | t203s889 ff · t228u **probe** only (not full parity close) |
 | Dig | [poteto-parity-verify.md](./poteto-parity-verify.md) |
 | HEAD | `b726a68d7561e1bb7ec0cf1d24f397949112a506` == origin/main |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/poteto-t203s889/RESULT.md` |
-| Probe | API `:8799` Tot `7adf5c97…` skill.ready true; get_commands has poteto-mode-pi + statechart-pi; roles false |
-| Left | npm morning `@evoclock/pi-poteto-mode` (t73u); optional roles file for full coding readiness |
+| Left | roles file + end-behavior until readiness roles green; npm morning `@evoclock/pi-poteto-mode` |
 
 
 ## 4. Always-on Pi under launchd — REQUIRED · Qs ANSWERED · install AFTER Ralph DRAFT

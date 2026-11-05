@@ -35,13 +35,15 @@ Mark DONE only with evidence pointer (PR, RESULT.md path, or Julen Accept id).
 - [ ] READY DRAFT PR on evoclock/OpenMausBot (effectInspector + crash-safe publish)
 - Evidence: `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/`
 
-## [ ] 3. poteto-mode recipe/playbook Pi parity + end-behavior
+## [ ] 3. poteto-mode recipe/playbook Pi parity + end-behavior — PROBE ACCEPTED / PARITY OPEN
 
-- [x] Dig: [poteto-parity-verify.md](./poteto-parity-verify.md) — host stale; GitHub tip OK
+- [x] Dig: [poteto-parity-verify.md](./poteto-parity-verify.md)
 - [x] Julen Accept poteto (FM voice ~18:35 + t203s889)
-- [x] Host GitHub ff → `b726a68` (t203s889) — evidence `~/openmausbot/.omb-scratch/item-i-evidence/poteto-t203s889/RESULT.md`
-- [x] Readiness/skill prove (Accept FM t228u): skill GREEN (poteto-mode-pi + statechart-pi); roles RED noted non-blocking for launch-bar skill gate — evidence `~/openmausbot/.omb-scratch/item-i-evidence/poteto-t203s889/RESULT.md`
+- [x] Host GitHub ff → `b726a68` — evidence `~/openmausbot/.omb-scratch/item-i-evidence/poteto-t203s889/RESULT.md`
+- [x] Probe skill GREEN (Accept FM t228u **probe only**) — evidence same RESULT.md
+- [ ] Item 3 parity OPEN — roles RED need `.pi/pstack-model-roles.v1.json` + end-behavior; probe ≠ closed
 - [ ] npm morning `@evoclock/pi-poteto-mode`
+
 
 ## [ ] 4. Always-on Pi under launchd (coding host) — REQUIRED
 
