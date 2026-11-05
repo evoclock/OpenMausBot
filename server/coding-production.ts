@@ -8,6 +8,8 @@ import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost } from
 import type { CodingRunConfig } from "./coding-run-config.ts";
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
+import { createCodingGithubEffectHost } from "./coding-github-effect-host.ts";
+import { CodingEffectReceipts } from "./coding-effect-receipts.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingRunStatusReporter } from "./coding-run-status.ts";
@@ -114,6 +116,23 @@ export async function openProductionCodingRuntime(options: {
     },
   });
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
+  const effectReceipts = new CodingEffectReceipts(join(codingDir, "effect-receipts.sqlite"));
+  const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
+  const effectHost = gitHost.effectInspector && createCodingGithubEffectHost({
+    inspector: gitHost.effectInspector, gitAction,
+    async resolve(receipt) {
+      const snapshot = runStore.get(receipt.runId);
+      const workspace = workspaceManager.findForRun(receipt.runId);
+      if (!snapshot || !workspace || snapshot.contract.repository !== receipt.effect.repository ||
+        receipt.sequence !== snapshot.iteration + 1 || snapshot.state !== "done" ||
+        !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr")) {
+        throw new Error("Publication receipt has no matching terminal run and workspace");
+      }
+      return { botId: snapshot.contract.botId, repository: snapshot.contract.repository,
+        workspace: workspace.directory, branch: `bot/coding-${snapshot.contract.id.slice(0, 12)}`,
+        base: snapshot.contract.ref };
+    },
+  });
   const status = options.statusFeed && createCodingRunStatusReporter({ feed: options.statusFeed,
     list: () => runStore.list(), wake: (wakes) => options.wakeOwner?.(wakes) });
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
@@ -221,25 +240,34 @@ export async function openProductionCodingRuntime(options: {
     if (!run?.threadId) return false;
     runStore.linkRoutine(run.id, snapshot.contract.id);
     runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
-    if (snapshot.state === "done" && !publicationResults.has(snapshot.contract.id)) {
+    const savedPublication = effectReceipts.publicationResult(snapshot.contract.id);
+    if (savedPublication) publicationResults.set(snapshot.contract.id, savedPublication);
+    if (snapshot.state === "done" && !savedPublication) {
       const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
       if (!workspace) return false;
       if (!publishing.has(snapshot.contract.id)) {
         let publication: Promise<string>;
         if (snapshot.hostCheck?.commitSha === workspace.base) {
-          publication = workspaceManager.release(workspace.leaseId)
-            .then(() => "Already satisfied on base; nothing to publish");
+          publication = Promise.resolve().then(() => {
+            const result = "Already satisfied on base; nothing to publish";
+            effectReceipts.savePublicationResult(snapshot.contract.id, result);
+            return workspaceManager.release(workspace.leaseId).then(() => result);
+          });
         } else {
           const candidateBranch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
           const hasDestination = (config.gitDestinations?.[snapshot.contract.botId] ?? []).some((grant) =>
             grant.repository === snapshot.contract.repository && candidateBranch.startsWith(grant.branchPrefix));
-          publication = publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
-            createBranch: (directory, branch, base) => gitHost.port.createBranch(directory, branch, base), gitAction })
+          publication = (!hasDestination ? Promise.resolve(null)
+            : effectHost ? publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
+              createBranch: (directory, branch, base) => gitHost.port.createBranch(directory, branch, base),
+              receipts: effectReceipts, effectHost, head: (directory) => gitHost.port.head(directory) })
+              : Promise.reject(new Error("GitHub effect inspection is unavailable")))
             .then(async (branch) => {
-              if (!branch) return "No authorized Git destination was configured";
-              await workspaceManager.release(workspace.leaseId);
-              return `Published draft branch ${branch}`;
-            }, (error) => `Draft publication failed: ${error instanceof Error ? error.message : String(error)}`);
+              const result = branch ? `Published draft branch ${branch}` : "No authorized Git destination was configured";
+              effectReceipts.savePublicationResult(snapshot.contract.id, result);
+              if (branch) await workspaceManager.release(workspace.leaseId);
+              return result;
+            });
         }
         publishing.set(snapshot.contract.id, publication);
         void publication.then((result) => {
@@ -247,7 +275,8 @@ export async function openProductionCodingRuntime(options: {
           publishing.delete(snapshot.contract.id);
           reportPending();
         }, (error) => {
-          console.error("Coding workspace release failed:", error);
+          publishing.delete(snapshot.contract.id);
+          console.error("Coding draft publication requires reconciliation:", error);
         });
       }
       return false;
@@ -261,7 +290,7 @@ export async function openProductionCodingRuntime(options: {
       threadId: run.threadId, text: `Coding run ${snapshot.state}: ${models ? `Models: ${models}. ` : ""}${detail}` }) === "delivered";
   };
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
-    contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host,
+    contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host, effectInspector: effectHost,
     routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver,
     onStart: () => status?.tick(), loadDriver,
     async onCancel(snapshot) {
@@ -286,7 +315,6 @@ export async function openProductionCodingRuntime(options: {
     try { status.tick(); } catch { console.error("coding run status feed unavailable"); }
   }, 60_000);
   statusTimer?.unref();
-  const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
   const dispatch = async (run: RoutineRun, botId: string, threadId: string) => {
     const id = run.triggerSource === "webhook" && run.webhookId && run.deliveryId
       ? webhookCodingRunId(run.webhookId, run.deliveryId) : scheduledCodingRunId(run);
@@ -314,6 +342,6 @@ export async function openProductionCodingRuntime(options: {
     hold: runtime.hold,
     resumeRun: runtime.resumeRun,
     cancel: runtime.cancel,
-    async close() { if (statusTimer) clearInterval(statusTimer); await runtime.close(); delivery.close(); runStore.close(); workspaceManager.close(); },
+    async close() { if (statusTimer) clearInterval(statusTimer); await runtime.close(); delivery.close(); effectReceipts.close(); runStore.close(); workspaceManager.close(); },
   };
 }

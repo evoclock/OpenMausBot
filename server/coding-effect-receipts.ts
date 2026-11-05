@@ -24,12 +24,25 @@ export class CodingEffectReceipts {
       intent TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('prepared', 'confirmed')),
       PRIMARY KEY (run_id, sequence, effect_key)
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS coding_publication_results (
+      run_id TEXT PRIMARY KEY, result TEXT NOT NULL
+    )`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS coding_effect_step_results (
       run_id TEXT NOT NULL, sequence INTEGER NOT NULL, request_id TEXT NOT NULL,
       result TEXT NOT NULL, PRIMARY KEY (run_id, sequence)
     )`);
   }
   close(): void { this.db.close(); }
+  publicationResult(runId: string): string | null {
+    const row = this.db.prepare("SELECT result FROM coding_publication_results WHERE run_id = ?")
+      .get(runId) as { result: string } | undefined;
+    return row?.result ?? null;
+  }
+  savePublicationResult(runId: string, result: string): void {
+    if (!runId || !result) throw new Error("invalid publication result");
+    this.db.prepare("INSERT OR IGNORE INTO coding_publication_results VALUES (?, ?)").run(runId, result);
+    if (this.publicationResult(runId) !== result) throw new Error("publication result conflicts with saved result");
+  }
   saveResult(runId: string, sequence: number, requestId: string, result: InnerLoopResult): void {
     if (!runId || !Number.isSafeInteger(sequence) || sequence <= 0 || requestId !== `${runId}:${sequence}` ||
       !["progress", "verified", "blocked"].includes(result.kind) || !Array.isArray(result.evidence) ||

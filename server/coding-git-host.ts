@@ -74,8 +74,56 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
     if (!token) throw new Error("GitHub App installation credential unavailable for configured repository");
     return token;
   };
+  const readEffect = async (owner: string, repo: string, path: string) => {
+    const repository = `${owner}/${repo}`;
+    if (!REPOSITORY.test(repository)) throw new Error("Invalid effect repository");
+    const grants = Object.values(config.gitDestinations ?? {}).flat().filter((grant) =>
+      grant.repository === repository && grant.credential.kind === "github-app");
+    if (grants.length !== 1) throw new Error("Effect repository has no unique App credential");
+    return gitHubJson(await tokenFor(grants[0]!.credential, repository), `/repos/${repository}${path}`, undefined, request);
+  };
   const host: CodingGitHost = {
     credentials,
+    effectInspector: {
+      async getBranchRef({ owner, repo, ref }) {
+        const repository = `${owner}/${repo}`;
+        try {
+          const token = await (async () => {
+            const grants = Object.values(config.gitDestinations ?? {}).flat().filter((grant) =>
+              grant.repository === repository && grant.credential.kind === "github-app");
+            if (grants.length !== 1) throw new Error("Effect repository has no unique App credential");
+            return tokenFor(grants[0]!.credential, repository);
+          })();
+          await gitHubJson(token, `/repos/${repository}`, undefined, request);
+          const response = await request(`https://api.github.com/repos/${repository}/git/ref/heads/${encodeURIComponent(ref)}`,
+            { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${token}`,
+              "x-github-api-version": "2022-11-28" }, signal: AbortSignal.timeout(15_000) });
+          if (response.status === 404) return { kind: "absent" as const };
+          if (!response.ok) return { kind: "inconclusive" as const, reason: `HTTP ${response.status}` };
+          const data = await response.json() as { object?: { sha?: unknown } };
+          return typeof data.object?.sha === "string" ? { kind: "found" as const, sha: data.object.sha }
+            : { kind: "inconclusive" as const, reason: "Malformed ref" };
+        } catch { return { kind: "inconclusive" as const, reason: "Ref inspection failed" }; }
+      },
+      async findPullRequests({ owner, repo, head, base }) {
+        try {
+          const query = new URLSearchParams({ state: "all", head: `${owner}:${head}`, base, per_page: "100" });
+          const rows = await readEffect(owner, repo, `/pulls?${query}`);
+          if (!Array.isArray(rows) || rows.length >= 100) return { kind: "inconclusive" as const, reason: "Incomplete PR listing" };
+          const prs = rows.filter((pr) => pr.base?.ref === base && pr.head?.ref === head &&
+            pr.head?.repo?.full_name === `${owner}/${repo}`);
+          if (!prs.length) return { kind: "absent" as const };
+          if (prs.some((pr) => pr.draft !== true || pr.state !== "open")) {
+            return { kind: "inconclusive" as const, reason: "PR is not an open draft" };
+          }
+          return { kind: "found" as const, prs: prs.map((pr) => ({ number: pr.number,
+            headSha: pr.head?.sha, state: pr.state })) };
+        } catch { return { kind: "inconclusive" as const, reason: "PR inspection failed" }; }
+      },
+      async findCommentsByIdempotencyKey() {
+        return { kind: "inconclusive" as const, reason: "Comment reconciliation is not configured" };
+      },
+    },
     async inspect(repository, gitRequest?: CodingGitRequest): Promise<RepositoryFacts> {
       const match = REPOSITORY.exec(repository);
       if (!match) throw new Error("GitHub repository identity is invalid");

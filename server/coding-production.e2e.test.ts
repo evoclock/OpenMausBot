@@ -610,7 +610,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     const receipt = afterStore.step(before!.contract.id, before!.iteration);
     afterStore.close();
     expect(after?.state).toBe("blocked");
-    expect(after?.evidence.join(" ")).toContain("unknown outward effect");
+    expect(after?.evidence.join(" ")).toContain("interrupted iteration has no outward effect receipts");
     expect(receipt?.status).toBe("prepared");
     expect(f.git(f.leased, "rev-list", "--count", "main..HEAD")).toBe("1");
     const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
