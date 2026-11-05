@@ -1,6 +1,6 @@
 # OMB launch chase — five items (4 open + 1 final parked)
 
-Updated: 2026-11-05 ~18:54 Europe/London · CORRECTION t228u = poteto PROBE only; Item 3 PARITY OPEN (roles RED); #82 tip fix pending
+Updated: 2026-11-05 ~18:56 Europe/London · Ralph #83 READY DRAFT — Ralph-first CLEARED for launchd design→install
 
 **Parity bar:** OMB coding replacement = items 1–4 (incl. launchd REQUIRED). **Full fleet automation parity** also needs Item 5 tracker cadence → OMB after Julen confirms OMB works as planned (Julen HARD ~18:41).
 
@@ -13,15 +13,17 @@ Updated: 2026-11-05 ~18:54 Europe/London · CORRECTION t228u = poteto PROBE only
 | Merged | 2026-11-05T18:37:13Z · SHA `cc7bac96c4e6551d67f692fa139e69457b2700c6` |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/i-90-step9/` |
 
-## 2. Ralph production settlement — RATIFIED / FIRE chasing
+## 2. Ralph production settlement — READY DRAFT
 
 | | |
 |---|---|
-| Status | **FIRE chasing READY** — Accept FM t191s840 + t203s889 |
-| Fire | w1J:p1Z `omb-ralph-i91` · OMB slot5 `feat/ralph-crash-safe-publish` @ `d61c16720` (+dirty coding-git-host.ts); **no PR yet** |
+| Status | **READY DRAFT** — Accept FM t191s840 + t203s889 |
+| Draft PR | https://github.com/evoclock/OpenMausBot/pull/83 |
+| Head | `a516c1fee` · `feat/ralph-crash-safe-publish` |
 | Dig | [ralph-seams-gap.md](./ralph-seams-gap.md) |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/` |
-| Target | ONE DRAFT PR on evoclock/OpenMausBot (effectInspector + crash-safe publish) |
+| Next | Tip CI green → Julen undraft+merge Accept (launchd KeepAlive after) |
+
 
 ## 3. poteto-mode Pi parity — PROBE ACCEPTED / PARITY OPEN
 
@@ -36,7 +38,7 @@ Updated: 2026-11-05 ~18:54 Europe/London · CORRECTION t228u = poteto PROBE only
 | Left | roles file + end-behavior until readiness roles green; npm morning `@evoclock/pi-poteto-mode` |
 
 
-## 4. Always-on Pi under launchd — REQUIRED · Qs ANSWERED · install AFTER Ralph DRAFT
+## 4. Always-on Pi under launchd — REQUIRED · Qs ANSWERED · Ralph-first CLEARED · design→install NOW
 
 | | |
 |---|---|

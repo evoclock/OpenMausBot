@@ -28,11 +28,12 @@ Mark DONE only with evidence pointer (PR, RESULT.md path, or Julen Accept id).
 - [x] Undraft+merge Tip CI green (Julen Accept FM t185s812) — MERGED 2026-11-05T18:37:13Z
 - Evidence: `~/openmausbot/.omb-scratch/item-i-evidence/i-90-step9/`
 
-## [ ] 2. Ralph production settlement seams — RATIFIED FIRE
+## [ ] 2. Ralph production settlement seams — READY DRAFT #83
 
 - [x] Gap dig: [ralph-seams-gap.md](./ralph-seams-gap.md)
 - [x] Julen RATIFY Accept FM t191s840 + t203s889 (keep READY chase)
-- [ ] READY DRAFT PR on evoclock/OpenMausBot (effectInspector + crash-safe publish)
+- [x] READY DRAFT https://github.com/evoclock/OpenMausBot/pull/83 (`a516c1fee`)
+- [ ] Tip CI green → Julen undraft+merge
 - Evidence: `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/`
 
 ## [ ] 3. poteto-mode recipe/playbook Pi parity + end-behavior — PROBE ACCEPTED / PARITY OPEN
@@ -51,7 +52,7 @@ Mark DONE only with evidence pointer (PR, RESULT.md path, or Julen Accept id).
 - [x] Julen HARD: required launch asset (not optional)
 - [x] Julen Accept launch (FM voice ~18:35 + t203s889 PROCEED)
 - [x] Brief Q1–4 answered = defaults (Accept FM t228u): headless OMB · Electron client/off · pinned tag · Herdr under launchd too · Ralph-first
-- [ ] Install KeepAlive `com.openmausbot.coding-host` (+ Herdr) LaunchAgent — after Ralph DRAFT preferred
+- [ ] Install KeepAlive `com.openmausbot.coding-host` (+ Herdr) LaunchAgent — Ralph #83 DRAFT cleared gate; design→install NOW
 - [ ] Prove host survives reboot / crash restart without owner babysitting
 
 
