@@ -1,48 +1,68 @@
-# OMB launch chase — four open items
+# OMB launch chase — five items (4 open + 1 final parked)
 
-Updated: 2026-11-05 ~18:36 Europe/London · Driver: Launch Driver · OMB (`bdceec02-2aba-4fbf-822a-6ae737ef4b77`) · Ship: Gilfoyle
+Updated: 2026-11-05 ~18:42 Europe/London · Driver: Launch Driver · OMB · Ship: Gilfoyle · poteto ff b726a68; Item 5 PARKED
 
-**Parity bar:** OMB counts as Grok Bot replacement only when all four items below are done, including **always-on Pi under launchd** (Julen HARD ~18:35 via Flockmate — required, not optional).
+**Parity bar:** OMB coding replacement = items 1–4 (incl. launchd REQUIRED). **Full fleet automation parity** also needs Item 5 tracker cadence → OMB after Julen confirms OMB works as planned (Julen HARD ~18:41).
 
-## 1. Step 9 / Item I re-fire — CLOSED (roadmap)
+## 1. Step 9 / Item I re-fire — MERGED
 
 | | |
 |---|---|
-| Status | **CLOSED** — Julen t179s783 + DRAFT #120 |
-| Draft PR | https://github.com/evoclock/pi-agentic-driver-agents/pull/120 |
-| Head | `9138d86` |
-| Merge | Julen Accept undraft+merge when Tip CI green (FM t185s812) — Gilfoyle chasing; Tip CI re-run may still be in flight |
+| Status | **MERGED** — Tip CI full green → undraft+merge (Julen Accept FM t185s812) |
+| PR | https://github.com/evoclock/pi-agentic-driver-agents/pull/120 |
+| Merged | 2026-11-05T18:37:13Z · SHA `cc7bac96c4e6551d67f692fa139e69457b2700c6` |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/i-90-step9/` |
 
 ## 2. Ralph production settlement — RATIFIED / FIRE chasing
 
 | | |
 |---|---|
-| Status | **RATIFY** Julen Accept FM t191s840 — chase READY DRAFT |
-| Fire | w1J:p1Z `omb-ralph-i91` · OMB slot5 `feat/ralph-crash-safe-publish` @ `9021adb93` |
+| Status | **FIRE chasing READY** — Accept FM t191s840 + t203s889 |
+| Fire | w1J:p1Z `omb-ralph-i91` · OMB slot5 `feat/ralph-crash-safe-publish` — WT dirty expanding (coding-production/git-host/publisher/receipts); still @ base `9021adb93` no commit/PR |
 | Dig | [ralph-seams-gap.md](./ralph-seams-gap.md) |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/` |
 | Target | ONE DRAFT PR on evoclock/OpenMausBot (effectInspector + crash-safe publish) |
 
-## 3. poteto-mode Pi parity — ACCEPTED (host refresh)
+## 3. poteto-mode Pi parity — ff DONE / readiness BLOCKED
 
 | | |
 |---|---|
-| Status | Julen Accept (FM voice ~18:35: accepted poteto) — execute host refresh |
+| Status | GitHub ff **DONE** → `b726a68`; readiness **BLOCKED** (OMB app not up) |
+| Accept | FM voice ~18:35 + t203s889 |
 | Dig | [poteto-parity-verify.md](./poteto-parity-verify.md) |
-| Fix | GitHub-only tonight (t73u): point/ff `~/pi-poteto-mode` to tip `b726a68`; npm morning |
-| Not | NEEDS_RICHARD |
-| Verify | `/api/pi/readiness` + `get_commands` after refresh |
+| HEAD | `b726a68d7561e1bb7ec0cf1d24f397949112a506` == origin/main |
+| Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/poteto-t203s889/RESULT.md` |
+| Next | Start OMB host → `GET /api/pi/readiness` + Pi `get_commands` (skill:poteto-mode-pi + skill:statechart-pi); npm morning |
 
 ## 4. Always-on Pi under launchd — REQUIRED launch asset
 
 | | |
 |---|---|
-| Status | **REQUIRED** before OMB = Grok Bot replacement (Julen HARD ~18:35) |
+| Status | **REQUIRED + PROCEED** — HARD ~18:35; Accept t203s889 (brief Qs / Ralph-first gate) |
 | Dig/brief | [launchd-always-on-brief.md](./launchd-always-on-brief.md) |
-| Julen | Accepted launch (FM voice); brief Qs may still need answers for build shape |
+| Julen | Accept t203s889 proceed; brief Qs may still need answers for build shape |
 | Gate | Prefer Ralph crash-safe publication landed first (brief risk) |
 | Done when | `com.openmausbot.coding-host` (or accepted equivalent) KeepAlive under launchd; coding host not session-status-only |
+
+
+## 5. Tracker cadence → OMB — FINAL step (PARKED)
+
+| | |
+|---|---|
+| Status | **PARKED** until items 1–4 DONE **and** Julen confirms “OMB works as planned” |
+| Work | Copy Flockmate `flock-master-day-sync` + `crew-progress-watch` into OMB routines (local Qwen) |
+| Cite | `~/project-planning/strands/omb-tracker-routines.md` |
+| Julen | HARD ~18:41 Europe/London via Flockmate — final checklist step; do not wire early |
+| Updated | 2026-11-05 ~18:41 Europe/London |
+
+
+## Ship / release gate (npm) — SEPARATE from Item 5
+
+| | |
+|---|---|
+| Status | HOLD until pad `#137` / `#119` READY + Flockmate clear |
+| Relation | **Not** Item 5. Tracker cadence does not wait on npm; npm does not wait on tracker cadence. |
+| Julen | Clarified ~18:41 Europe/London via Flockmate |
 
 ## Parallel
 
@@ -51,7 +71,7 @@ Updated: 2026-11-05 ~18:36 Europe/London · Driver: Launch Driver · OMB (`bdcee
 
 ## Next
 
-1. Ralph I-91 → READY DRAFT URL
-2. #120 Tip CI green → undraft+merge
-3. Poteto host refresh + readiness probe
-4. Launchd build after brief Qs / Ralph gate
+1. Ralph I-91 → READY DRAFT URL (WT dirty expanding)
+2. Bring OMB app up → poteto readiness + get_commands verify
+3. Launchd build after brief Qs (Q5 Ralph-first=yes) / Ralph DRAFT
+4. After 1–4 DONE + Julen “OMB works as planned”: Item 5 tracker cadence → OMB (PARKED; ≠ npm)
