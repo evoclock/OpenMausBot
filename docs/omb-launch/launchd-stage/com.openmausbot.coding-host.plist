@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- STAGED ONLY — do NOT launchctl bootstrap until Julen install Accept.
+     t228u defaults: headless OMB · Electron client/off · pinned tag · Herdr too · after Ralph DRAFT.
+     Label per brief (stock `openmausbot service install` uses com.openmausbot.serve — different path).
+     Replace WorkingDirectory / ProgramArguments paths after pinning release checkout at:
+       /Users/julen/openmausbot-releases/0.2.0
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.openmausbot.coding-host</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/node</string>
+		<string>--experimental-strip-types</string>
+		<string>/Users/julen/openmausbot-releases/0.2.0/server/index.ts</string>
+		<string>serve</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/julen/openmausbot-releases/0.2.0</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/julen</string>
+		<key>OMB_DATA_DIR</key>
+		<string>/Users/julen/.openmausbot</string>
+		<key>PATH</key>
+		<string>/Users/julen/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>PI_CODING_AGENT_DIR</key>
+		<string>/Users/julen/.pi/pi</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+		<key>Crashed</key>
+		<true/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>ExitTimeOut</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/julen/Library/Logs/openmausbot/coding-host.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/julen/Library/Logs/openmausbot/coding-host.err.log</string>
+</dict>
+</plist>

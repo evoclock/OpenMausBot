@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- STAGED ONLY — do NOT launchctl bootstrap until Julen install Accept.
+     Companion KeepAlive for `herdr server` (t228u Q4). Currently runs outside launchd (pid survey).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.openmausbot.herdr-server</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/herdr</string>
+		<string>server</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/julen</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/julen</string>
+		<key>PATH</key>
+		<string>/Users/julen/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>StandardOutPath</key>
+	<string>/Users/julen/Library/Logs/openmausbot/herdr-server.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/julen/Library/Logs/openmausbot/herdr-server.err.log</string>
+</dict>
+</plist>
