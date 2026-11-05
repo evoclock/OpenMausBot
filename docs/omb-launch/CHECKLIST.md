@@ -52,7 +52,8 @@ Mark DONE only with evidence pointer (PR, RESULT.md path, or Julen Accept id).
 - [x] Julen HARD: required launch asset (not optional)
 - [x] Julen Accept launch (FM voice ~18:35 + t203s889 PROCEED)
 - [x] Brief Q1–4 answered = defaults (Accept FM t228u): headless OMB · Electron client/off · pinned tag · Herdr under launchd too · Ralph-first
-- [ ] Install KeepAlive `com.openmausbot.coding-host` (+ Herdr) LaunchAgent — Ralph #83 DRAFT cleared gate; design→install NOW
+- [x] Stage plists (no load): `docs/omb-launch/launchd-stage/` + `~/openmausbot/.omb-scratch/launchd-stage/` — coding-host + herdr-server; plutil OK; dry-run prints activate only
+- [ ] Install KeepAlive `com.openmausbot.coding-host` (+ Herdr) LaunchAgent — **pending Julen install Accept** (FM widget); do not bootstrap before Accept
 - [ ] Prove host survives reboot / crash restart without owner babysitting
 
 

@@ -1,6 +1,6 @@
 # OMB launch chase — five items (4 open + 1 final parked)
 
-Updated: 2026-11-05 ~18:56 Europe/London · Ralph #83 READY DRAFT — Ralph-first CLEARED for launchd design→install
+Updated: 2026-11-05 ~18:58 Europe/London · launchd plists STAGED (no load); #83/#82 Tip CI pending; #119 HOLD
 
 **Parity bar:** OMB coding replacement = items 1–4 (incl. launchd REQUIRED). **Full fleet automation parity** also needs Item 5 tracker cadence → OMB after Julen confirms OMB works as planned (Julen HARD ~18:41).
 
@@ -22,7 +22,7 @@ Updated: 2026-11-05 ~18:56 Europe/London · Ralph #83 READY DRAFT — Ralph-firs
 | Head | `a516c1fee` · `feat/ralph-crash-safe-publish` |
 | Dig | [ralph-seams-gap.md](./ralph-seams-gap.md) |
 | Evidence | `~/openmausbot/.omb-scratch/item-i-evidence/ralph-i91/` |
-| Next | Tip CI green → Julen undraft+merge Accept (launchd KeepAlive after) |
+| Next | Tip CI green → Julen undraft+merge Accept |
 
 
 ## 3. poteto-mode Pi parity — PROBE ACCEPTED / PARITY OPEN
@@ -38,14 +38,15 @@ Updated: 2026-11-05 ~18:56 Europe/London · Ralph #83 READY DRAFT — Ralph-firs
 | Left | roles file + end-behavior until readiness roles green; npm morning `@evoclock/pi-poteto-mode` |
 
 
-## 4. Always-on Pi under launchd — REQUIRED · Qs ANSWERED · Ralph-first CLEARED · design→install NOW
+## 4. Always-on Pi under launchd — REQUIRED · Ralph-first CLEARED · install pending Julen Accept
 
 | | |
 |---|---|
-| Status | **Qs ACCEPTED (t228u)** — design→install path unlocked after Ralph DRAFT (Q5 Ralph-first) |
-| Dig/brief | [launchd-always-on-brief.md](./launchd-always-on-brief.md) §Resolved |
-| Answers | (1) headless OMB server (2) Electron off/client (3) pinned tag (4) Herdr under launchd too (5) Ralph-first=yes |
-| Gate | No KeepAlive install until Ralph crash-safe DRAFT landed |
+| Status | **Ralph-first CLEARED** — Q5 = install AFTER Ralph **DRAFT** (t228u); #83 DRAFT up → gate open |
+| Dig/brief | [launchd-always-on-brief.md](./launchd-always-on-brief.md) |
+| Defaults (t228u) | Q1 headless OMB · Q2 Electron client/off · Q3 pinned tag · Q4 Herdr under launchd too · Q5 after DRAFT |
+| Blocker | Julen **install Accept** (Flockmate widget live) |
+| Staged | `~/openmausbot/.omb-scratch/launchd-stage/` (+ `docs/omb-launch/launchd-stage/`) — plutil OK; **no bootstrap** |
 | Done when | `com.openmausbot.coding-host` (+ Herdr) KeepAlive under launchd; coding host not session-status-only |
 
 
@@ -75,7 +76,8 @@ Updated: 2026-11-05 ~18:56 Europe/London · Ralph #83 READY DRAFT — Ralph-firs
 
 ## Next
 
-1. Ralph I-91 → READY DRAFT URL (local commit present; push/PR)
-2. After Ralph DRAFT: launchd design→install per t228u answers (Ralph-first)
-3. #82 Tip CI full green → ask undraft+merge
-4. After 1–4 DONE + Julen “OMB works as planned”: Item 5 tracker cadence → OMB (PARKED; ≠ npm)
+1. Ralph #83 Tip CI green → Julen undraft+merge Accept
+2. Launchd KeepAlive — plists staged; pending Julen install Accept before bootstrap
+3. #82 Tip CI green → Julen undraft+merge Accept
+4. Poteto Item 3 OPEN — roles RED → `.pi/pstack-model-roles.v1.json`
+5. Item 5 stays PARKED until 1–4 + “OMB works as planned”
