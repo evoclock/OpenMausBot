@@ -1,9 +1,9 @@
-# OMB launch digs — INDEX (2026-11-05 ~18:28 Europe/London)
-Read-only. No commits/pushes/arming. SoT tip evoclock/OpenMausBot main 9021adb93 (local ~/openmausbot main 137 behind).
+# Technical investigations
 
-| Item | File | Status |
+These investigations identify work still needed for launch. They do not claim that a design is implemented or verified.
+
+| Area | Investigation | Main finding |
 |---|---|---|
-| 1 Step 9 once.at | — | HOLD for Julen Confirm (not touched) |
-| 2 Ralph seams (A) | ralph-seams-gap.md | GAPS: no production EffectReconcileHost; push/PR publication bypasses receipts; next card proposed |
-| 3 poteto parity (B) | poteto-parity-verify.md | GAPS: GitHub tip has parity; OMB's Pi (~/.pi/pi) loads stale local ~/pi-poteto-mode 13 behind. Not NEEDS_RICHARD |
-| 4 launchd always-on (C) | launchd-always-on-brief.md | Brief ready; 5 open Qs for Julen Accept; gate on A |
+| Crash-safe settlement | [Effect recovery and publication](ralph-seams-gap.md) | Prepared effects can be recorded, but production publication and recovery need an end-to-end path. |
+| Playbook parity | [Discovery and behavior](poteto-parity-verify.md) | A skill name in discovery does not prove the installed playbook matches the expected version. |
+| Always-on host | [Service design](launchd-always-on-brief.md) | The coding service needs a single storage owner and restart verification. |
