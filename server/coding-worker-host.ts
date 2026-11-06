@@ -74,7 +74,7 @@ export function createCodingWorkerHost(options: {
     async runHostCheck(workspace, command, revision) {
       return runHostCheck({ command, cwd: workspace.directory, revision });
     },
-    async review(workspace, role, revision, signal) {
+    async review(workspace, role, revision, signal, goal) {
       const config = options.roles.get(workspace.repository);
       if (!config || !(await this.roles(workspace.repository)) || config.independentReview !== role || !config.reviewerBotId) {
         throw new Error("independent reviewer is not configured");
@@ -82,7 +82,7 @@ export function createCodingWorkerHost(options: {
       const requestId = leases.get(workspace.leaseId);
       if (!requestId) throw new Error("review has no originating coding request");
       const result = await options.turn.run({ botId: config.reviewerBotId, workspace, role: "review",
-        prompt: `Review revision ${revision}. Inspect its committed patch with coding_command {"command":"diff","revision":"${revision}"}; the command field accepts only one fixed verb, not Git arguments. Report whether it meets the stated goal and include ACCEPT ${revision} only if verified.`,
+        prompt: `Review revision ${revision}.${goal?.trim() ? `\n\nStated goal for this coding run:\n${goal.trim()}` : ""}\nInspect its committed patch with coding_command {"command":"diff","revision":"${revision}"}; the command field accepts only one fixed verb, not Git arguments. Report whether it meets the stated goal and include ACCEPT ${revision} only if verified.`,
         requestId: `review:${requestId}:${revision}`, signal });
       return { revision: result.revision, evidence: result.evidence, costUsd: result.costUsd,
         accepted: result.accepted === true && result.revision === revision && result.evidence.length > 0,

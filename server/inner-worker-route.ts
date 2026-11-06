@@ -44,7 +44,7 @@ export interface WorkerHost {
   acquire(contract: RunContractInput, requestId: string): Promise<IsolatedWorkspace>;
   release(leaseId: string, reason: string): Promise<void>;
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
-  review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal): Promise<ReviewReport>;
+  review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal, goal?: string): Promise<ReviewReport>;
   verifyWithPstack(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
   runHostCheck(workspace: IsolatedWorkspace, command: string[], revision: string): Promise<HostCheckRecord>;
 }
@@ -146,7 +146,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           result.evidence.push(...evidence);
           return { ...result, ...(hostCheck ? { hostCheck } : {}) };
         }
-        const review = await host.review(workspace, roles.independentReview, report.revision, signal);
+        const review = await host.review(workspace, roles.independentReview, report.revision, signal, workspaceGoal);
         modelsUsed.push(...(review.modelsUsed?.length ? review.modelsUsed : review.modelUsed ? [review.modelUsed] : []));
         if (!charge(review.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached after review");
