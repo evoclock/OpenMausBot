@@ -14,7 +14,7 @@ Generated 2026-11-05 ~18:28 Europe/London.
 **Plist `com.openmausbot.coding-host`** (LaunchAgent, user julen, so Keychain/codex OAuth work):
 - `RunAtLoad true`; `KeepAlive {SuccessfulExit:false, Crashed:true}` (clean exit = intentional stop); `ThrottleInterval 30`; `ProcessType Standard`; `ExitTimeOut 60` (lets abort/park finish).
 - `WorkingDirectory` = dedicated release checkout (not `~/openmausbot` dev tree, not a Treehouse slot).
-- `EnvironmentVariables`: PATH incl. `~/.local/bin` (pi), `/opt/homebrew/bin` (herdr, gh), DATA_DIR; no secrets inline (config.json already holds a key — consider moving to Keychain).
+- `EnvironmentVariables`: PATH incl. `~/.local/bin` (pi), `/opt/homebrew/bin` (herdr, gh), DATA_DIR; no secrets inline.
 - Logs `~/Library/Logs/openmausbot/coding-host.{out,err}.log`.
 - Optional companion: keep `herdr server` under its own KeepAlive plist so Treehouse/Herdr lease handoff survives reboot.
 
