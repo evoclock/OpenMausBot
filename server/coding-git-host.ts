@@ -138,13 +138,20 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
       const facts = await gitHubJson(token, `/repos/${repository}`, undefined, request);
       if (facts.full_name !== repository || typeof facts.default_branch !== "string" ||
         typeof facts.private !== "boolean") throw new Error("GitHub repository facts are incomplete");
-      const protection = await gitHubJson(token, `/repos/${repository}/branches?per_page=100`, undefined, request);
-      if (!Array.isArray(protection)) throw new Error("GitHub branch listing is malformed");
       const protectedBranches: string[] = [];
-      for (const branch of protection) {
-        if (typeof branch.name !== "string") throw new Error("GitHub branch listing is malformed");
-        if (branch.protected === true) protectedBranches.push(branch.name);
+      let complete = false;
+      for (let page = 1; page <= 20; page++) {
+        const protection = await gitHubJson(token, `/repos/${repository}/branches?per_page=100&page=${page}`, undefined, request);
+        if (!Array.isArray(protection) || protection.length > 100) throw new Error("GitHub branch listing is malformed");
+        for (const branch of protection) {
+          if (typeof branch?.name !== "string" || typeof branch.protected !== "boolean") {
+            throw new Error("GitHub branch listing is malformed");
+          }
+          if (branch.protected) protectedBranches.push(branch.name);
+        }
+        if (protection.length < 100) { complete = true; break; }
       }
+      if (!complete) throw new Error("GitHub branch listing is incomplete");
       const pullRequest = Number.isSafeInteger(gitRequest?.prNumber) && gitRequest!.prNumber! > 0
         ? await gitHubJson(token, `/repos/${repository}/pulls/${gitRequest!.prNumber}`, undefined, request) : undefined;
       const linked = pullRequest && { number: pullRequest.number, base: pullRequest.base?.ref,

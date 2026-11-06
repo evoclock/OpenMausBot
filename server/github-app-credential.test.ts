@@ -7,6 +7,7 @@ import { test } from "vitest";
 import { createCodingGitPolicy, type CodingGitPort } from "./coding-git-policy.ts";
 import { codingGitAppInstallationSchema } from "./coding-run-config.ts";
 import { createGitHubAppCredentialProvider } from "./github-app-credential.ts";
+import { createProductionCodingGitHost } from "./coding-git-host.ts";
 
 const repository = "evoclock/OpenMausBot";
 const credential = { kind: "github-app" as const, reference: "review-installation" };
@@ -51,6 +52,39 @@ function fixture(keyType: "pkcs1" | "pkcs8" = "pkcs8") {
   return { dir, installation, calls, provider, setMint(next: typeof tokenBody, status = 201) { mint = next; mintStatus = status; },
     setRepo(next: typeof repoFacts, status = 200) { repoFacts = next; repoStatus = status; } };
 }
+
+test("App inspection includes protected bases beyond the first 100 branches and refuses incomplete listings", async () => {
+  const pages: number[] = [];
+  let secondPageFails = false;
+  const request = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = new URL(String(input));
+    assert.ok(init?.headers);
+    assert.equal((init.headers as Record<string, string>).authorization, "Bearer fixture-token");
+    if (url.pathname === `/repos/${repository}`) {
+      return response({ full_name: repository, default_branch: "main", private: false });
+    }
+    assert.equal(url.pathname, `/repos/${repository}/branches`);
+    assert.equal(url.searchParams.get("per_page"), "100");
+    const page = Number(url.searchParams.get("page") ?? "1");
+    pages.push(page);
+    if (page === 1) return response(Array.from({ length: 100 }, (_, i) => ({ name: `branch-${i}`, protected: false })));
+    if (page === 2 && secondPageFails) return response({ message: "unavailable" }, 503);
+    if (page === 2) return response([{ name: "main", protected: true }]);
+    throw new Error("Unexpected branch page");
+  }) as typeof fetch;
+  const host = createProductionCodingGitHost({ repositoryRoot: "/fixture", registrations: [{
+    routineId: "fixture", workerBotId: "worker", reviewerBotId: "reviewer", developmentRole: "dev",
+    reviewRole: "review", repository, ref: "main", successCriteria: ["verified"], checkCommand: ["true"],
+  }], gitDestinations: { worker: [{
+    repository, branchPrefix: "bot/", credential,
+  }] } }, { scopedToken: async () => "fixture-token", gitHubRequest: request });
+  const facts = await host.inspect(repository, { botId: "worker", repository, workspace: "/fixture",
+    branch: "bot/work", action: "pr-open", base: "main", draft: true });
+  assert.deepEqual(pages, [1, 2]);
+  assert.deepEqual(facts.protectedBranches, ["main"]);
+  secondPageFails = true;
+  await assert.rejects(host.inspect(repository), /GitHub API request failed/);
+});
 
 test("App config selects an installation explicitly without embedding key material", () => {
   const f = fixture();
