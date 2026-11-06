@@ -178,9 +178,12 @@ test("two coding iterations retain session files in the run record and handover"
     expect(spawns.every((entry) => !entry.argv.includes("--no-session"))).toBe(true);
     expect(new Set(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).size).toBe(2);
     expect(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).toContain(join(f.dataDir, "bots", reviewer.id, "pi"));
-    const prompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.startsWith("Iteration 2\n"));
-    expect(prompts).toHaveLength(1);
+    const dumpEntries = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{ prompt?: { message: string } }>;
+    const prefixes = dumpEntries.filter((entry) => entry.prompt?.message).map((entry) => entry.prompt!.message.slice(0, 120));
+    console.info("Pi prompt prefixes:", prefixes.map((prefix) => JSON.stringify(prefix)));
+    const prompts = dumpEntries.filter((entry) => entry.prompt?.message?.includes("Iteration 2\n") &&
+      !entry.prompt.message.startsWith("Review revision "));
+    expect(prompts, JSON.stringify(prefixes)).toHaveLength(1);
     expect(prompts[0].prompt.message).toContain(iterations[0]!.sessionFile);
     const reviewPrompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
       .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.startsWith("Review revision ") &&
