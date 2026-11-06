@@ -124,7 +124,12 @@ export async function reconcilePreparedEffects(receipts: CodingEffectReceipts, h
     let { observation } = item;
     if (observation.status === "missing") {
       try { await host.applyMissing(receipt); }
-      catch { return { status: "blocked", evidence: [...evidence, `${receipt.key}: outward effect could not be confirmed`] }; }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const failure = `${receipt.key}: outward effect could not be confirmed: ${message}`;
+        console.error(failure);
+        return { status: "blocked", evidence: [...evidence, failure] };
+      }
       observation = await observeCodingEffect(host, receipt.effect);
       if (observation.status !== "present") {
         return { status: "blocked", evidence: [...evidence, `${receipt.key}: outward effect remains unconfirmed`] };
