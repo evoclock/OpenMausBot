@@ -178,10 +178,16 @@ test("two coding iterations retain session files in the run record and handover"
     expect(spawns.every((entry) => !entry.argv.includes("--no-session"))).toBe(true);
     expect(new Set(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).size).toBe(2);
     expect(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).toContain(join(f.dataDir, "bots", reviewer.id, "pi"));
-    const prompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.includes("Iteration 2\n"));
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0].prompt.message).toContain(iterations[0]!.sessionFile);
+    const dumpEntries = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{ prompt?: { message: string } }>;
+    const prefixes = dumpEntries.filter((entry) => entry.prompt?.message).map((entry) => entry.prompt!.message.slice(0, 120));
+    const prompts = dumpEntries.filter((entry) => entry.prompt?.message?.startsWith("You are Coding worker, a personal bot in OpenMausBot.\n") &&
+      entry.prompt.message.includes("Iteration 2\n"));
+    expect(prompts, JSON.stringify(prefixes)).toHaveLength(1);
+    expect(prompts[0]!.prompt!.message).toContain(iterations[0]!.sessionFile);
+    const reviewPrompts = dumpEntries.filter((entry) =>
+      entry.prompt?.message?.startsWith("You are Independent reviewer, a personal bot in OpenMausBot.\n") &&
+      entry.prompt.message.includes("Stated goal for this coding run:\nIteration 2\n"));
+    expect(reviewPrompts, JSON.stringify(prefixes)).toHaveLength(1);
   } catch (error) { console.error(f.logs().slice(-5000)); throw error; }
   finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);

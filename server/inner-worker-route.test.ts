@@ -51,6 +51,23 @@ test("independent review and inner acceptance evidence precede completion", asyn
   assert.deepEqual(route.calls, ["acquire", "worker", "reviewer", "pstack", "host-check"]);
 });
 
+test("independent review receives the coding run's workspace goal", async () => {
+  const route = host();
+  let workerGoal = "";
+  let reviewGoal = "";
+  route.runPlaybook = async (_workspace, _role, goal) => {
+    workerGoal = goal;
+    return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 };
+  };
+  route.review = async (_workspace, _role, revision, _signal, goal) => {
+    reviewGoal = goal ?? "";
+    return { revision, accepted: true, evidence: ["separate review"], costUsd: 0 };
+  };
+  await createWorkerRoute(route).invoke(contract, 1, "run:goal", signal);
+  assert.equal(reviewGoal, workerGoal);
+  assert.match(reviewGoal, /pstack acceptance passes/);
+});
+
 test("worker goal carries iteration number and the preceding receipt", async () => {
   const route = host();
   let goal = "";
