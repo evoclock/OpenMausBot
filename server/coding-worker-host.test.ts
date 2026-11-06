@@ -62,7 +62,11 @@ test("worker route launches the existing fake process with the scoped approval m
     workspace: { async acquire(_contract, requestId) { return { ...workspace, branch: codingWorkspaceBranch(requestId) }; }, async release() {} },
     turn: { async run({ botId, prompt, requestId, signal }) {
       assert.ok(["worker", "reviewer"].includes(botId));
-      if (botId === "reviewer") assert.match(prompt, /coding_command \{"command":"diff","revision":"fixture-revision"\}/);
+      if (botId === "reviewer") {
+        assert.match(prompt, /coding_command \{"command":"diff","revision":"fixture-revision"\}/);
+        assert.match(prompt, /Stated goal for this coding run:\nrespond/);
+        assert.match(prompt, /ACCEPT fixture-revision only if verified/);
+      }
       assert.equal(signal.aborted, false);
       const threadId = `${botId}:${requestId}`;
       const done = new Promise<RuntimeEvent>((resolve) => {
@@ -85,7 +89,7 @@ test("worker route launches the existing fake process with the scoped approval m
     const acquired = await host.acquire(contract, "request");
     const report = await host.runPlaybook(acquired, "fixture/development", "respond", "request", new AbortController().signal);
     assert.deepEqual(report.evidence, ["Hello from pi"]);
-    const review = await host.review(acquired, "fixture/review", report.revision, new AbortController().signal);
+    const review = await host.review(acquired, "fixture/review", report.revision, new AbortController().signal, "  respond  ");
     assert.deepEqual(review.evidence, ["Hello from pi"]);
     assert.equal(review.accepted, true);
     assert.equal(seen.filter((event) => event.type === "turn.completed").length, 2);

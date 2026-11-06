@@ -4,12 +4,12 @@ import { join } from "node:path";
 import type { ProviderRegistry } from "./harness/registry.ts";
 import { codingModelChain, DEFAULT_CODING_LOCAL_PROVIDERS, DEFAULT_CODING_SUBSCRIPTION_MODELS } from "./automatic-recovery.ts";
 import type { ToolScope } from "../shared/tool-scope.ts";
-import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost } from "./coding-git-policy.ts";
+import { codingGitToolScope, createCodingGitRunPolicy, type CodingGitHost, type CodingGitRequest } from "./coding-git-policy.ts";
 import type { CodingRunConfig } from "./coding-run-config.ts";
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { publishVerifiedCodingRun } from "./coding-git-publisher.ts";
 import { createCodingGithubEffectHost } from "./coding-github-effect-host.ts";
-import { CodingEffectReceipts } from "./coding-effect-receipts.ts";
+import { CodingEffectReceipts, type EffectReceipt } from "./coding-effect-receipts.ts";
 import { CodingResultDelivery, codingResultStoreSink } from "./coding-result-delivery.ts";
 import { openCodingRunRuntime } from "./coding-run-runtime.ts";
 import { createCodingRunStatusReporter } from "./coding-run-status.ts";
@@ -35,6 +35,23 @@ export function codingTurnToolScope(config: CodingRunConfig | undefined, botId: 
 /** Review turns carry `review:<runId>:<revision>`; the closed Pi profile needs the bare run id. */
 export function codingRunIdForRequest(requestId: string): string {
   return (requestId.startsWith("review:") ? requestId.slice("review:".length) : requestId).slice(0, 36);
+}
+
+export function createCodingPublicationResolver(runStore: Pick<RunContractStore, "get">,
+  workspacesByRun: ReadonlyMap<string, IsolatedWorkspace>): (receipt: EffectReceipt) => Promise<Omit<CodingGitRequest, "action">> {
+  return async (receipt) => {
+    const snapshot = runStore.get(receipt.runId);
+    const workspace = workspacesByRun.get(receipt.runId);
+    if (!snapshot || !workspace || snapshot.contract.repository !== receipt.effect.repository ||
+      workspace.repository !== snapshot.contract.repository || workspace.baseBranch !== snapshot.contract.ref ||
+      receipt.sequence !== snapshot.iteration + 1 || snapshot.state !== "done" ||
+      !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr")) {
+      throw new Error("Publication receipt has no matching terminal run and workspace");
+    }
+    return { botId: snapshot.contract.botId, repository: snapshot.contract.repository,
+      workspace: workspace.directory, branch: `bot/coding-${snapshot.contract.id.slice(0, 12)}`,
+      base: snapshot.contract.ref };
+  };
 }
 
 export async function openProductionCodingRuntime(options: {
@@ -118,27 +135,16 @@ export async function openProductionCodingRuntime(options: {
   const runStore = new RunContractStore(join(codingDir, "runtime.db"));
   const effectReceipts = new CodingEffectReceipts(join(codingDir, "effect-receipts.sqlite"));
   const gitAction = createCodingGitRunPolicy(config, runStore, gitHost);
+  const workspacesByRun = new Map<string, IsolatedWorkspace>();
   const effectHost = gitHost.effectInspector && createCodingGithubEffectHost({
     inspector: gitHost.effectInspector, gitAction,
-    async resolve(receipt) {
-      const snapshot = runStore.get(receipt.runId);
-      const workspace = workspaceManager.findForRun(receipt.runId);
-      if (!snapshot || !workspace || snapshot.contract.repository !== receipt.effect.repository ||
-        receipt.sequence !== snapshot.iteration + 1 || snapshot.state !== "done" ||
-        !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr")) {
-        throw new Error("Publication receipt has no matching terminal run and workspace");
-      }
-      return { botId: snapshot.contract.botId, repository: snapshot.contract.repository,
-        workspace: workspace.directory, branch: `bot/coding-${snapshot.contract.id.slice(0, 12)}`,
-        base: snapshot.contract.ref };
-    },
+    resolve: createCodingPublicationResolver(runStore, workspacesByRun),
   });
   const status = options.statusFeed && createCodingRunStatusReporter({ feed: options.statusFeed,
     list: () => runStore.list(), wake: (wakes) => options.wakeOwner?.(wakes) });
   const delivery = new CodingResultDelivery(join(codingDir, "delivery.sqlite"), codingResultStoreSink(store));
   delivery.replay();
   const origins = new Map<string, { botId: string; threadId: string; runId: string }>();
-  const workspacesByRun = new Map<string, IsolatedWorkspace>();
   const publishing = new Map<string, Promise<string>>();
   const publicationResults = new Map<string, string>();
   let reportPending = () => {};
@@ -245,6 +251,7 @@ export async function openProductionCodingRuntime(options: {
     if (snapshot.state === "done" && !savedPublication) {
       const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
       if (!workspace) return false;
+      workspacesByRun.set(snapshot.contract.id, workspace);
       if (!publishing.has(snapshot.contract.id)) {
         let publication: Promise<string>;
         if (snapshot.hostCheck?.commitSha === workspace.base) {

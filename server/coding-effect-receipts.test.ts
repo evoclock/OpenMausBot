@@ -63,6 +63,18 @@ test.each(effects)("$kind: present, missing and inconclusive receipts", async (e
   inconclusive.close();
 });
 
+test("failed outward effect keeps the receipt prepared and reports its cause", async () => {
+  const db = new CodingEffectReceipts(":memory:");
+  db.prepare("run-1", 1, "push", effects[0]!);
+  const forge = host(effects[0]!, () => false, () => { throw new Error("workspace branch changed"); });
+  try {
+    assert.deepEqual(await reconcilePreparedEffects(db, forge, "run-1", 1), {
+      status: "blocked", evidence: ["push: outward effect could not be confirmed: workspace branch changed"],
+    });
+    assert.equal(db.list("run-1", 1)[0]?.status, "prepared");
+  } finally { db.close(); }
+});
+
 test("priced step result survives restart and conflicting or unpriced results are held", () => {
   const dir = scratch();
   const path = join(dir, "receipts.sqlite");
