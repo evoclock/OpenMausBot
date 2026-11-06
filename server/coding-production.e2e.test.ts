@@ -179,9 +179,13 @@ test("two coding iterations retain session files in the run record and handover"
     expect(new Set(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).size).toBe(2);
     expect(spawns.map((entry) => entry.env.PI_CODING_AGENT_DIR)).toContain(join(f.dataDir, "bots", reviewer.id, "pi"));
     const prompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.includes("Iteration 2\n"));
+      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.startsWith("Iteration 2\n"));
     expect(prompts).toHaveLength(1);
     expect(prompts[0].prompt.message).toContain(iterations[0]!.sessionFile);
+    const reviewPrompts = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+      .filter((entry: { prompt?: { message: string } }) => entry.prompt?.message?.startsWith("Review revision ") &&
+        entry.prompt.message.includes("Stated goal for this coding run:\nIteration 2\n"));
+    expect(reviewPrompts).toHaveLength(1);
   } catch (error) { console.error(f.logs().slice(-5000)); throw error; }
   finally { await f.stop(); await removeTempDir(f.home); }
 }, 90_000);
