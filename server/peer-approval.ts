@@ -44,13 +44,13 @@ interface Pending {
   bus: ApprovalBus;
 }
 
-function settleCard(pending: Pending, behavior: string, source: "user" | "system"): void {
+function settleCard(pending: Pending, outcome: PeerApprovalOutcome, source: "user" | "system"): void {
   const existing = pending.bus.store
     .messagesFor(pending.threadId)
     .find((m) => m.id === pending.messageId);
   if (!existing?.card || existing.card.answered) return;
   pending.bus.store.patchMessage(pending.threadId, pending.messageId, {
-    card: { ...existing.card, answered: behavior, dismissed: source !== "user" },
+    card: { ...existing.card, answered: outcome, dismissed: source !== "user" },
   });
   const store = pending.bus.store;
   const task = store.projectBotForTask(pending.fromBotId, pending.threadId);
@@ -140,7 +140,7 @@ export function requestPeerApproval(
       const pending = pendingComms.get(requestId);
       if (!pending) return;
       pendingComms.delete(requestId);
-      settleCard(pending, "deny", "system");
+      settleCard(pending, "expired", "system");
       resolve("expired");
     }, APPROVAL_TIMEOUT_MS);
     timer.unref?.();
@@ -183,7 +183,7 @@ export function cancelPeerApprovalsFor(botId: string): void {
     if (pending.fromBotId !== botId && pending.toBotId !== botId) continue;
     pendingComms.delete(requestId);
     clearTimeout(pending.timer);
-    settleCard(pending, "deny", "system");
+    settleCard(pending, "cancelled", "system");
     pending.resolve("cancelled");
   }
 }
@@ -193,7 +193,7 @@ export function cancelPeerApprovalsForThread(threadId: string): void {
     if (pending.threadId !== threadId) continue;
     pendingComms.delete(requestId);
     clearTimeout(pending.timer);
-    settleCard(pending, "deny", "system");
+    settleCard(pending, "cancelled", "system");
     pending.resolve("cancelled");
   }
 }
@@ -220,7 +220,7 @@ export function dismissStalePeerCards(bus: ApprovalBus): number {
       if (card.tool !== "ask_bot" && card.tool !== "delegate_bot" && card.tool !== "post_to_room") continue;
       if (pendingComms.has(card.requestId)) continue;
       const patched = bus.store.patchMessage(threadId, message.id, {
-        card: { ...card, answered: "deny", dismissed: true },
+        card: { ...card, answered: "cancelled", dismissed: true },
       });
       if (patched) dismissed += 1;
     }

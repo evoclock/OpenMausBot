@@ -89,7 +89,7 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
       expect(result.error).toBe(outcome === "deny" ? "Denied by user; no work sent." : `${failure}; no work sent.`);
       expect(result.receipts).toBeUndefined();
       const settled = (await messages(from.threadId)).find(m => m.id === approval.id);
-      expect(settled.card).toMatchObject({ answered: "deny", dismissed: outcome !== "deny" });
+      expect(settled.card).toMatchObject({ answered: outcome, dismissed: outcome !== "deny" });
       expect(handoffs().filter((node) => node.parentId)).toEqual([]);
       evidence.push({ operation: "coordinate-bots consult", outcome, result, card: settled.card });
       rmSync(expiry, { force: true });
@@ -117,7 +117,8 @@ it("preserves peer approval outcomes through real HTTP responses and sends no wo
     const expired = await pendingDelegation;
     expect(expired.approvals).toEqual([{ botId: target.id, error: "the approval card expired without an answer", approvalOutcome: "expired", approvalSource: "system" }]);
     expect(expired.error).toBe("the approval card expired without an answer; no work sent.");
-    expect((await messages(from.threadId)).find(m => m.id === approval.id).card.dismissed).toBe(true);
+    expect((await messages(from.threadId)).find(m => m.id === approval.id).card)
+      .toMatchObject({ answered: "expired", dismissed: true });
     expect((await messages(target.threadId)).some(m => m.role === "user")).toBe(false);
     expect((await api("GET", "/api/bots?messages=0")).bots.find((bot: any) => bot.id === target.id).busy).toBe(false);
     expect(handoffs().filter((node) => node.parentId)).toEqual([]);

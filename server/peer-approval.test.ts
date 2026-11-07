@@ -58,12 +58,13 @@ describe("peer approval card lifecycle", () => {
     expect(pendingCard(store, from)).toBeUndefined();
   });
 
-  it("settles the card on deny too", async () => {
+  it.each(["deny", undefined, "expired", "cancelled"])("settles a user answer of %s as deny", async (behavior) => {
     const verdict = requestPeerApproval(bus, from, target, "ping", "delegate_bot");
     const card = pendingCard(store, from)!;
-    resolvePeerComms(bus, card.card!.requestId!, "deny");
+    resolvePeerComms(bus, card.card!.requestId!, behavior);
     expect(await verdict).toBe("deny");
-    expect(store.messagesFor(from.threadId).find((m) => m.id === card.id)?.card?.answered).toBe("deny");
+    expect(store.messagesFor(from.threadId).find((m) => m.id === card.id)?.card)
+      .toMatchObject({ answered: "deny", dismissed: false });
   });
 
   it("expires without attributing a decision to the user, and rejects late answers", async () => {
@@ -73,7 +74,7 @@ describe("peer approval card lifecycle", () => {
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(await verdict).toBe("expired");
     expect(store.messagesFor(from.threadId).find(m => m.id === card.id)?.card)
-      .toMatchObject({ answered: "deny", dismissed: true });
+      .toMatchObject({ answered: "expired", dismissed: true });
     expect(resolvePeerComms(bus, card.card!.requestId!, "allow")).toBe(false);
     expect(pendingCard(store, from)).toBeUndefined();
   });
@@ -206,7 +207,7 @@ describe("peer approval card lifecycle", () => {
     expect(await verdict).toBe("cancelled");
     expect(resolvePeerComms(bus, card.card!.requestId!, "allow")).toBe(false);
     const settled = store.messagesFor(from.threadId).find((m) => m.id === card.id);
-    expect(settled?.card?.answered).toBe("deny");
+    expect(settled?.card?.answered).toBe("cancelled");
     expect(settled?.card?.dismissed).toBe(true);
   });
 
@@ -219,7 +220,7 @@ describe("peer approval card lifecycle", () => {
     expect(await verdict).toBe("cancelled");
     expect(resolvePeerComms(bus, card.card!.requestId!, "allow")).toBe(false);
     const settled = store.messagesFor(from.threadId).find((m) => m.id === card.id);
-    expect(settled?.card?.answered).toBe("deny");
+    expect(settled?.card?.answered).toBe("cancelled");
     expect(settled?.card?.dismissed).toBe(true);
     expect(pendingCard(store, from)).toBeUndefined();
   });
@@ -239,7 +240,7 @@ describe("peer approval card lifecycle", () => {
 
     expect(dismissStalePeerCards(bus)).toBe(1);
     const settled = store.messagesFor(from.threadId).find((m) => m.id === orphan.id);
-    expect(settled?.card?.dismissed).toBe(true);
+    expect(settled?.card).toMatchObject({ answered: "cancelled", dismissed: true });
     expect(dismissStalePeerCards(bus)).toBe(0);
   });
 
@@ -259,8 +260,8 @@ describe("peer approval card lifecycle", () => {
 
     expect(dismissStalePeerCards(bus)).toBe(1);
     expect(
-      store.messagesFor(background.threadId).find((message) => message.id === orphan.id)?.card?.dismissed,
-    ).toBe(true);
+      store.messagesFor(background.threadId).find((message) => message.id === orphan.id)?.card,
+    ).toMatchObject({ answered: "cancelled", dismissed: true });
   });
 
   it("dismisses a stale card left in a room's thread, not just a bot's", () => {
@@ -280,14 +281,14 @@ describe("peer approval card lifecycle", () => {
     expect(dismissStalePeerCards(bus)).toBe(1);
     const settled = store.messagesFor(room.threadId).find((message) => message.id === orphan.id);
     expect(settled?.card?.dismissed, "a room's composer stayed blocked after a restart").toBe(true);
-    expect(settled?.card?.answered).toBe("deny");
+    expect(settled?.card?.answered).toBe("cancelled");
     expect(dismissStalePeerCards(bus)).toBe(0);
   });
 
   it("dismisses a stale card left in a room's background task thread", () => {
     const room = store.createGroup("Release", [from.id, target.id]);
     const task = store.createGroupTask(room.id, "Cut 1.2", false)!;
-    store.appendMessage(task.threadId, {
+    const orphan = store.appendMessage(task.threadId, {
       role: "bot",
       kind: "options",
       card: {
@@ -300,6 +301,8 @@ describe("peer approval card lifecycle", () => {
     });
 
     expect(dismissStalePeerCards(bus)).toBe(1);
+    expect(store.messagesFor(task.threadId).find((message) => message.id === orphan.id)?.card)
+      .toMatchObject({ answered: "cancelled", dismissed: true });
   });
 
   it("leaves a live card alone at boot", async () => {
