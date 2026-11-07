@@ -231,11 +231,11 @@ test.each([
     await f.start();
     await f.until(async () => {
       const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
-      return runs.some((run) => run.routineId === routine.id && ["completed", "failed"].includes(run.status));
+      return runs.some((run) => run.routineId === routine.id && ["completed", "held"].includes(run.status));
     }, "scheduled coding result");
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     expect(run.triggerSource).toBe("schedule");
-    expect(run.status, JSON.stringify(run)).toBe(mode === "coding" || mode === "happy" ? "completed" : "failed");
+    expect(run.status, JSON.stringify(run)).toBe(expected === "blocked" ? "held" : "completed");
     if (mode === "happy") {
       expect(run.output).toContain("already satisfied on base");
       expect(run.output).toContain("nothing to commit");
@@ -392,7 +392,7 @@ test("composed server refuses unconfigured coding ceilings without a worker turn
     await f.start();
     await f.until(async () => {
       const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
-      return runs.some((run) => run.routineId === routine.id && run.status === "failed");
+      return runs.some((run) => run.routineId === routine.id && run.status === "held");
     }, "unconfigured terminal report");
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     const messages = (await f.api("GET", `/api/threads/${run.threadId}/messages?limit=100`)).messages as Array<{
@@ -529,7 +529,7 @@ test("composed server interrupts an active coding turn at its wall-clock ceiling
     }, "active worker turn");
     await f.until(async () => {
       const runs = (await f.api("GET", "/api/routines")).runs as Array<{ routineId: string; status: string }>;
-      return runs.some((run) => run.routineId === routine.id && run.status === "failed");
+      return runs.some((run) => run.routineId === routine.id && run.status === "held");
     }, "wall-clock terminal report");
     const run = (await f.api("GET", "/api/routines")).runs.find((entry: { routineId: string }) => entry.routineId === routine.id);
     const messages = (await f.api("GET", `/api/threads/${run.threadId}/messages?limit=100`)).messages as Array<{
@@ -610,7 +610,7 @@ test("drill: SIGKILL during review holds the prepared effect and delivers one bl
     reviewPid = undefined;
     await f.start();
     await f.until(async () => (await f.api("GET", "/api/routines")).runs
-      .some((run: { routineId: string; status: string }) => run.routineId === routine.id && run.status === "failed"), "blocked settlement");
+      .some((run: { routineId: string; status: string }) => run.routineId === routine.id && run.status === "held"), "blocked settlement");
     const afterStore = new RunContractStore(join(f.dataDir, "coding-run", "runtime.db"));
     const after = afterStore.get(before!.contract.id);
     const receipt = afterStore.step(before!.contract.id, before!.iteration);

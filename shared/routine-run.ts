@@ -10,7 +10,7 @@ export interface RoutineRunCardData {
   routineId: string;
   routineName: string;
   scheduledFor?: number;
-  status: "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled" | "missed";
+  status: "queued" | "running" | "waiting" | "completed" | "held" | "failed" | "cancelled" | "missed";
   /** Present while a queued run is being held because its target bot or room
    * is busy. The status stays queued; this is the surfaced deferral fact. */
   deferredAt?: number;

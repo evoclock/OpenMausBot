@@ -13,6 +13,7 @@ const COPY = {
   running: { label: "Running", tone: "text-accent" },
   waiting: { label: "Waiting", tone: "text-warning" },
   completed: { label: "Completed", tone: "text-ink-secondary" },
+  held: { label: "Held", tone: "text-warning" },
   failed: { label: "Failed", tone: "text-danger" },
   cancelled: { label: "Cancelled", tone: "text-ink-secondary" },
   missed: { label: "Missed", tone: "text-danger" },

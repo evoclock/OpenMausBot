@@ -3935,6 +3935,7 @@
   "routines.status.running": "Running",
   "routines.status.waiting": "Waiting",
   "routines.status.completed": "Completed",
+  "routines.status.held": "Held",
   "routines.status.failed": "Failed",
   "routines.status.cancelled": "Cancelled",
   "routines.status.missed": "Missed",
