@@ -34,6 +34,72 @@ afterEach(() => {
   delete process.env.ALLOW_INSECURE_HTTP;
 });
 
+describe("command-shaped MCP wrappers", () => {
+  it("validates arguments before contacting HTTP", async () => {
+    const fetcher = vi.fn();
+    for (const [name, args] of [
+      ["get_routine_run", { run_id: "../other" }],
+      ["get_coding_runs", { bot_id: "" }],
+      ["hold_coding_run", { bot_id: "bot" }],
+      ["resume_coding_run", { bot_id: "bot", run_id: "../run" }],
+      ["cancel_coding_run", { bot_id: "bot", run_id: "" }],
+      ["list_routine_runs", { limit: 101 }],
+      ["inspect_webhook_delivery", { endpoint_id: "../endpoint", delivery_id: "delivery" }],
+      ["decide_peer_approval", { thread_id: "thread", request_id: "req", decision: "expired" }],
+      ["decide_peer_approval", { thread_id: "thread", request_id: "req", decision: "ALLOW" }],
+    ] as const) await expect(handleToolCall(name, args, fetcher)).rejects.toThrow();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("returns routine runs without inferring a status from wait flags", async () => {
+    const run = { id: "r1", status: "waiting", asked: { requestId: "ask1" }, attention: "needs input", error: null, codingReceipt: { outcome: "held" } };
+    const fetcher = vi.fn(async () => ({ runs: [run] }));
+    expect(await handleToolCall("list_routine_runs", { limit: 1 }, fetcher)).toEqual({ runs: [run] });
+    expect(await handleToolCall("get_routine_run", { run_id: "r1" }, fetcher)).toEqual({ run });
+    expect(fetcher).toHaveBeenCalledWith("/api/routines");
+    await expect(handleToolCall("get_routine_run", { run_id: "missing" }, fetcher)).rejects.toThrow("not found");
+  });
+
+  it("forwards coding snapshots and each control result unchanged", async () => {
+    const response = { outcome: "cancelled", run: { state: "cancelled", explanation: "stopped" } };
+    const fetcher = vi.fn(async () => response);
+    expect(await handleToolCall("get_coding_runs", { bot_id: "bot1" }, fetcher)).toEqual(response);
+    expect(fetcher).toHaveBeenCalledWith("/api/bots/bot1/loop-status");
+    for (const action of ["hold", "resume", "cancel"]) {
+      expect(await handleToolCall(`${action}_coding_run`, { bot_id: "bot1", run_id: "run1" }, fetcher)).toEqual(response);
+      expect(fetcher).toHaveBeenCalledWith(`/api/bots/bot1/loop-status/run1/${action}`, { method: "POST" });
+    }
+  });
+
+  it("distinguishes webhook attempts from persisted run receipts", async () => {
+    const attempt = { webhookId: "hook1", deliveryId: "delivery1", outcome: "accepted" };
+    const run = { id: "run1", webhookId: "hook1", deliveryId: "delivery1", status: "running" };
+    const fetcher = vi.fn(async (path: string) => path === "/api/webhooks"
+      ? { webhooks: [{ id: "hook1", endpointId: "endpoint1" }], attempts: [attempt] }
+      : { runs: [] as Array<typeof run> });
+    const args = { endpoint_id: "endpoint1", delivery_id: "delivery1" };
+    expect(await handleToolCall("inspect_webhook_delivery", args, fetcher)).toEqual({
+      endpointId: "endpoint1", deliveryId: "delivery1", attempts: [attempt], receiptExists: false,
+    });
+    fetcher.mockImplementation(async (path: string) => path === "/api/webhooks"
+      ? { webhooks: [{ id: "hook1", endpointId: "endpoint1" }], attempts: [attempt] }
+      : { runs: [run] });
+    expect(await handleToolCall("inspect_webhook_delivery", args, fetcher)).toMatchObject({ receiptExists: true, run });
+    expect(fetcher).toHaveBeenCalledWith("/api/webhooks");
+    expect(fetcher).toHaveBeenCalledWith("/api/routines");
+  });
+
+  it("posts only literal peer decisions to the existing card-answer route", async () => {
+    const fetcher = vi.fn(async () => ({ ok: true, outcome: "allowed" }));
+    for (const decision of ["allow", "deny"]) {
+      await handleToolCall("decide_peer_approval", { thread_id: "thread1", request_id: "ask1", decision }, fetcher);
+      expect(fetcher).toHaveBeenCalledWith("/api/threads/thread1/respond", {
+        method: "POST", body: JSON.stringify({ requestId: "ask1", behavior: decision }),
+      });
+    }
+  });
+});
+
 describe("MCP JSON-RPC protocol", () => {
   it("negotiates supported and newer protocol versions", async () => {
     const supported = JSON.parse((await processMcpMessage(JSON.stringify({
