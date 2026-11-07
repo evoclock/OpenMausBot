@@ -40,7 +40,7 @@ export function applyCodingSettlement(options: {
     : snapshot.state === "cancelled" ? "cancelled" : "failed";
   const receipt: CodingSettlementReceipt = { status: "APPLIED", routineRunId, codingRunId, terminalHash, disposition, appliedAt: now() };
   commit(() => {
-    run.status = disposition === "held" ? "failed" : disposition;
+    run.status = disposition;
     run.finishedAt = now();
     run.output = redactSecretsInText(snapshot.evidence.join("; ")).trim().slice(0, 2_000);
     if (disposition === "held") run.error = "Coding run needs reconciliation";

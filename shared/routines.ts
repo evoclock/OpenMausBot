@@ -64,6 +64,7 @@ export type RoutineRunStatus =
   | "running"
   | "waiting"
   | "completed"
+  | "held"
   | "failed"
   | "cancelled"
   | "missed";

@@ -304,7 +304,7 @@ describe("bounded scheduled overlap and run health", () => {
       .toMatchObject({ status: "completed", output: "Verified before restart" });
   });
 
-  it("holds a failed coding settlement for a verified webhook delivery", async () => {
+  it("holds a blocked coding settlement for a verified webhook delivery", async () => {
     const h = harness(start);
     const run = h.manager.enqueueWebhook({ webhookId: "hook", webhookName: "Delivery", prompt: "Check",
       botId: "maus-1", runOn: "maus", deliveryId: "delivery-1", receivedAt: start });
@@ -315,7 +315,7 @@ describe("bounded scheduled overlap and run health", () => {
       evidence: ["No verified result"] });
     expect(h.manager.settleCodingRun(run.id, terminal).receipt.disposition).toBe("held");
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id))
-      .toMatchObject({ status: "failed", error: "Coding run needs reconciliation" });
+      .toMatchObject({ status: "held", error: "Coding run needs reconciliation" });
   });
 
   it.each<RoutineSchedule>([
@@ -1708,7 +1708,7 @@ describe("RoutineManager", () => {
     const settled = h.manager.settleCodingRun(run.id, terminal);
     expect(settled.receipt.disposition).toBe("held");
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)).toMatchObject({
-      status: "failed", error: "Coding run needs reconciliation",
+      status: "held", error: "Coding run needs reconciliation",
     });
   });
 
