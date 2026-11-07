@@ -199,6 +199,59 @@ test("cancel correlates by run ID and persists its terminal status", async () =>
   } finally { await runner.close(); }
 });
 
+test.each(["coding workspace lease cannot be verified", "coding workspace release failed"])(
+  "abort of a blocked run persists %s and completes the abort", async (reason) => {
+    const dir = fixtureDir();
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const runner = await openOuterRunner(dir, {
+      async invoke(_contract, _iteration, _requestId, signal) {
+        entered();
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true }));
+      },
+    }, { onCancel: async () => { throw new Error(reason); }, onTerminal: () => false });
+    try {
+      const taskId = await runner.start(contract);
+      await started;
+      const store = new RunContractStore(join(dir, "runtime.db"));
+      try {
+        const current = store.get(contract.id)!;
+        store.transition(contract.id, "blocked", current.updatedAt + 1, ["original block"]);
+      } finally { store.close(); }
+      assert.equal(await runner.cancel(contract.id), "marked");
+      const settled = await runner.wait(taskId);
+      assert.equal(settled.state.outcome.status, "aborted");
+      assert.equal(runner.get(contract.id)?.state, "blocked");
+      assert.deepEqual(runner.get(contract.id)?.evidence, ["original block", `cancellation needs lease reconciliation: ${reason}`]);
+      assert.deepEqual(runner.report(contract.id)?.snapshot.evidence, runner.get(contract.id)?.evidence);
+    } finally { await runner.close(); }
+  });
+
+test("abort of a blocked run records cancellation when cleanup succeeds", async () => {
+  const dir = fixtureDir();
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const runner = await openOuterRunner(dir, {
+    async invoke(_contract, _iteration, _requestId, signal) {
+      entered();
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("stopped")), { once: true }));
+    },
+  }, { onTerminal: () => false });
+  try {
+    const taskId = await runner.start(contract);
+    await started;
+    const store = new RunContractStore(join(dir, "runtime.db"));
+    try {
+      const current = store.get(contract.id)!;
+      store.transition(contract.id, "blocked", current.updatedAt + 1, ["original block"]);
+    } finally { store.close(); }
+    assert.equal(await runner.cancel(contract.id), "marked");
+    assert.equal((await runner.wait(taskId)).state.outcome.status, "aborted");
+    assert.equal(runner.get(contract.id)?.state, "cancelled");
+    assert.deepEqual(runner.report(contract.id)?.snapshot.evidence, ["original block", "run cancelled by owner"]);
+  } finally { await runner.close(); }
+});
+
 // Why: a hold requested mid-turn must not open a second turn and resume must use the persisted next iteration.
 test("hold waits for a safe iteration boundary and resumes without replay", async () => {
   const dir = fixtureDir();
