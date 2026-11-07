@@ -27,6 +27,26 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   second.close();
 });
 
+test("blocked abort evidence replaces the delivered report and survives reopen", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "blocked-abort-")), "runtime.db");
+  let store = new RunContractStore(path);
+  store.create(contract, 1);
+  store.transition(contract.id, "blocked", 2, ["original block"]);
+  store.markReported(contract.id);
+  assert.equal(store.report(contract.id)?.delivered, true);
+  store.transition(contract.id, "blocked", 3, ["cancellation needs lease reconciliation: release failed"]);
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.get(contract.id)?.state, "blocked");
+    assert.deepEqual(store.report(contract.id)?.snapshot.evidence,
+      ["original block", "cancellation needs lease reconciliation: release failed"]);
+    assert.equal(store.report(contract.id)?.delivered, false);
+  } finally { store.close(); }
+});
+
 test("terminal routine link survives restart and can be reconciled by coding identity", () => {
   const scratch = join(process.cwd(), "node_modules", ".cache");
   mkdirSync(scratch, { recursive: true });

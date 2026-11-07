@@ -60,7 +60,7 @@ const edges: Record<RunState, readonly RunState[]> = {
   queued: ["running", "blocked", "cancelled"],
   running: ["waiting", "blocked", "unverified", "done", "failed", "cancelled"],
   waiting: ["running", "blocked", "cancelled"],
-  blocked: ["running", "failed", "cancelled"],
+  blocked: ["running", "blocked", "failed", "cancelled"],
   unverified: ["running", "failed", "cancelled"],
   done: [], failed: [], cancelled: [],
 };
@@ -253,7 +253,10 @@ export class RunContractStore {
         ? runSnapshotSchema.parse({ ...advanced, spendUncertain: true }) : advanced;
       this.db.prepare("UPDATE coding_runs SET version = ?, snapshot = ? WHERE id = ? AND version = ?")
         .run(row.version + 1, JSON.stringify(snapshot), id, row.version);
-      if (["done", "failed", "cancelled", "blocked"].includes(snapshot.state)) {
+      if (current.state === "blocked" && (next === "blocked" || next === "cancelled")) {
+        this.db.prepare("INSERT INTO coding_run_reports VALUES (?, ?, 0) ON CONFLICT(run_id) DO UPDATE SET snapshot = excluded.snapshot, delivered = 0")
+          .run(id, JSON.stringify(snapshot));
+      } else if (["done", "failed", "cancelled", "blocked"].includes(snapshot.state)) {
         this.db.prepare("INSERT OR IGNORE INTO coding_run_reports VALUES (?, ?, 0)").run(id, JSON.stringify(snapshot));
       }
       this.db.exec("COMMIT");
