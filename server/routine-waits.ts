@@ -59,15 +59,6 @@ export function settleAsk(run: RoutineRun, event: Resolved | undefined, now: num
   };
 }
 
-export function resolveAsk(run: RoutineRun, event: Resolved, now: number): ReturnType<typeof settleAsk> {
-  const settlement = settleAsk(run, event, now);
-  if (settlement.settled && !settlement.stopReason) {
-    run.status = "running";
-    run.attention = undefined;
-  }
-  return settlement;
-}
-
 /** Time the run has worked: waiting on the person never counts toward its limit. */
 export function activeMs(run: RoutineRun, now: number): number {
   return now - (run.startedAt ?? now) - (run.waitedMs ?? 0) - (run.asked ? Math.max(0, now - run.asked.since) : 0);

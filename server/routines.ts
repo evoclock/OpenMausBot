@@ -25,7 +25,7 @@ import {
 import {
   dispatchRefusal, engineFacts, loadOwnerNotices, recoverRun, requeueOnce, weekRuns, type RoutineAlert, type RoutineFailureFacts, type RoutineOwnerNotice,
 } from "./routine-recovery.ts";
-import { activeMs, askOf, resolveAsk, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
+import { activeMs, askOf, settleAsk, waitingFor, type RoutineRunAsk } from "./routine-waits.ts";
 export type { RoutineContextAttachment, RoutineIntervalWindow, RoutineRunStatus, RoutineRunTrigger };
 
 export interface RoutineIntervalSchedule {
@@ -1536,12 +1536,14 @@ export class RoutineManager {
       run.asked ??= askOf(event, this.now());
       this.wait(run, waitingFor(run.asked));
     } else if (event.type === "request.resolved") {
-      const settlement = resolveAsk(run, event, this.now());
+      const settlement = settleAsk(run, event, this.now());
       if (!settlement.settled) return null;
       if (settlement.stopReason) {
         void this.stopRun(run, settlement.stopReason, "stopped");
         return cloneRun(run);
       }
+      run.status = "running";
+      run.attention = undefined;
     } else if (event.type === "item.completed" && event.itemType === "assistant_text") {
       run.output = redactSecretsInText(event.text).trim().slice(0, 2_000);
     } else if (event.type === "runtime.error") {
