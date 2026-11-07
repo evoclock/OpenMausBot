@@ -1,6 +1,7 @@
 // Every source file over 1,000 lines is listed here with a cap that may have
-// headroom. When a file would exceed its listed cap, raise the cap by 10%
-// (rounded) rather than moving code just to stay under it. Remove the listing
+// up to 10% headroom above its current line count. When a file would exceed
+// its listed cap, raise the cap by 10% (rounded) rather than moving code just
+// to stay under it. Remove the listing
 // when the file drops under 1,000 lines. The split program
 // (server/host/README.md) moves server/index.ts into modules of under 1,500
 // lines; nothing new may exceed HARD_CAP, and the files listed above the cap
@@ -74,6 +75,9 @@ describe("source files stay a readable size", () => {
         if (lines > pinned) problems.push(`${file} grew to ${lines} lines (listed at ${pinned}): raise its cap by 10% (rounded)`);
         if (lines < LISTED_FROM) problems.push(`${file} is ${lines} lines: remove its line from LINES`);
         else if (file === "server/index.ts" && lines < SERVER_INDEX_FLOOR) problems.push(`${file} is ${lines} lines: lower its number to ${lines}`);
+        else if (file !== "server/index.ts" && pinned > Math.ceil((lines * 11) / 10)) {
+          problems.push(`${file} is ${lines} lines: listed cap ${pinned} exceeds 10% headroom (max ${Math.ceil((lines * 11) / 10)})`);
+        }
       } else if (lines > LISTED_FROM) {
         problems.push(lines > HARD_CAP
           ? `${file} is ${lines} lines, over the ${HARD_CAP}-line cap: split it`
