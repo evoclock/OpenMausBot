@@ -652,6 +652,32 @@ describe("a run waiting on an approval nobody is there to give", () => {
     expect(JSON.parse(readFileSync(h.options.file!, "utf8")).runs[0]).toMatchObject({ status: "failed", error: stopped });
   });
 
+  it("ignores another request's resolution in the same thread until its own ask is answered", async () => {
+    const h = harness();
+    const at = await started(h);
+    h.setNow(at + minutes(1));
+    h.manager.handleRuntimeEvent(opened("thread-1", "r1", "COMPOSIO_MULTI_EXECUTE_TOOL"));
+    const waiting = h.manager.listRuns()[0]!;
+
+    h.setNow(at + minutes(4));
+    expect(h.manager.handleRuntimeEvent(resolved("thread-1", "r2", "user"))).toBeNull();
+    expect(h.manager.listRuns()[0]).toMatchObject({
+      status: "waiting", asked: waiting.asked, attention: waiting.attention,
+    });
+    expect(h.manager.listRuns()[0]!.waitedMs).toBe(waiting.waitedMs);
+    expect(JSON.parse(readFileSync(h.options.file!, "utf8")).runs[0]).toMatchObject({
+      status: "waiting", asked: waiting.asked, attention: waiting.attention,
+    });
+
+    h.setNow(at + minutes(8));
+    h.manager.handleRuntimeEvent(resolved("thread-1", "r1", "user"));
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "running", waitedMs: minutes(7) });
+    expect(h.manager.listRuns()[0]).not.toHaveProperty("asked");
+    expect(h.manager.listRuns()[0]!.attention).toBeUndefined();
+    expect(h.manager.handleRuntimeEvent(resolved("thread-1", "r2", "user"))).toBeNull();
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "running", waitedMs: minutes(7) });
+  });
+
   it("counts only the time it worked toward the limit once the person answers", async () => {
     const h = harness();
     const at = await started(h);

@@ -47,13 +47,16 @@ export function waitingFor(ask: RoutineRunAsk): string | undefined {
   return ask.approval ? `Waiting for your approval ${ask.subject}` : ask.subject || undefined;
 }
 
-/** Ends the run's wait on the person. Returns why the run stops when an approval closed with nobody's answer. */
-export function settleAsk(run: RoutineRun, event: Resolved | undefined, now: number): string | null {
+export function settleAsk(run: RoutineRun, event: Resolved | undefined, now: number):
+  { settled: false } | { settled: true; stopReason: string | null } {
   const ask = run.asked;
-  if (!ask || (event && ask.requestId && event.requestId && event.requestId !== ask.requestId)) return null;
+  if (!ask || (event && ask.requestId && event.requestId && event.requestId !== ask.requestId)) return { settled: false };
   run.waitedMs = (run.waitedMs ?? 0) + Math.max(0, now - ask.since);
   delete run.asked;
-  return ask.approval && event?.source === "timeout" ? `Stopped: nobody answered the approval ${ask.subject}` : null;
+  return {
+    settled: true,
+    stopReason: ask.approval && event?.source === "timeout" ? `Stopped: nobody answered the approval ${ask.subject}` : null,
+  };
 }
 
 /** Time the run has worked: waiting on the person never counts toward its limit. */

@@ -1536,9 +1536,10 @@ export class RoutineManager {
       run.asked ??= askOf(event, this.now());
       this.wait(run, waitingFor(run.asked));
     } else if (event.type === "request.resolved") {
-      const unanswered = settleAsk(run, event, this.now());
-      if (unanswered) {
-        void this.stopRun(run, unanswered, "stopped");
+      const settlement = settleAsk(run, event, this.now());
+      if (!settlement.settled) return null;
+      if (settlement.stopReason) {
+        void this.stopRun(run, settlement.stopReason, "stopped");
         return cloneRun(run);
       }
       run.status = "running";
