@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as atomic from "./atomic.ts";
 import { WebhookManager, type WebhookManagerOptions } from "./webhooks.ts";
 
 const dirs: string[] = [];
@@ -178,9 +179,61 @@ describe("WebhookManager", () => {
     expect(result).toEqual({ deliveryId: "evt-post-1", duplicate: false });
     expect(h.queued).toHaveLength(0);
     expect(h.posted).toEqual([{ botId: "maus-1", threadId: "post-thread-1", text: "Morning brief: two calls today." }]);
+    expect(JSON.parse(readFileSync(h.file, "utf8")).deliveries).toContainEqual({
+      key: `${webhook.endpointId}:evt-post-1`, runId: "post", at: expect.any(Number),
+    });
     expect(h.manager.list()[0]).toMatchObject({ delivery: "post", deliveryCount: 1, resultsThreadId: "post-thread-1" });
     expect(h.manager.receive(webhook.endpointId, secret, { payload: { text: "again" }, deliveryId: "evt-post-1" })).toMatchObject({ duplicate: true });
     expect(h.posted).toHaveLength(1);
+  });
+
+  it("persists the post receipt before invoking the sink and deduplicates after restart", () => {
+    const h = harness();
+    const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
+    const originalPost = h.options.post!;
+    h.options.post = (botId, threadId, text) => {
+      const saved = JSON.parse(readFileSync(h.file, "utf8"));
+      expect(saved.deliveries).toContainEqual({
+        key: `${webhook.endpointId}:evt-post-restart`, runId: "post", at: expect.any(Number),
+      });
+      originalPost(botId, threadId, text);
+    };
+    const event = { payload: { text: "one post" }, deliveryId: "evt-post-restart" };
+    expect(h.manager.receive(webhook.endpointId, secret, event)).toEqual({ deliveryId: event.deliveryId, duplicate: false });
+    expect(new WebhookManager(h.options).receive(webhook.endpointId, secret, event))
+      .toEqual({ runId: "post", deliveryId: event.deliveryId, duplicate: true });
+    expect(h.posted).toHaveLength(1);
+  });
+
+  it("keeps the post receipt when the sink throws after posting", () => {
+    const h = harness();
+    const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
+    const originalPost = h.options.post!;
+    h.options.post = (botId, threadId, text) => {
+      originalPost(botId, threadId, text);
+      throw new Error("sink failed after posting");
+    };
+    const event = { payload: { text: "one post" }, deliveryId: "evt-post-failed" };
+    expect(() => h.manager.receive(webhook.endpointId, secret, event)).toThrow("sink failed after posting");
+    expect(h.posted).toHaveLength(1);
+    expect(JSON.parse(readFileSync(h.file, "utf8")).deliveries).toContainEqual({
+      key: `${webhook.endpointId}:evt-post-failed`, runId: "post", at: expect.any(Number),
+    });
+    expect(new WebhookManager(h.options).receive(webhook.endpointId, secret, event).duplicate).toBe(true);
+    expect(h.posted).toHaveLength(1);
+  });
+
+  it("does not post when persisting the receipt fails", () => {
+    const h = harness();
+    const { webhook, secret } = h.manager.create({ name: "Brief", prompt: "", botId: "maus-1", delivery: "post" });
+    const save = vi.spyOn(atomic, "writeFileAtomic").mockImplementationOnce(() => { throw new Error("save failed"); });
+    try {
+      expect(() => h.manager.receive(webhook.endpointId, secret, { payload: { text: "hello" }, deliveryId: "evt-post-save" }))
+        .toThrow("save failed");
+      expect(h.posted).toHaveLength(0);
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("rejects a post delivery instead of running a task when the server has no post sink", () => {
