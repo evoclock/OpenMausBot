@@ -573,7 +573,6 @@ export class WebhookManager {
       const raw = event.payload as { text?: unknown } | null;
       const text =
         raw && typeof raw === "object" && typeof raw.text === "string" && raw.text.trim() ? raw.text : serializePayload(event.payload);
-      this.options.post(trigger.botId, threadId, text.slice(0, 20000));
       this.deliveries.push({ key: `${trigger.endpointId}:${deliveryId}`, runId: "post", at: now });
       if (this.deliveries.length > MAX_DELIVERIES) this.deliveries.splice(0, this.deliveries.length - MAX_DELIVERIES);
       trigger.lastReceivedAt = now;
@@ -581,6 +580,7 @@ export class WebhookManager {
       trigger.updatedAt = now;
       this.appendAttempt(trigger, event, { outcome: "accepted", statusCode: 202, deliveryId, reason: "Posted to chat (no task run)" });
       this.save();
+      this.options.post(trigger.botId, threadId, text.slice(0, 20000));
       this.emit(trigger);
       return { deliveryId, duplicate: false };
     }
