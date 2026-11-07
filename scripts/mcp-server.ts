@@ -154,6 +154,45 @@ const AGENT_ACTION = { readOnlyHint: false, destructiveHint: true, idempotentHin
 
 export const TOOLS: McpToolDefinition[] = [
   {
+    name: "list_routine_runs",
+    description: "Read recent routine runs with their status, waits, attention, errors, and available settlement evidence.",
+    inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 100 } }, additionalProperties: false },
+    annotations: READ_ONLY,
+  },
+  {
+    name: "get_routine_run",
+    description: "Find one routine run by ID in the server's available run history.",
+    inputSchema: { type: "object", properties: { run_id: { type: "string" } }, required: ["run_id"], additionalProperties: false },
+    annotations: READ_ONLY,
+  },
+  {
+    name: "get_coding_runs",
+    description: "Read the coding-run snapshots and evidence for a bot.",
+    inputSchema: { type: "object", properties: { bot_id: { type: "string" } }, required: ["bot_id"], additionalProperties: false },
+    annotations: READ_ONLY,
+  },
+  ...(["hold", "resume", "cancel"] as const).map((action) => ({
+    name: `${action}_coding_run`,
+    description: `${action} a coding run through the existing run control endpoint. Returns the route's outcome and snapshot.`,
+    inputSchema: { type: "object" as const, properties: { bot_id: { type: "string" }, run_id: { type: "string" } },
+      required: ["bot_id", "run_id"], additionalProperties: false },
+    annotations: DESTRUCTIVE,
+  })),
+  {
+    name: "inspect_webhook_delivery",
+    description: "Inspect an endpoint delivery and whether a durable run receipt is visible. An accepted attempt alone is not a receipt.",
+    inputSchema: { type: "object", properties: { endpoint_id: { type: "string" }, delivery_id: { type: "string" } },
+      required: ["endpoint_id", "delivery_id"], additionalProperties: false },
+    annotations: READ_ONLY,
+  },
+  {
+    name: "decide_peer_approval",
+    description: "Answer an existing peer approval request with allow or deny. Only allow authorizes the request.",
+    inputSchema: { type: "object", properties: { thread_id: { type: "string" }, request_id: { type: "string" },
+      decision: { type: "string", enum: ["allow", "deny"] } }, required: ["thread_id", "request_id", "decision"], additionalProperties: false },
+    annotations: DESTRUCTIVE,
+  },
+  {
     name: "get_system_health",
     description: "Check whether the OpenMausBot server is reachable.",
     inputSchema: {
@@ -876,6 +915,47 @@ export async function handleToolCall(
     : baseFetcher;
   validateToolArguments(name, args);
   switch (name) {
+    case "list_routine_runs": {
+      const res = await fetcher("/api/routines");
+      const limit = args.limit === undefined ? 30 : Number(args.limit);
+      return { runs: records(res.runs).slice(0, limit) };
+    }
+    case "get_routine_run": {
+      const runId = idArg(args, "run_id");
+      const res = await fetcher("/api/routines");
+      const run = records(res.runs).find((candidate) => candidate.id === runId);
+      if (!run) throw new ToolInputError(`Routine run not found: ${runId}`);
+      return { run };
+    }
+    case "get_coding_runs": {
+      const botId = idArg(args, "bot_id");
+      return fetcher(`/api/bots/${encodeURIComponent(botId)}/loop-status`);
+    }
+    case "hold_coding_run":
+    case "resume_coding_run":
+    case "cancel_coding_run": {
+      const botId = idArg(args, "bot_id");
+      const runId = idArg(args, "run_id");
+      const action = name.split("_")[0];
+      return fetcher(`/api/bots/${encodeURIComponent(botId)}/loop-status/${encodeURIComponent(runId)}/${action}`, { method: "POST" });
+    }
+    case "inspect_webhook_delivery": {
+      const endpointId = idArg(args, "endpoint_id");
+      const deliveryId = stringArg(args, "delivery_id", { max: 200 });
+      const [hooks, calendar] = await Promise.all([fetcher("/api/webhooks"), fetcher("/api/routines")]);
+      const hook = records(hooks.webhooks).find((candidate) => candidate.endpointId === endpointId);
+      if (!hook) throw new ToolInputError(`Webhook endpoint not found: ${endpointId}`);
+      const attempts = records(hooks.attempts).filter((candidate) => candidate.webhookId === hook.id && candidate.deliveryId === deliveryId);
+      const run = records(calendar.runs).find((candidate) => candidate.webhookId === hook.id && candidate.deliveryId === deliveryId);
+      return { endpointId, deliveryId, attempts, receiptExists: Boolean(run), ...(run ? { run } : {}) };
+    }
+    case "decide_peer_approval": {
+      const threadId = idArg(args, "thread_id");
+      const requestId = idArg(args, "request_id");
+      return fetcher(`/api/threads/${encodeURIComponent(threadId)}/respond`, {
+        method: "POST", body: JSON.stringify({ requestId, behavior: args.decision }),
+      });
+    }
     case "get_system_health": {
       const res = await fetcher("/api/health");
       if (res?.app !== "openmausbot") throw new Error("The configured endpoint is not an OpenMausBot server");
