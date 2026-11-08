@@ -24,6 +24,7 @@ import { evictStartupCacheOnce } from "./startup-cache-eviction.mjs";
 import { activateExistingWindow, releaseSingleInstanceLock } from "./single-instance.mjs";
 import { bootFailureMessage, listeningSignal, pollServerIdentity, SERVER_BOOT_TIMEOUT_MS, SERVER_LISTENING_GRACE_MS } from "./server-boot-probe.mjs";
 import { createServerSupervisor } from "./server-supervisor.mjs";
+import { choosePackagedHost } from "./attach-running-host.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { chatLinkFrom, chatLinkFromCommandLine } from "./chat-link.mjs";
@@ -304,6 +305,7 @@ let serverReady = !app.isPackaged;
 let secureCredentials = {};
 let secureCredentialState = null;
 let desktopDataDirLease = null;
+let attachedHost = null;
 // The folder this process leases; environmentsState.activeId can name a remote server instead.
 let runningDataDir = null;
 let localSwitchInFlight = false;
@@ -1167,7 +1169,7 @@ function receivePhoneSecretSave(proc, rawMessage) {
 }
 
 async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmentDir(environmentsState, desktopDataDir())) {
-  if (desktopShutdownStarted) return { proc: null, abort: true };
+  if (desktopShutdownStarted || attachedHost) return { proc: null, abort: true };
   const { entry, compileCacheDir } = serverChildLaunch({
     resourcesPath: process.resourcesPath,
     userData: app.getPath("userData"),
@@ -1708,7 +1710,7 @@ function acquireDataDirLeaseFor(dir) {
 
 /** Pause the supervisor first, or its recovery forks on the wrong data dir; resume() stays in the finally. */
 async function switchLocalEnvironmentTo(targetDir, targetId) {
-  if (!app.isPackaged) return { ok: false, error: "dev" };
+  if (!app.isPackaged || attachedHost) return { ok: false, error: "unavailable" };
   // A second switch would be un-paused by the first's finally mid-handoff.
   if (localSwitchInFlight) return { ok: false, error: "busy" };
   const previousDir = runningDataDir ?? startupEnvironmentDir(environmentsState, desktopDataDir());
@@ -3168,12 +3170,23 @@ app.whenReady().then(async () => {
     bootDataDir = boot.dataDir;
   }
   if (app.isPackaged) {
+    secureCredentials = await loadSecureCredentials();
+    desktopRemoteAccess = desktopCompanionAccess(secureCredentials);
     try {
-      // Acquire before either plaintext credential migration touches config.json.
-      desktopDataDirLease = acquireDataDirLease(bootDataDir, {
-        legacyDataDir: path.join(app.getPath("home"), ".opengrokbot"),
+      // The credential read above is read-only; migrations still follow lease acquisition.
+      const selected = await choosePackagedHost({
+        companion: desktopRemoteAccess,
+        acquireLease: () => acquireDataDirLease(bootDataDir, {
+          legacyDataDir: path.join(app.getPath("home"), ".opengrokbot"),
+        }),
       });
-      runningDataDir = bootDataDir;
+      attachedHost = selected.host;
+      desktopDataDirLease = selected.lease;
+      if (attachedHost) {
+        SERVER_PORT = attachedHost.port;
+        serverReady = true;
+        slog(`attached to running host pid=${attachedHost.pid ?? "unknown"} port=${SERVER_PORT}`);
+      } else runningDataDir = bootDataDir;
     } catch (error) {
       dialog.showErrorBox(
         "OpenMausBot could not start safely",
@@ -3184,10 +3197,10 @@ app.whenReady().then(async () => {
     }
   }
   installServerSessions({ app, defaultSession: session.defaultSession, serverPort: () => SERVER_PORT,
-    ownerToken: () => (app.isPackaged && serverReady ? desktopMutationToken : null) });
+    ownerToken: () => (app.isPackaged && serverReady && !attachedHost ? desktopMutationToken : null) });
   if (app.isPackaged) app.setAsDefaultProtocolClient("openmausbot");
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
-  secureCredentials = await loadSecureCredentials();
+  if (!app.isPackaged) secureCredentials = await loadSecureCredentials();
   // An orphaned third-party key with no clear handler left: drop it rather than keep it at rest.
   if (secureCredentials && Object.hasOwn(secureCredentials, "assemblyAiApiKey") && !credentialStoreUnavailable) {
     try {
@@ -3286,7 +3299,7 @@ app.whenReady().then(async () => {
       serverReady = false;
       slog(`desktop companion relay failed: ${error?.message ?? error}`);
     }
-  } else if (app.isPackaged) {
+  } else if (app.isPackaged && !attachedHost) {
     const booted = await startServerPackaged();
     if (!booted && !desktopShutdownStarted && bootDataDir !== desktopDataDir()) {
       slog(`boot environment ${bootDataDir} did not start; falling back to the default data dir`);
@@ -3326,14 +3339,14 @@ app.whenReady().then(async () => {
     }
   }
   if (desktopShutdownStarted) return;
-  if (app.isPackaged && !desktopRemoteAccess) void ensureManagedDesktop().start().then(() => companyBackupSchedule.start()).catch(() => {});
+  if (app.isPackaged && !desktopRemoteAccess && !attachedHost) void ensureManagedDesktop().start().then(() => companyBackupSchedule.start()).catch(() => {});
   // Fresh local use never makes a Cloud request; start only restores an existing grant.
   if (app.isPackaged && !desktopRemoteAccess) {
     cloudAccountRestoring = true;
     cloudAccountStarted = ensureCloudAccount().start().catch(() => {}).finally(() => { cloudAccountRestoring = false; });
   }
   void cloudAccountStarted.then(() => { cloudSignInRestored = true; });
-  if (!desktopRemoteAccess && serverReady && companionEnabledAtRest()) {
+  if (!desktopRemoteAccess && !attachedHost && serverReady && companionEnabledAtRest()) {
     // Wait until a saved organisation policy is known: it may turn remote access off.
     void (managedDesktop?.whenRestored() ?? Promise.resolve())
       .then(() => startDesktopCompanion({ waitForHosted: false, remember: false }))
