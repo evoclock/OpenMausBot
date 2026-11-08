@@ -29,6 +29,10 @@
 		<string>/Users/julen/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
 		<key>PI_CODING_AGENT_DIR</key>
 		<string>/Users/julen/.pi/pi</string>
+		<key>HERDR_ENV</key>
+		<string>1</string>
+		<key>HERDR_SOCKET_PATH</key>
+		<string>/Users/julen/.config/herdr/herdr.sock</string>
 	</dict>
 	<key>RunAtLoad</key>
 	<true/>
