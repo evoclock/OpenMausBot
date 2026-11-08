@@ -1,4 +1,3 @@
-// Packaged: an embedded cua-driver daemon, so macOS TCC grants attribute to OpenMausBot; dev attaches to CuaDriver.app.
 // Agents use the stdio MCP proxy, which executes nothing; the host-owned daemon does.
 
 import { app, ipcMain } from "electron";
@@ -189,7 +188,10 @@ async function attachStandalone(signal) {
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     try { await launch; }
-    finally { signal.removeEventListener("abort", abort); }
+    catch (error) {
+      signal.throwIfAborted();
+      throw error;
+    } finally { signal.removeEventListener("abort", abort); }
     for (let i = 0; i < 25; i++) {
       signal.throwIfAborted();
       if (await socketAlive(STANDALONE_SOCKET)) break;
@@ -244,6 +246,21 @@ async function startEmbedded(binary, signal) {
   }
 }
 
+async function verifyStandalonePermissions() {
+  try {
+    const status = await cuaPermissionsStatus();
+    if (status.status !== "unknown" && status.accessibility === true && status.screen_recording === true) return;
+    await execFileAsync(INSTALLED_DRIVER, ["permissions", "grant"], {
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 65_536,
+      env: { ...process.env, ...CUA_ENV },
+    });
+  } catch (error) {
+    console.error("[cua] Signed driver permission verification failed:", error);
+  }
+}
+
 export async function startCua() {
   if (process.platform === "linux") return ensureLinuxRuntime().initialize();
   lifecycleGeneration++;
@@ -256,6 +273,22 @@ export async function startCua() {
       mode: "unavailable",
       reason: "cua-driver binary not found",
     });
+  }
+
+  // Prefer the already-granted standalone CuaDriver.app. Trying the unsigned
+  // bundled copy first pops Accessibility/Screen Recording on every launch.
+  if (process.platform === "darwin" && fs.existsSync(INSTALLED_DRIVER)) {
+    try {
+      const standalone = await attachStandalone(signal);
+      if (standalone) {
+        await verifyStandalonePermissions();
+        signal.throwIfAborted();
+        return persistAndNotify(standalone);
+      }
+    } catch (error) {
+      signal.throwIfAborted();
+      console.error("[cua] Signed standalone launch failed:", error);
+    }
   }
 
   const wantEmbedded =
@@ -300,12 +333,17 @@ export async function startCua() {
     };
   }
 
+  if (nextConnection.mode === "standalone" && process.platform === "darwin" && fs.existsSync(INSTALLED_DRIVER)) {
+    await verifyStandalonePermissions();
+  }
   signal.throwIfAborted();
   return persistAndNotify(nextConnection);
 }
 
 export async function cuaPermissionsStatus() {
-  const binary = resolveDriverBinary();
+  const binary = (process.platform === "darwin" && fs.existsSync(INSTALLED_DRIVER))
+    ? INSTALLED_DRIVER
+    : resolveDriverBinary();
   if (!binary) return { available: false };
   const out = await execFileAsync(binary, ["permissions", "status", "--json"], {
     encoding: "utf8",

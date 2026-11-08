@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fixture = vi.hoisted(() => ({ home: "", script: "", socketReady: false, children: [], calls: [], embeddedDelays: [], hosts: [], handlers: new Map() }));
-vi.mock("electron", () => ({ app: { isPackaged: false, getPath: () => fixture.home }, ipcMain: { handle: (name, handler) => fixture.handlers.set(name, handler) } }));
+const fixture = vi.hoisted(() => ({ home: "", script: "", socketReady: false, openMakesSocket: true, installed: true, packaged: false, requests: 0, grantFails: false, children: [], calls: [], embeddedDelays: [], hosts: [], handlers: new Map() }));
+vi.mock("electron", () => ({ app: { get isPackaged() { return fixture.packaged; }, getPath: () => fixture.home }, ipcMain: { handle: (name, handler) => fixture.handlers.set(name, handler) } }));
 vi.mock("@trycua/cua-driver/embedded", () => ({
   EmbeddedCuaDriverHost: class {
     constructor() { this.delay = fixture.embeddedDelays.shift(); fixture.hosts.push(this); }
@@ -23,13 +23,14 @@ vi.mock("@trycua/cua-driver/embedded", () => ({
   },
 }));
 vi.mock("@trycua/cua-driver/electron", () => ({
-  requestMacOSPermissions: () => ({ accessibility: false, screenRecording: false }),
+  requestMacOSPermissions: () => { fixture.requests++; return { accessibility: false, screenRecording: false }; },
   hasRequiredMacOSPermissions: () => fixture.embeddedDelays.length > 0,
 }));
 vi.mock("node:fs", async (original) => {
   const fs = await original();
   return { ...fs, default: { ...fs.default, existsSync: (file) => {
-    if (file === "/Applications/CuaDriver.app/Contents/MacOS/cua-driver") return true;
+    if (file === "/Applications/CuaDriver.app/Contents/MacOS/cua-driver") return fixture.installed;
+    if (String(file).endsWith("/cua-driver") && String(file).includes("Resources")) return true;
     if (String(file).endsWith("cua-driver.sock")) return fixture.socketReady;
     return fs.existsSync(file);
   } } };
@@ -49,8 +50,10 @@ vi.mock("node:child_process", async (original) => {
   const execFile = (command, args, options, callback) => {
     fixture.calls.push({ command, args, options });
     // Always run this inert Node child, never open the operator's native app.
-    const child = process.execFile(globalThis.process.execPath, ["-e", fixture.script], options, (error, stdout, stderr) => {
-      if (!error && command === "/usr/bin/open") fixture.socketReady = true;
+    const script = fixture.grantFails && args[0] === "permissions" && args[1] === "grant"
+      ? "process.exit(1)" : fixture.script;
+    const child = process.execFile(globalThis.process.execPath, ["-e", script], options, (error, stdout, stderr) => {
+      if (!error && command === "/usr/bin/open" && fixture.openMakesSocket) fixture.socketReady = true;
       callback(error, stdout, stderr);
     });
     fixture.children.push(child);
@@ -70,10 +73,17 @@ vi.mock("node:child_process", async (original) => {
 
 let cua;
 let localOriginModule;
+const originalResourcesPath = process.resourcesPath;
 beforeEach(async () => {
   fixture.home = mkdtempSync(join(tmpdir(), "omb-cua-async-"));
+  process.resourcesPath = join(fixture.home, "Resources");
   fixture.script = "setTimeout(() => process.exit(0), 120)";
   fixture.socketReady = false;
+  fixture.openMakesSocket = true;
+  fixture.installed = true;
+  fixture.packaged = false;
+  fixture.requests = 0;
+  fixture.grantFails = false;
   fixture.children = [];
   fixture.calls = [];
   fixture.embeddedDelays = [];
@@ -95,6 +105,7 @@ afterEach(async () => {
     await closed;
   }
   vi.unstubAllEnvs();
+  process.resourcesPath = originalResourcesPath;
   localOriginModule.setLocalOrigin(null);
   rmSync(fixture.home, { recursive: true, force: true });
 });
@@ -110,14 +121,26 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
     } finally { clearInterval(timer); }
   });
 
+  // Why: failures in both launch paths must remain visible after the signed launch is tried first.
   it("keeps the embedded and fallback launch failures visible", async () => {
     fixture.script = "process.stderr.write('fixture launch failure'); process.exit(4)";
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await cua.startCua();
+      expect(result.mode).toBe("unavailable");
+      expect(result.reason).toContain("embedded host failed");
+      expect(result.reason).toContain("standalone launch failed");
+      expect(result.reason).toContain("fixture launch failure");
+    } finally { error.mockRestore(); }
+  });
+
+  // Why: an attach that returns no connection must retain the embedded fallback and its error.
+  it("keeps the embedded and fallback launch failures visible after a null attach", async () => {
+    fixture.openMakesSocket = false;
     const result = await cua.startCua();
     expect(result.mode).toBe("unavailable");
     expect(result.reason).toContain("embedded host failed");
-    expect(result.reason).toContain("standalone launch failed");
-    expect(result.reason).toContain("fixture launch failure");
-  });
+  }, 15_000);
 
   it("cancels a pending launch without publishing a stale ready connection", async () => {
     fixture.script = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
@@ -132,11 +155,15 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
 
   it("bounds a TERM-ignoring launch with forceful timeout", async () => {
     fixture.script = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)";
-    await expect(cua.startCua()).resolves.toMatchObject({ mode: "unavailable", reason: expect.stringContaining("standalone launch failed") });
-    expect(fixture.children[0].signalCode).toBe("SIGKILL");
-  }, 12_000);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cua.startCua()).resolves.toMatchObject({ mode: "unavailable", reason: expect.stringContaining("standalone launch failed") });
+      expect(fixture.children[0].signalCode).toBe("SIGKILL");
+    } finally { error.mockRestore(); }
+  }, 22_000);
 
   it("does not let an aborted embedded start publish over or stop its replacement", async () => {
+    fixture.installed = false;
     fixture.embeddedDelays = [150, 10];
     const first = cua.startCua();
     const aborted = expect(first).rejects.toMatchObject({ name: "AbortError" });
@@ -150,6 +177,7 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
   });
 
   it("passes cancellation to an embedded startup stalled until abort", async () => {
+    fixture.installed = false;
     fixture.embeddedDelays = ["until-abort"];
     const started = cua.startCua();
     const aborted = expect(started).rejects.toMatchObject({ name: "AbortError" });
@@ -162,6 +190,7 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
   });
 
   it("keeps a replacement host when the previous host's Stop finishes late", async () => {
+    fixture.installed = false;
     fixture.embeddedDelays = [1, 10];
     await cua.startCua();
     fixture.hosts[0].stop.mockImplementation(() => new Promise((resolve) => setTimeout(resolve, 150)));
@@ -177,6 +206,7 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
   });
 
   it.each([false, true])("coalesces concurrent IPC retries and respects explicit Stop during cleanup: %s", async (cancel) => {
+    fixture.installed = false;
     fixture.embeddedDelays = [1, 10, 20];
     await cua.startCua();
     let releaseStop;
@@ -210,6 +240,7 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
   });
 
   it("cancels concurrent IPC retries during replacement startup", async () => {
+    fixture.installed = false;
     fixture.embeddedDelays = [1, "until-abort"];
     await cua.startCua();
     cua.registerCuaIpc();
@@ -226,6 +257,55 @@ describe.skipIf(process.platform !== "darwin")("async standalone CUA launch (iso
       expect(host.uniffiDestroy).toHaveBeenCalledOnce();
     }
     expect(JSON.parse(readFileSync(join(fixture.home, "cua-connection.json"), "utf8")).mode).toBe("unavailable");
+  });
+
+  // Why: a packaged unsigned binary must never be queried for the signed app's grants.
+  it("reads permission status from the signed driver when packaged", async () => {
+    fixture.packaged = true;
+    vi.stubEnv("CUA_DRIVER_PATH", "");
+    fixture.script = "console.log(JSON.stringify({ accessibility: true, screen_recording: true }))";
+    expect(cua.resolveDriverBinary()).toBe(join(process.resourcesPath, "cua-driver"));
+    await cua.cuaPermissionsStatus();
+    expect(fixture.calls[0]).toMatchObject({ command: "/Applications/CuaDriver.app/Contents/MacOS/cua-driver", args: ["permissions", "status", "--json"] });
+  });
+
+  // Why: the signed daemon needs its permission cache populated without querying the unsigned bundle.
+  it.each([{ status: "unknown" }, { status: "granted", accessibility: true }])("grants once when signed status is incomplete: %j", async (status) => {
+    fixture.packaged = true;
+    fixture.socketReady = true;
+    fixture.script = `console.log(${JSON.stringify(JSON.stringify(status))})`;
+    await expect(cua.startCua()).resolves.toMatchObject({ mode: "standalone" });
+    expect(fixture.hosts).toHaveLength(0);
+    expect(fixture.requests).toBe(0);
+    expect(fixture.calls.map(({ command, args }) => [command, args])).toEqual([
+      ["/Applications/CuaDriver.app/Contents/MacOS/cua-driver", ["permissions", "status", "--json"]],
+      ["/Applications/CuaDriver.app/Contents/MacOS/cua-driver", ["permissions", "grant"]],
+    ]);
+  });
+
+  // Why: an already-granted signed app must not raise new consent sheets.
+  it("does not grant when both permissions are already true", async () => {
+    fixture.packaged = true;
+    fixture.socketReady = true;
+    fixture.script = "console.log(JSON.stringify({ accessibility: true, screen_recording: true }))";
+    await expect(cua.startCua()).resolves.toMatchObject({ mode: "standalone" });
+    expect(fixture.calls.map(({ args }) => args)).toEqual([["permissions", "status", "--json"]]);
+    expect(fixture.requests).toBe(0);
+  });
+
+  // Why: a failed grant must not discard an already-connected standalone daemon.
+  it("keeps the standalone connection when grant fails", async () => {
+    fixture.socketReady = true;
+    fixture.grantFails = true;
+    fixture.script = "console.log(JSON.stringify({ status: 'unknown' }))";
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cua.startCua()).resolves.toMatchObject({ mode: "standalone" });
+      expect(fixture.calls.map(({ args }) => args)).toEqual([
+        ["permissions", "status", "--json"], ["permissions", "grant"],
+      ]);
+      expect(error).toHaveBeenCalledOnce();
+    } finally { error.mockRestore(); }
   });
 
   it("reads permission status asynchronously with bounded output", async () => {
