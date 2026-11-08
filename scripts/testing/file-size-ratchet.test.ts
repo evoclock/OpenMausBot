@@ -20,7 +20,7 @@ const SERVER_INDEX_FLOOR = 17309;
 const LINES: Record<string, number> = {
   "server/index.ts": 17500,
   "src/state/store.tsx": 3604,
-  "electron/main.mjs": 3470,
+  "electron/main.mjs": 3483,
   "server/store.ts": 2476,
   "src/components/Sidebar.tsx": 2340,
   "server/drivers/claude.ts": 2163,
