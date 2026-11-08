@@ -26,6 +26,7 @@ import { bootFailureMessage, listeningSignal, pollServerIdentity, SERVER_BOOT_TI
 import { createServerSupervisor } from "./server-supervisor.mjs";
 import { choosePackagedHost } from "./attach-running-host.mjs";
 import { serverChildLaunch } from "./server-child-launch.mjs";
+import { withHerdrChildEnvironment } from "./herdr-child-environment.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { chatLinkFrom, chatLinkFromCommandLine } from "./chat-link.mjs";
 import { createOrganizationEntry, isOrganizationDeepLink, takeOrganizationDeepLink, organizationRestartIntent, withOrganizationRestartIntent, withoutOrganizationRestartIntent } from "./organization-entry.mjs";
@@ -1200,7 +1201,7 @@ async function startServerOn(port, dataDir = runningDataDir ?? startupEnvironmen
   if (compileCacheDir) childEnv.OMB_SERVER_COMPILE_CACHE = compileCacheDir;
   slog(`fork ${entry} port=${port}`);
   const proc = utilityProcess.fork(entry, [], {
-    env: childEnv,
+    env: withHerdrChildEnvironment(childEnv),
     stdio: ["ignore", "pipe", "pipe"],
   });
   let resolveServerExit;
