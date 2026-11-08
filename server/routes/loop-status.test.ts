@@ -47,7 +47,12 @@ it("serves only the visible bot's durable run over HTTP, without write methods",
   store.create({ id: "7898b674-9669-43c1-84d5-f0955fd4e1cd", botId: "visible",
     repository: "repo", ref: "main", repositoryClass: "agent-private", successCriteria: ["pass"],
     allowedEffects: [] }, 100);
-  const route = createLoopStatusRoutes({ dataDir: dir, botVisible: (_auth, id) => id === "visible" });
+  store.transition("7898b674-9669-43c1-84d5-f0955fd4e1cd", "blocked", 101, ["needs review"]);
+  const receipt = { status: "APPLIED", routineRunId: "routine-1", codingRunId: "7898b674-9669-43c1-84d5-f0955fd4e1cd",
+    terminalHash: "hash", disposition: "held", executionStatus: "blocked", appliedAt: 102 };
+  const route = createLoopStatusRoutes({ dataDir: dir, botVisible: (_auth, id) => id === "visible",
+    codingSettlement: (id) => ({ executionStatus: "blocked", reconciliationDisposition: "held",
+      settlementReceipts: id === receipt.codingRunId ? [receipt] : [] }) });
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const handled = await dispatchRoutes([route], { req, res, url, path: url.pathname,
@@ -59,7 +64,10 @@ it("serves only the visible bot's durable run over HTTP, without write methods",
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const visible = await fetch(`${base}/api/bots/visible/loop-status`);
     expect(visible.status).toBe(200);
-    expect((await visible.json() as { runs: Array<{ state: string }> }).runs).toMatchObject([{ state: "queued" }]);
+    const body = await visible.json() as { runs: Array<{ state: string }> };
+    expect(body.runs).toMatchObject([{ state: "blocked", executionStatus: "blocked",
+      reconciliationDisposition: "held", settlementReceipts: [receipt] }]);
+    expect(body.runs[0]!.state).not.toBe("failed");
     expect((await fetch(`${base}/api/bots/hidden/loop-status`)).status).toBe(404);
     expect((await fetch(`${base}/api/bots/visible/loop-status`, { method: "POST" })).status).toBe(404);
   } finally {

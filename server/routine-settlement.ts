@@ -10,7 +10,18 @@ export interface CodingSettlementReceipt {
   codingRunId: string;
   terminalHash: string;
   disposition: "completed" | "held" | "failed" | "cancelled";
+  executionStatus?: "done" | "blocked" | "failed" | "cancelled";
   appliedAt: number;
+}
+
+export function codingSettlementView(receipt: CodingSettlementReceipt | undefined) {
+  return {
+    executionStatus: receipt?.executionStatus ?? (receipt ? ({
+      completed: "done", held: "blocked", failed: "failed", cancelled: "cancelled",
+    } as const)[receipt.disposition] : null),
+    reconciliationDisposition: receipt?.disposition ?? null,
+    settlementReceipts: receipt ? [{ ...receipt }] : [],
+  };
 }
 
 export function applyCodingSettlement(options: {
@@ -38,7 +49,7 @@ export function applyCodingSettlement(options: {
   if (!run || !["queued", "running", "waiting"].includes(run.status)) throw new Error("routine run is not open");
   const disposition = snapshot.state === "done" ? "completed" : snapshot.state === "blocked" ? "held"
     : snapshot.state === "cancelled" ? "cancelled" : "failed";
-  const receipt: CodingSettlementReceipt = { status: "APPLIED", routineRunId, codingRunId, terminalHash, disposition, appliedAt: now() };
+  const receipt: CodingSettlementReceipt = { status: "APPLIED", routineRunId, codingRunId, terminalHash, disposition, executionStatus: snapshot.state as CodingSettlementReceipt["executionStatus"], appliedAt: now() };
   commit(() => {
     run.status = disposition;
     run.finishedAt = now();

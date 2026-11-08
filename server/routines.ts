@@ -7,7 +7,7 @@ import { assertRoutineFileShape } from "./routine-file-validation.ts";
 import { onceUpdateError, unscheduledOnceSchedule } from "./routine-unscheduled.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RunSnapshot } from "./run-contract.ts";
-import { applyCodingSettlement, finishGoalRun as finishGoalRunState, type CodingSettlementReceipt } from "./routine-settlement.ts";
+import { applyCodingSettlement, codingSettlementView, finishGoalRun as finishGoalRunState, type CodingSettlementReceipt } from "./routine-settlement.ts";
 import { writeRoutineFile } from "./atomic.ts";
 import { redactSecretsInText } from "./redact.ts";
 import type { GroupGoalRunStatus } from "../shared/group-goal-run.ts";
@@ -854,11 +854,16 @@ export class RoutineManager {
       now: this.now, commit: (mutate) => this.commitMutation(mutate), notify: (run) => this.emitRun(run) });
   }
 
-  listRuns(from?: number, to?: number): RoutineRun[] {
+  codingSettlement(codingRunId: string) {
+    return codingSettlementView(this.codingSettlementReceipts.find((receipt) => receipt.codingRunId === codingRunId));
+  }
+
+  listRuns(from?: number, to?: number) {
+    const receipts = new Map(this.codingSettlementReceipts.map((receipt) => [receipt.routineRunId, receipt]));
     return this.runs
       .filter((r) => (from == null || r.scheduledFor >= from) && (to == null || r.scheduledFor <= to))
       .sort((a, b) => b.scheduledFor - a.scheduledFor)
-      .map(cloneRun);
+      .map((run) => ({ ...cloneRun(run), ...codingSettlementView(receipts.get(run.id)) }));
   }
 
   activeRunForBot(botId: string): RoutineRun | null {

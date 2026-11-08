@@ -1733,8 +1733,20 @@ describe("RoutineManager", () => {
     });
     const settled = h.manager.settleCodingRun(run.id, terminal);
     expect(settled.receipt.disposition).toBe("held");
+    const reopened = new RoutineManager(h.options);
+    const view = reopened.listRuns().find((candidate) => candidate.id === run.id)!;
+    expect(view).toMatchObject({ status: "held", executionStatus: "blocked",
+      reconciliationDisposition: "held", error: "Coding run needs reconciliation",
+      settlementReceipts: [{ disposition: "held", executionStatus: "blocked", codingRunId: terminal.contract.id }] });
+    expect(view.status).not.toBe("failed");
+    expect(reopened.codingSettlement(terminal.contract.id)).toMatchObject({ executionStatus: "blocked",
+      reconciliationDisposition: "held", settlementReceipts: [{ disposition: "held" }] });
+    const legacy = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    delete legacy.codingSettlementReceipts[0].executionStatus;
+    writeFileSync(h.options.file!, JSON.stringify(legacy));
     expect(new RoutineManager(h.options).listRuns().find((candidate) => candidate.id === run.id)).toMatchObject({
-      status: "held", error: "Coding run needs reconciliation",
+      status: "held", executionStatus: "blocked", reconciliationDisposition: "held",
+      settlementReceipts: [{ disposition: "held" }],
     });
   });
 

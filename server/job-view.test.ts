@@ -85,7 +85,7 @@ describe("the job of a conversation", () => {
   it("reports how the lead's work ended when it did not finish", () => {
     expect(view([root({ status: "failed", outcome: "stalled", outcomeDetail: "no progress for 4h" })]))
       .toMatchObject({ state: "stalled", reason: "Room Lead's work ended as stalled: no progress for 4h" });
-    expect(view([root({ status: "failed", outcome: "provider_error" })])).toMatchObject({ state: "failed", reason: "Room Lead's work ended as provider_error" });
+    expect(view([root({ status: "failed", outcome: "provider_error" })])).toMatchObject({ state: "failed", outcome: "provider_error", reason: "Room Lead's work ended as provider_error" });
     expect(view([root()], { conversation: { ...idle, activity: "dead" } })).toMatchObject({ state: "failed" });
     expect(view([root()], { conversation: { ...idle, activity: "no-signal" } })).toMatchObject({ state: "stalled" });
   });

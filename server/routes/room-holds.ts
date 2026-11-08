@@ -23,6 +23,7 @@ export function createRoomHoldRoutes(deps: RoomHoldRouteDeps): RouteHandler {
     if (!group.memberIds.includes(parsed.data.botId)) return json(res, 404, { error: "that bot is not a member of this room" });
     const updated = deps.setHold(m[1]!, parsed.data.botId, parsed.data.held);
     if (!updated) return json(res, 404, { error: "no such room" });
-    return json(res, 200, { ok: true, group: updated });
+    return json(res, 200, { ok: true, operation: parsed.data.held ? "hold" : "release",
+      outcome: updated.holds?.[parsed.data.botId] ? "held" : "released", group: updated });
   };
 }

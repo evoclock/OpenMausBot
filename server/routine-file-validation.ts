@@ -24,6 +24,9 @@ export function assertRoutineFileShape(disk: {
         typeof receipt.codingRunId !== "string" || !receipt.codingRunId ||
         typeof receipt.terminalHash !== "string" || !/^[a-f0-9]{64}$/.test(receipt.terminalHash) ||
         !["completed", "held", "failed", "cancelled"].includes(String(receipt.disposition)) ||
+        (receipt.executionStatus !== undefined && receipt.executionStatus !== ({
+          completed: "done", held: "blocked", failed: "failed", cancelled: "cancelled",
+        } as Record<string, string>)[String(receipt.disposition)]) ||
         typeof receipt.appliedAt !== "number" || !Number.isFinite(receipt.appliedAt) ||
         routineIds.has(receipt.routineRunId) || codingIds.has(receipt.codingRunId)) {
         throw new Error("Invalid coding settlement receipt");

@@ -4,6 +4,7 @@ import { PASS, type RouteHandler } from "./table.ts";
 
 export function createLoopStatusRoutes(deps: {
   dataDir: string;
+  codingSettlement?: (codingRunId: string) => { executionStatus: string | null; reconciliationDisposition: string | null; settlementReceipts: unknown[] };
   botVisible(auth: RequestAuth, botId: string): boolean;
   controls?: () => { get(id: string): { contract: { botId: string }; state: string } | undefined;
     hold(id: string): string; resumeRun(id: string): string; cancel(id: string): Promise<unknown> } | null;
@@ -25,8 +26,13 @@ export function createLoopStatusRoutes(deps: {
     const reader = openLoopStatusReader(deps.dataDir);
     if (!reader) return json(res, 200, { runs: [] });
     try {
-      return json(res, 200, { runs: reader.list(botId).map((snapshot) =>
-        loopStatus(snapshot, reader.recent(snapshot.contract.id), reader.held(snapshot.contract.id))) });
+      return json(res, 200, { runs: reader.list(botId).map((snapshot) => {
+        const settlement = deps.codingSettlement?.(snapshot.contract.id);
+        return { ...loopStatus(snapshot, reader.recent(snapshot.contract.id), reader.held(snapshot.contract.id)),
+          executionStatus: snapshot.state,
+          reconciliationDisposition: settlement?.reconciliationDisposition ?? null,
+          settlementReceipts: settlement?.settlementReceipts ?? [] };
+      }) });
     } finally { reader.close(); }
   };
 }
