@@ -44,6 +44,7 @@ export interface JobView {
   since: number;
   now: number;
   state: JobState;
+  outcome: Assignment["outcome"] | null;
   reason: string;
   /** Changes whenever anything a waiter would report changes; pass it back to wait for the next change. */
   version: string;
@@ -170,7 +171,8 @@ export function jobView(input: JobInput): JobView {
     };
   };
   return {
-    threadId: input.threadId, scope: input.scope, since: input.since, now: input.now, state, reason, version, conversation,
+    threadId: input.threadId, scope: input.scope, since: input.since, now: input.now, state,
+    outcome: lead && ended(lead) ? lead.outcome ?? null : null, reason, version, conversation,
     roots: [...input.scopes], nodes: ordered.map(node), hidden: input.rows.length - shown.length, counts: tally,
     needsInput: [...parked, ...asking].filter((row) => input.visible(row.assignee.destination.threadId)).map((row) => ({
       id: row.id, botId: row.assignee.botId, botName: nameOf(row.assignee.botId), threadId: row.assignee.destination.threadId,

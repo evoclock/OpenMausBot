@@ -13360,7 +13360,7 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
-ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id),
+ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, codingSettlement: (id) => routines?.codingSettlement(id) ?? { executionStatus: null, reconciliationDisposition: null, settlementReceipts: [] }, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id),
   controls: () => coding }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
 ROUTES.push(createBotPresetRoutes({ presets: presetStore, orgStatuses: orgInstallStatuses }));

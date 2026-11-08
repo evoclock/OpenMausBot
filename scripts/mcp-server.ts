@@ -155,19 +155,19 @@ const AGENT_ACTION = { readOnlyHint: false, destructiveHint: true, idempotentHin
 export const TOOLS: McpToolDefinition[] = [
   {
     name: "list_routine_runs",
-    description: "Read recent routine runs with their status, waits, attention, errors, and available settlement evidence.",
+    description: "Read routine status, coding execution status, reconciliation disposition, and persisted settlement receipts separately.",
     inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 100 } }, additionalProperties: false },
     annotations: READ_ONLY,
   },
   {
     name: "get_routine_run",
-    description: "Find one routine run by ID in the server's available run history.",
+    description: "Find one routine run by ID, including its coding settlement fields when available.",
     inputSchema: { type: "object", properties: { run_id: { type: "string" } }, required: ["run_id"], additionalProperties: false },
     annotations: READ_ONLY,
   },
   {
     name: "get_coding_runs",
-    description: "Read the coding-run snapshots and evidence for a bot.",
+    description: "Read coding execution states, reconciliation dispositions, and settlement receipts for a bot.",
     inputSchema: { type: "object", properties: { bot_id: { type: "string" } }, required: ["bot_id"], additionalProperties: false },
     annotations: READ_ONLY,
   },

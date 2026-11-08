@@ -200,6 +200,7 @@ describe("stop @Bot holds one room member", { timeout: 60_000 }, () => {
     try {
       const held = await api("POST", `/api/groups/${room.id}/holds`, { botId: bee.id, held: true });
       expect(held.status).toBe(200);
+      expect(held.body).toMatchObject({ operation: "hold", outcome: "held" });
       expect(Object.keys(held.body.group.holds)).toEqual([bee.id]);
       await send(room.id, "Anyone there?");
       await expect.poll(async () => chips((await snapshot(room.id)).messages, HELD("Bee")).length, { timeout: 15_000 }).toBe(1);
@@ -210,6 +211,7 @@ describe("stop @Bot holds one room member", { timeout: 60_000 }, () => {
       expect((await api("POST", `/api/groups/${room.id}/holds`, { botId: "nobody", held: true })).status).toBe(404);
       expect((await api("POST", `/api/groups/${room.id}/holds`, { botId: bee.id })).status).toBe(400);
       const released = await api("POST", `/api/groups/${room.id}/holds`, { botId: bee.id, held: false });
+      expect(released.body).toMatchObject({ operation: "release", outcome: "released" });
       expect(released.body.group.holds).toEqual({});
       await send(room.id, "Now?");
       await expect.poll(async () => botTexts((await snapshot(room.id)).messages, bee.id).length, { timeout: 15_000 }).toBe(1);
