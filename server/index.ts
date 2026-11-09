@@ -5,6 +5,7 @@ import { codingRunIdForRequest, codingTurnToolScope, openProductionCodingRuntime
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
+import { createCodingTaskRoutes } from "./routes/coding-tasks.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -13365,6 +13366,7 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
+ROUTES.push(createCodingTaskRoutes({ coding: () => coding, ownerSession: cloudOwnerSession }));
 ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, codingSettlement: (id) => routines?.codingSettlement(id) ?? { executionStatus: null, reconciliationDisposition: null, settlementReceipts: [] }, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id),
   controls: () => coding }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();
@@ -16120,22 +16122,6 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
-    if (path === "/api/coding-tasks" && method === "POST") {
-      if (!cloudOwnerSession(auth)) return json(res, 403, { error: "owner admin session required" });
-      if (!coding) return json(res, 503, { error: "coding runtime unavailable" });
-      const body = await readBody(req, 8192);
-      if (!body || typeof body !== "object" || Array.isArray(body) ||
-        Object.keys(body).sort().join(",") !== "goal,idempotencyKey,repository" ||
-        typeof body.repository !== "string" || typeof body.goal !== "string" ||
-        typeof body.idempotencyKey !== "string") return json(res, 400, { error: "invalid owner coding task" });
-      try {
-        const result = await coding.ownerTask({ repository: body.repository, goal: body.goal,
-          idempotencyKey: body.idempotencyKey }, true);
-        return json(res, result.status === "accepted" ? 201 : 200, result);
-      } catch (error) {
-        return json(res, 409, { error: error instanceof Error ? error.message : "coding task refused" });
-      }
-    }
     if (path === "/api/routines" && method === "GET") {
       const fromParam = url.searchParams.get("from");
       const toParam = url.searchParams.get("to");
