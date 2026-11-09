@@ -295,8 +295,6 @@ By contributing you agree your contributions are licensed under the
 
 The host is being split into modules under `server/host/` (rules in
 `server/host/README.md`) and `server/routes/` (`server/routes/README.md`).
-Two tests keep it from growing back: `scripts/testing/file-size-ratchet.test.ts`
-lists every source file over 1,000 lines and only lets a count go down, and
 `scripts/testing/index-route-ratchet.test.ts` counts the route guards left in
 index.ts. A move changes no behaviour (review it with
 `git diff --color-moved=dimmed-zebra`); a behaviour change is its own PR.
