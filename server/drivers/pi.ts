@@ -48,7 +48,7 @@ import {
 } from "./local-inject.ts";
 import { appendNative } from "./native.ts";
 import { decodePiConfig, type PiConfig } from "./pi-config.ts";
-import { checkPiReadiness, loadPinnedPotetoRecipe, piRpcProbe } from "../pi-readiness.ts";
+import { assertPinnedPiChild, resolveCodingPiRecipe } from "../pi-readiness.ts";
 import { captureStderrTail, piExitMessage, scopeReceiptReady } from "./pi-process-diagnostics.ts";
 import { allowsTool, canUseMcpServer, parseToolScope } from "../../shared/tool-scope.ts";
 import { customServerGate, gateServer, mcpStdioServer } from "../mcp-gate-config.ts";
@@ -505,13 +505,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       const codingRun = turn.codingRun;
       const { env: turnEnv, cli: turnCli } = codingRun ? codingPiTurnRuntime(DATA_DIR, turn.botId ?? "", catalogEnv)
         : { env: catalogEnv, cli: config.cli };
-      const recipe = codingRun?.potetoSkillDir && codingRun.rolesFilePath
-        ? loadPinnedPotetoRecipe(codingRun.potetoSkillDir, codingRun.rolesFilePath) : null;
-      if (codingRun?.potetoSkillDir && !recipe) throw new Error("Coding run denied: pinned recipe roles are unavailable");
-      if (!recipe) {
-        const readiness = await checkPiReadiness({ cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir, skillOnly: true });
-        if (!readiness.skill.ready) throw new Error(readiness.skill.action);
-      }
+      const recipe = await resolveCodingPiRecipe(codingRun, { cli: config.cli, env: catalogEnv, cwd: turn.cwd || process.cwd(), agentDir: config.agentDir });
       const selection = parseToolScope(turn.toolScope);
       if (!selection.ok) throw new Error(selection.error);
       const toolScope = selection.scope;
@@ -556,23 +550,9 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         } catch {}
         throw err;
       }
-      const childArgs = [...(codingRun ? ["--mode", "rpc"] : PI_ARGS), ...(codingRun ? ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files"] : []),
-        ...(recipe ? ["--skill", recipe.skillDir] : []), "-e", SPAWNED_PROXIES.piMcpExtension];
-      if (recipe) {
-        try {
-          const data = await piRpcProbe(turnCli, { ...piEnvironment({ ...process.env, ...turnEnv }),
-            OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json") }, turn.cwd || process.cwd(), "get_commands", undefined,
-          childArgs) as { commands?: Array<{ name?: string; source?: string }> };
-          const skills = data?.commands?.filter((entry) => entry.source === "skill");
-          if (skills?.length !== 1 || skills[0]?.name !== "skill:poteto-mode-pi") {
-            throw new Error("Coding run denied: pinned recipe is not the sole loaded skill in the child");
-          }
-        } catch (error) {
-          rmSync(mcpTempDir, { recursive: true, force: true });
-          throw error;
-        }
-      }
-
+      const childArgs = [...(codingRun ? ["--mode", "rpc"] : PI_ARGS), ...(codingRun ? ["--no-extensions", "--no-mcp", "--no-skills", "--no-prompt-templates", "--no-context-files"] : []), ...(recipe ? ["--skill", recipe.skillDir] : []), "-e", SPAWNED_PROXIES.piMcpExtension];
+      if (recipe) await assertPinnedPiChild(turnCli, { ...piEnvironment({ ...process.env, ...turnEnv }), OMB_MCP_CONFIG: join(mcpTempDir, "mcp.json") },
+        turn.cwd || process.cwd(), childArgs, () => rmSync(mcpTempDir, { recursive: true, force: true }));
       // spawnCli can throw synchronously, before settle() could remove the credential file.
       const child = (() => {
         try {

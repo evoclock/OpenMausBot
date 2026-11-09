@@ -32,6 +32,18 @@ export function loadPinnedPotetoRecipe(skillDir: string, rolesFilePath: string,
     rolesSha256: createHash("sha256").update(rolesText).digest("hex") };
 }
 
+export async function resolveCodingPiRecipe(codingRun: { potetoSkillDir?: string; rolesFilePath?: string } | undefined,
+  options: { cli: string; env: NodeJS.ProcessEnv; cwd: string; agentDir?: string }) {
+  const recipe = codingRun?.potetoSkillDir && codingRun.rolesFilePath
+    ? loadPinnedPotetoRecipe(codingRun.potetoSkillDir, codingRun.rolesFilePath) : null;
+  if (codingRun?.potetoSkillDir && !recipe) throw new Error("Coding run denied: pinned recipe roles are unavailable");
+  if (!recipe) {
+    const readiness = await checkPiReadiness({ ...options, skillOnly: true });
+    if (!readiness.skill.ready) throw new Error(readiness.skill.action);
+  }
+  return recipe;
+}
+
 export type PiReadiness = {
   skill: { ready: boolean; action: string };
   roles: Record<PiRole, { ready: boolean; action: string }>;
@@ -71,6 +83,21 @@ export async function piRpcProbe(cli: string, env: NodeJS.ProcessEnv, cwd: strin
     });
     child.stdin.write(`${JSON.stringify({ type: command, id: "readiness", ...selection })}\n`);
   });
+}
+
+export async function assertPinnedPiChild(cli: string, env: NodeJS.ProcessEnv, cwd: string,
+  childArgs: string[], cleanup: () => void): Promise<void> {
+  try {
+    const data = await piRpcProbe(cli, env, cwd, "get_commands", undefined, childArgs) as {
+      commands?: Array<{ name?: string; source?: string }> };
+    const skills = data?.commands?.filter((entry) => entry.source === "skill");
+    if (skills?.length !== 1 || skills[0]?.name !== "skill:poteto-mode-pi") {
+      throw new Error("Coding run denied: pinned recipe is not the sole loaded skill in the child");
+    }
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 export function piProjectRoot(cwd: string): string | null {
