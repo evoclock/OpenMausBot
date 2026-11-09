@@ -37,6 +37,8 @@ export interface CodingGitPort {
 
 export interface CodingGitHost {
   effectInspector?: import("./coding-effect-reconciliation.ts").ForgeEffectInspector;
+  checkHead?: (repository: string, branch: string, base: string, sha: string,
+    requiredChecks: readonly string[]) => Promise<"green" | "red" | "pending">;
   inspect(repository: string, request?: CodingGitRequest): Promise<RepositoryFacts>;
   credentials: CodingGitCredentialProvider;
   port: Omit<CodingGitPort, "recordOwnerMerge">;

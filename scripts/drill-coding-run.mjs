@@ -66,7 +66,8 @@ if (mode === "--fixture-real-worker" && process.argv.length === 3) {
     throw new Error("Refusing incomplete or unconfirmed sandbox drill configuration");
   }
   const localFixture = config.host === "fixture" && config.destination === "fixture/agents" &&
-    resolve(config.worktree).startsWith(join(root, "node_modules", ".cache") + "/");
+    [join(root, "node_modules", ".cache"), join(root, ".local", "coding-loop-2026-11-09", "fixture-cache")]
+      .some((fixtureRoot) => resolve(config.worktree).startsWith(fixtureRoot + "/"));
   if (!localFixture && (config.host !== "mac-mini" || config.destination !== "evoclock/omb-drill-sandbox"))
     throw new Error("Host or destination does not match the selected sandbox");
   const git = (...args) => execFileSync("git", args, { cwd: config.worktree, encoding: "utf8", timeout: 10_000 }).trim();

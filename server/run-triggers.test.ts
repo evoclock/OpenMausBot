@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { createHmac } from "node:crypto";
 import { test } from "vitest";
 import { RunContractStore, type RunContract } from "./run-contract.ts";
-import { startGithubCodingRun, startScheduledCodingRun, type TriggerTemplate } from "./run-triggers.ts";
+import { startGithubCodingRun, startOwnerCodingRun, startScheduledCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", successCriteria: ["pstack verifies goal"],
@@ -32,6 +32,18 @@ test("a persisted scheduled occurrence starts only once", async () => {
   assert.equal((await startScheduledCodingRun(runner, run, template)).status, "existing");
   assert.equal((await startScheduledCodingRun(runner, { ...run, status: "queued" }, template)).status, "ignored");
   assert.equal(runner.started.length, 1);
+  runner.close();
+});
+
+test("owner task entry is authorized, idempotent and binds the goal to its key", async () => {
+  const runner = port();
+  const input = { repository: template.repository, goal: "Fix the fixture", idempotencyKey: "owner-key-1" };
+  await assert.rejects(startOwnerCodingRun(runner, input, template, false), /owner authorization/);
+  assert.equal((await startOwnerCodingRun(runner, input, template, true)).status, "accepted");
+  assert.equal((await startOwnerCodingRun(runner, input, template, true)).status, "existing");
+  await assert.rejects(startOwnerCodingRun(runner, { ...input, goal: "Different goal" }, template, true), /conflict/);
+  assert.equal(runner.started.length, 1);
+  assert.deepEqual(runner.started[0]?.successCriteria, [input.goal]);
   runner.close();
 });
 

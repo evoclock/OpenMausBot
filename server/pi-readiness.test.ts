@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkPiReadiness, parsePiRoles, piProjectRoot, piRpcProbe } from "./pi-readiness.ts";
+import { checkPiReadiness, parsePiRoles, piProjectRoot, piRpcProbe, loadPinnedPotetoRecipe } from "./pi-readiness.ts";
 
 const fixtures: string[] = [];
 function fixture() {
@@ -22,6 +22,11 @@ afterEach(async () => {
 const roles = { schema: "pstack-model-roles.v1", roles: { development: "fixture/dev", "independent-review": "fixture/review" } };
 
 describe("Pi readiness", () => {
+  it("refuses pinned skill drift before a coding child can start", () => {
+    expect(() => loadPinnedPotetoRecipe("/fixture/skills/poteto-mode-pi", "/fixture/roles.json",
+      () => "changed skill body")).toThrow(/SKILL\.md.*hash mismatch/);
+  });
+
   it("validates exact role identities without exposing choices", () => {
     expect(parsePiRoles(JSON.stringify(roles))).toEqual(roles.roles);
     const shared = { development: "openai-codex/gpt-6-sol", "independent-review": "openai-codex/gpt-6-sol" };

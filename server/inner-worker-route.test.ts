@@ -26,7 +26,7 @@ function host(): WorkerHost & { calls: string[] } {
     async release(leaseId, reason) { calls.push(`release:${leaseId}:${reason}`); },
     async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["worker artifact"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["separate review"], costUsd: 0 }; },
-    async verifyWithPstack() { calls.push("pstack"); return ["acceptance result"]; },
+    async verifyRevision() { calls.push("pstack"); return ["acceptance result"]; },
     async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
@@ -42,6 +42,16 @@ function cleanWorkspace(route: ReturnType<typeof host>): string {
   route.acquire = async (contract, requestId) => ({ ...await acquire(contract, requestId), directory });
   return directory;
 }
+
+test("missing or forbidden pinned step evidence cannot verify a revision", async () => {
+  const route = host();
+  route.runPlaybook = async () => ({ revision: "revision", evidence: ["claimed forbidden fan-out"],
+    progress: true, stepEvidenceOk: false, costUsd: 0 });
+  const result = await createWorkerRoute(route).invoke(contract, 1, "run:recipe", signal);
+  assert.equal(result.kind, "progress");
+  assert.deepEqual(route.calls, ["acquire"]);
+  assert.match(result.evidence.join(" "), /step evidence/);
+});
 
 test("independent review and inner acceptance evidence precede completion", async () => {
   const route = host();
@@ -80,6 +90,7 @@ test("worker goal carries iteration number and the preceding receipt", async () 
     previous: { iteration: 1, goal: "pstack acceptance passes", verdict: "waiting",
       evidence: ["first proof"], startedAt: 1, finishedAt: 2 },
   });
+  assert.match(goal, /^\/skill:poteto-mode-pi /);
   assert.match(goal, /Iteration 2/);
   assert.match(goal, /Previous iteration 1 verdict: waiting/);
   assert.match(goal, /first proof/);
@@ -187,7 +198,7 @@ test.each([
   if (step === "reviewer") route.review = async (_workspace, _role, revision) => {
     controller.abort(); return { revision, accepted: true, evidence: ["review"], costUsd: 0 };
   };
-  if (step === "pstack") route.verifyWithPstack = async () => { controller.abort(); return ["verified"]; };
+  if (step === "pstack") route.verifyRevision = async () => { controller.abort(); return ["verified"]; };
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", controller.signal);
   assert.deepEqual(result, { kind: "blocked", evidence: [reason], costUsd: 0 });
   assert.equal(route.calls.at(-1), `release:lease:${reason}`);
@@ -195,7 +206,7 @@ test.each([
 
 test("verification failure blocks and releases after review", async () => {
   const route = host();
-  route.verifyWithPstack = async () => { throw new Error("verification failed"); };
+  route.verifyRevision = async () => { throw new Error("verification failed"); };
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
   assert.deepEqual(result.evidence, ["worker route failed; reconcile outward effects", "verification failed"]);
   assert.equal(route.calls.at(-1), "release:lease:worker route failed; reconcile outward effects");
@@ -246,7 +257,7 @@ test("a worker without progress and no check command blocks and releases the lea
 
 test("a favorable reviewer alone never completes an unverified run", async () => {
   const route = host();
-  route.verifyWithPstack = async () => null;
+  route.verifyRevision = async () => null;
   const result = await createWorkerRoute(route).invoke(contract, 1, "run:1", signal);
   assert.equal(result.kind, "progress");
   assert.deepEqual(route.calls, ["acquire", "worker", "reviewer"]);

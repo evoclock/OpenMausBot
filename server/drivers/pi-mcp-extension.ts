@@ -9,6 +9,7 @@ import { ASK_USER_TOOL, formatQuestionAnswers, MAX_OPTIONS, MAX_QUESTIONS, parse
 import { CALL_TOOL, directoryCallTarget, isDirectoryTool } from "../mcp-directory.ts";
 import { REMOTE_MCP_STARTUP_MS } from "../mcp-http.ts";
 import { codingCommandAllowed, codingFileAllowed, executeCodingCommand, type CodingCommand } from "./coding-command.ts";
+import { runHostCheck } from "../coding-host-check.ts";
 
 interface McpServerDef {
   command: string;
@@ -27,7 +28,7 @@ interface McpConfig {
   automatedLocalComputer?: boolean;
   /** Register the ask_user tool: the driver sets it when the turn may ask. */
   askUser?: boolean;
-  codingRun?: { id: string; branch: string; directory: string };
+  codingRun?: { id: string; branch: string; directory: string; checkCommand?: string[]; checkTimeoutMs?: number };
 }
 
 interface McpTool {
@@ -671,13 +672,25 @@ export default async function (pi: PiExtensionApi): Promise<void> {
       name: "coding_command", label: "Coding command",
       description: "Run a bounded Git operation or repository check. For a committed patch use command diff with revision set to the exact 40-character HEAD SHA. No shell or network commands.",
       parameters: Type.Object({
-        command: Type.Optional(Type.Any({ description: "One of status, diff, add, commit, typecheck, lint or test." })),
-        revision: Type.Optional(Type.String({ description: "Exact 40-character HEAD SHA for diff of the committed patch only." })),
+        command: Type.Optional(Type.Any({ description: "One of status, diff, add, commit, typecheck, lint, test or the configured check." })),
+        revision: Type.Optional(Type.String({ description: "Exact 40-character HEAD SHA for diff or the configured check." })),
         paths: Type.Optional(Type.Any({ description: "Explicit worktree-relative paths for add only." })),
         message: Type.Optional(Type.Any({ description: "Commit message for commit only." })),
       }, { additionalProperties: true }),
       async execute(_id, params) {
         const input = params as { command: CodingCommand; paths?: string[]; message?: string; revision?: string };
+        if (!codingCommandAllowed(params)) throw new Error("Coding run denied: command is outside the envelope");
+        if (input.command === "check") {
+          const command = config.codingRun?.checkCommand;
+          if (!command?.length || !command.every((part) => typeof part === "string" && part.length > 0)) {
+            throw new Error("Coding run denied: configured check is unavailable");
+          }
+          executeCodingCommand(process.cwd(), "status", [], "", config.codingRun!.branch);
+          const result = await runHostCheck({ command, cwd: process.cwd(), revision: input.revision!,
+            timeoutMs: config.codingRun?.checkTimeoutMs });
+          return { content: [{ type: "text", text: truncateToolText(JSON.stringify({ exitCode: result.exitCode,
+            commitSha: result.commitSha, timedOut: result.timedOut, outputTail: result.outputTail })) }], details: {} };
+        }
         return { content: [{ type: "text", text: truncateToolText(executeCodingCommand(process.cwd(), input.command, input.paths, input.message, config.codingRun!.branch, input.revision)) }], details: {} };
       },
     });

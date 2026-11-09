@@ -14,7 +14,9 @@ const snapshot: RunSnapshot = { contract: { id: "11111111-1111-4111-8111-1111111
   repository: "evoclock/docs", ref: "main", successCriteria: ["docs updated"],
   repositoryClass: "agent-private", allowedEffects: ["edit", "commit", "push", "draft-pr"],
   maxIterations: 8, authorisedExternalWrites: [] }, state: "done", iteration: 1, updatedAt: 3,
-  spentUsd: 0, elapsedMs: 1, spendUncertain: false, evidence: ["documentation verified"] };
+  spentUsd: 0, elapsedMs: 1, spendUncertain: false, evidence: ["documentation verified"],
+  hostCheck: { command: ["true"], exitCode: 0, commitSha: "b".repeat(40), startedAt: 1,
+    durationMs: 1, timedOut: false, outputTail: "" } };
 const workspace = { repository: "evoclock/docs", directory: "/fixture/worktree", branch: "omb/coding-fixture",
   baseBranch: "main", base: "a".repeat(40), leaseId: "lease" };
 
@@ -71,7 +73,8 @@ test("publish confirms push after createBranch changes the workspace branch", as
         return "applied";
       },
     });
-    const branch = await publishVerifiedCodingRun({ snapshot, workspace: leased, hasDestination: true,
+    const branch = await publishVerifiedCodingRun({ snapshot: { ...snapshot,
+      hostCheck: { ...snapshot.hostCheck!, commitSha: revision } }, workspace: leased, hasDestination: true,
       receipts, effectHost, head: async () => git("rev-parse", "HEAD"),
       async createBranch(path, name) {
         assert.equal(path, directory);
@@ -128,6 +131,34 @@ test("restart after push reconciles the branch and creates only one draft PR", a
   assert.deepEqual(writes, ["push", "pr-open"]);
   receipts.close();
   await removeTempDir(directory);
+});
+
+test("a red CI retry advances the same branch and observes the same draft PR", async () => {
+  const receipts = new CodingEffectReceipts(":memory:");
+  let remote: string | null = null;
+  let pr = false;
+  const writes: string[] = [];
+  const effectHost: EffectReconcileHost = {
+    async getBranchRef() { return remote ? { kind: "found", sha: remote } : { kind: "absent" }; },
+    async findPullRequests() { return pr ? { kind: "found", prs: [{ number: 7, headSha: remote!, state: "open" }] } : { kind: "absent" }; },
+    async findCommentsByIdempotencyKey() { return { kind: "absent" }; },
+    async applyMissing(receipt) {
+      writes.push(receipt.key);
+      if (receipt.effect.kind === "branch-push") remote = receipt.effect.expectedSha;
+      if (receipt.effect.kind === "pr-open") pr = true;
+    },
+  };
+  try {
+    const first = { ...snapshot, state: "publishing" as const, iteration: 1 };
+    const second = { ...first, iteration: 2, hostCheck: { ...snapshot.hostCheck!, commitSha: "c".repeat(40) } };
+    for (const current of [first, second]) {
+      assert.equal(await publishVerifiedCodingRun({ snapshot: current, workspace, hasDestination: true,
+        receipts, effectHost, head: async () => current.hostCheck!.commitSha,
+        async createBranch() {} }), "bot/coding-11111111-111");
+    }
+    assert.deepEqual(writes, ["push", "pr-open", "push"]);
+    assert.equal(remote, "c".repeat(40));
+  } finally { receipts.close(); }
 });
 
 test("a verified base revision never creates a branch or PR", async () => {

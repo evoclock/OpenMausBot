@@ -26,9 +26,9 @@ function host(calls: string[]): WorkerHost {
     async acquire(contract) { return { repository: contract.repository, directory: "isolated",
       branch: "omb/coding-fixture", baseBranch: contract.ref, base: "base", leaseId: "lease" }; },
     async release() { calls.push("release"); },
-    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "revision", evidence: ["work"], progress: true, costUsd: 0 }; },
+    async runPlaybook(_workspace, role) { calls.push(role); return { revision: "b".repeat(40), evidence: ["work"], progress: true, costUsd: 0 }; },
     async review(_workspace, role, revision) { calls.push(role); return { revision, accepted: true, evidence: ["review"], costUsd: 0 }; },
-    async verifyWithPstack() { calls.push("pstack-check"); return ["verified"]; },
+    async verifyRevision() { calls.push("pstack-check"); return ["verified"]; },
     async runHostCheck(_workspace, command, revision) { calls.push("host-check"); return { command, exitCode: 0, commitSha: revision, startedAt: Date.now(), durationMs: 1, timedOut: false, outputTail: "" }; },
   };
 }
@@ -81,6 +81,22 @@ test("a scheduled occurrence and signed event drive the same outer/inner route",
   } finally { await runtime.close(); }
 });
 
+test("authorized owner entry uses the sole durable outer runner and replays one identity", async () => {
+  const calls: string[] = [];
+  const runtime = await openCodingRunRuntime({ dataDir: fixtureDir(), workerHost: host(calls),
+    routines: new Map(), github: new Map() });
+  const input = { repository: template.repository, goal: "Fix the fixture", idempotencyKey: "owner-key-1" };
+  try {
+    await assert.rejects(runtime.owner(input, template, false), /owner authorization/);
+    const started = await runtime.owner(input, template, true);
+    assert.equal(started.status, "accepted");
+    assert.equal(await settled(runtime, started.id), "done");
+    assert.equal((await runtime.owner(input, template, true)).status, "existing");
+    await assert.rejects(runtime.owner({ ...input, goal: "Different" }, template, true), /conflict/);
+    assert.deepEqual(calls, ["development-role", "review-role", "pstack-check", "host-check"]);
+  } finally { await runtime.close(); }
+});
+
 test("the outer invocation hands one opaque goal to the durable transport", async () => {
   const calls: string[] = [];
   const requests: string[] = [];
@@ -88,7 +104,8 @@ test("the outer invocation hands one opaque goal to the durable transport", asyn
     routines: new Map([["routine", template]]), github: new Map(), driver: {
       async invokeWorker({ requestId, goal, transport }) {
         requests.push(requestId);
-        assert.match(goal, /^Iteration 1\n/);
+        assert.match(goal, /^\/skill:poteto-mode-pi /);
+        assert.match(goal, /Iteration 1$/);
         const receipt = await transport.invoke();
         assert.equal(receipt.verified, true);
         assert.match(receipt.reference, /^omb-result:[a-f0-9]{64}$/);

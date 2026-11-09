@@ -90,7 +90,8 @@ export interface SendTurnInput {
   /** Reasserted every turn so a resumed native session cannot keep a stale, more permissive mode. */
   approvalMode?: ApprovalMode;
   /** Server-owned identity for a closed coding turn; never sourced from bot settings. */
-  codingRun?: { id: string; branch: string; directory: string };
+  codingRun?: { id: string; branch: string; directory: string; potetoSkillDir?: string; rolesFilePath?: string;
+    checkCommand?: string[]; checkTimeoutMs?: number };
   /** Fresh owner selection, independent of execution approval and resume state. */
   toolScope?: ToolScope;
   /** A guest turn: no shell or command execution, no reads outside its folder. Sent only to drivers whose guestTurns is "confined". */

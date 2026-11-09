@@ -2,16 +2,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-export type CodingCommand = "status" | "diff" | "add" | "commit" | "typecheck" | "lint" | "test";
+export type CodingCommand = "status" | "diff" | "add" | "commit" | "typecheck" | "lint" | "test" | "check";
 
 export function codingCommandAllowed(input: unknown): boolean {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false;
   const params = input as Record<string, unknown>;
   if (Object.keys(params).some((key) => !["command", "paths", "message", "revision"].includes(key)) || typeof params.command !== "string") return false;
-  if (!Object.hasOwn(CHECKS, params.command) && !["status", "diff", "add", "commit"].includes(params.command as string)) return false;
+  if (!Object.hasOwn(CHECKS, params.command) && !["status", "diff", "add", "commit", "check"].includes(params.command as string)) return false;
+  if (params.command === "check" && (params.paths !== undefined || params.message !== undefined || typeof params.revision !== "string")) return false;
   if (params.paths !== undefined && (!Array.isArray(params.paths) || params.paths.some((path) => typeof path !== "string"))) return false;
   if (params.message !== undefined && typeof params.message !== "string") return false;
-  if (params.revision !== undefined && (params.command !== "diff" || typeof params.revision !== "string" || !/^[a-f0-9]{40}$/.test(params.revision))) return false;
+  if (params.revision !== undefined && (!["diff", "check"].includes(params.command) || typeof params.revision !== "string" || !/^[a-f0-9]{40}$/.test(params.revision))) return false;
   return true;
 }
 

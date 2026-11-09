@@ -10199,8 +10199,13 @@ if (cfg.codingRuns) {
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
     statusFeed: sessionStatusFeed,
     wakeOwner: () => { const id = cfg.sessionStatus?.wakeRoutineId; if (id) routines?.runNow(id); },
-    onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
-      { id: codingRunIdForRequest(requestId), branch: workspace.branch, directory: workspace.directory }),
+    onTaskCreated: (_botId, threadId, requestId, workspace) => {
+      const registration = cfg.codingRuns?.registrations.find((entry) => entry.repository === workspace.repository);
+      codingBoundary.register(threadId, { id: codingRunIdForRequest(requestId), branch: workspace.branch,
+        directory: workspace.directory, ...(registration?.potetoRecipe ? { potetoSkillDir: registration.potetoRecipe.skillDir,
+          rolesFilePath: cfg.codingRuns?.rolesFilePath, checkCommand: registration.checkCommand,
+          checkTimeoutMs: registration.checkTimeoutMs } : {}) });
+    },
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
     registry,
     async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {
@@ -16115,6 +16120,22 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       });
     }
 
+    if (path === "/api/coding-tasks" && method === "POST") {
+      if (!cloudOwnerSession(auth)) return json(res, 403, { error: "owner admin session required" });
+      if (!coding) return json(res, 503, { error: "coding runtime unavailable" });
+      const body = await readBody(req, 8192);
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+        Object.keys(body).sort().join(",") !== "goal,idempotencyKey,repository" ||
+        typeof body.repository !== "string" || typeof body.goal !== "string" ||
+        typeof body.idempotencyKey !== "string") return json(res, 400, { error: "invalid owner coding task" });
+      try {
+        const result = await coding.ownerTask({ repository: body.repository, goal: body.goal,
+          idempotencyKey: body.idempotencyKey }, true);
+        return json(res, result.status === "accepted" ? 201 : 200, result);
+      } catch (error) {
+        return json(res, 409, { error: error instanceof Error ? error.message : "coding task refused" });
+      }
+    }
     if (path === "/api/routines" && method === "GET") {
       const fromParam = url.searchParams.get("from");
       const toParam = url.searchParams.get("to");

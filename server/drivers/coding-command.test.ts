@@ -58,6 +58,10 @@ test("a reviewer can inspect only the committed HEAD patch through the closed co
     const base = git("rev-parse", "HEAD^");
     writeFileSync(join(home, "file.txt"), "uncommitted\n");
     assert.equal(codingCommandAllowed({ command: "diff", revision: head }), true);
+    assert.equal(codingCommandAllowed({ command: "check", revision: head }), true);
+    assert.equal(codingCommandAllowed({ command: "check", revision: head, paths: [] }), false);
+    assert.equal(codingCommandAllowed({ command: "check", revision: "HEAD" }), false);
+    assert.equal(codingCommandAllowed({ command: "check" }), false);
     const patch = executeCodingCommand(home, "diff", [], "", "feat/review", head);
     assert.match(patch, /\+committed/);
     assert.doesNotMatch(patch, /uncommitted/);

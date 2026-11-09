@@ -309,7 +309,7 @@ function handle(cmd: any) {
       return;
     case "get_commands": {
       send({ type: "response", command: "get_commands", success: true, data: {
-        commands: process.env.FAKE_PI_MISSING_SKILL === "1" ? [] : [{ name: "poteto-mode-pi", source: "skill" }],
+        commands: process.env.FAKE_PI_MISSING_SKILL === "1" ? [] : [{ name: argv.includes("--skill") ? "skill:poteto-mode-pi" : "poteto-mode-pi", source: "skill" }],
       } });
       break;
     }

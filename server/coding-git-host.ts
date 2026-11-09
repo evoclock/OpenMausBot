@@ -84,6 +84,39 @@ export function createProductionCodingGitHost(config: CodingRunConfig, dependenc
   };
   const host: CodingGitHost = {
     credentials,
+    async checkHead(repository, branch, base, sha, requiredChecks) {
+      const match = REPOSITORY.exec(repository);
+      if (!match || !/^[a-f0-9]{40}$/.test(sha) || !/^[a-z0-9][a-z0-9._/-]*$/.test(branch) ||
+        !requiredChecks.length || new Set(requiredChecks).size !== requiredChecks.length) {
+        throw new Error("CI repository, branch or head is invalid");
+      }
+      const ref = await host.effectInspector!.getBranchRef({ owner: "evoclock", repo: match[1]!, ref: branch });
+      const pull = await host.effectInspector!.findPullRequests({ owner: "evoclock", repo: match[1]!, head: branch, base });
+      if (ref.kind !== "found" || ref.sha !== sha || pull.kind !== "found" || pull.prs.length !== 1 ||
+        pull.prs[0]?.headSha !== sha || pull.prs[0]?.state !== "open") {
+        throw new Error("CI head does not match the published draft PR");
+      }
+      const draft = await readEffect("evoclock", match[1]!, `/pulls/${pull.prs[0].number}`);
+      if (draft?.number !== pull.prs[0].number || draft?.draft !== true || draft?.state !== "open" ||
+        draft?.head?.sha !== sha || draft?.head?.ref !== branch || draft?.base?.ref !== base) {
+        throw new Error("CI head does not match an open draft PR");
+      }
+      const checks = await readEffect("evoclock", match[1]!, `/commits/${sha}/check-runs?per_page=100`);
+      const statuses = await readEffect("evoclock", match[1]!, `/commits/${sha}/status`);
+      if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs) ||
+        checks.total_count > 100 || checks.check_runs.length !== checks.total_count ||
+        !Array.isArray(statuses?.statuses)) throw new Error("CI check listing is incomplete");
+      const runs = checks.check_runs as Array<{ name?: string; status?: string; conclusion?: string }>;
+      const contexts = statuses.statuses as Array<{ context?: string; state?: string }>;
+      if (runs.some((run) => run.status === "completed" &&
+        ["failure", "timed_out", "cancelled", "action_required"].includes(run.conclusion ?? "")) ||
+        contexts.some((entry) => ["failure", "error"].includes(entry.state ?? ""))) return "red";
+      if (requiredChecks.some((name) =>
+        runs.filter((run) => run.name === name).length + contexts.filter((entry) => entry.context === name).length !== 1)) return "pending";
+      return runs.every((run) => run.status === "completed" &&
+        ["success", "neutral", "skipped"].includes(run.conclusion ?? "")) &&
+        contexts.every((entry) => entry.state === "success") ? "green" : "pending";
+    },
     effectInspector: {
       async getBranchRef({ owner, repo, ref }) {
         const repository = `${owner}/${repo}`;

@@ -35,6 +35,10 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     confirmInvocation?: (requestId: string, result: InnerLoopResult) => Promise<boolean> };
   contextCompactor?: IterationContextCompactor;
   onCancel?: (snapshot: RunSnapshot) => Promise<void>;
+  publication?: {
+    publish(snapshot: RunSnapshot): Promise<{ branch: string; headSha: string }>;
+    check(snapshot: RunSnapshot): Promise<"green" | "red" | "pending">;
+  };
 } = {}) {
   const durablePath = join(dataDir, "coding-runs.sqlite");
   const restartLimit = options.restartLimit ?? CODING_RESTART_LIMIT_DEFAULT;
@@ -74,7 +78,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     if (terminalStates.has(snapshot.state)) reportPending();
     return snapshot;
   };
-  const Task = defineTask<{ id: string }, { phase: "iterate"; sequence: number }, string>({
+  const Task = defineTask<{ id: string }, { phase: "iterate"; sequence: number; ciCycle?: number }, string>({
     name: "openmausbot.outer-run",
     version: 1,
     initial: () => ({ phase: "iterate", sequence: 0 }),
@@ -82,6 +86,55 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
       iterate: async (task, runtime, context) => {
         const snapshot = store.get(task.input.id);
         if (!snapshot) throw new Error("run contract missing");
+        if ((snapshot.state === "publishing" || snapshot.state === "awaiting-ci") && options.publication) {
+          try {
+            let current = snapshot;
+            if (current.state === "publishing") {
+              const published = await options.publication.publish(current);
+              if (published.headSha !== current.hostCheck?.commitSha || !published.branch) {
+                throw new Error("published head differs from verified host check");
+              }
+              current = store.markPublication(current.contract.id, published.branch, published.headSha);
+            }
+            const publishedHead = current.publication?.headSha;
+            if (!publishedHead || publishedHead !== current.hostCheck?.commitSha) {
+              throw new Error("CI head differs from published revision");
+            }
+            const verdict = await options.publication.check(current);
+            if (verdict === "green") {
+              transition(current.contract.id, "done", Math.max(Date.now(), current.updatedAt + 1),
+                [`CI passed for exact head ${publishedHead}`]);
+              await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "done" } }), context);
+              return;
+            }
+            if (verdict === "red") {
+              transition(current.contract.id, "waiting", Math.max(Date.now(), current.updatedAt + 1),
+                [`CI failed for exact head ${publishedHead}; continue on the same branch`]);
+              await runtime.commit(() => ({ status: "running", checkpoint: {
+                phase: "iterate", sequence: current.iteration, ciCycle: (task.state.checkpoint.ciCycle ?? 0) + 1 } }), context);
+              return;
+            }
+            if (verdict !== "pending") throw new Error("CI verdict is invalid");
+            if (Date.now() - current.startedAt! >= current.contract.limits!.maxWallTimeMs) {
+              transition(current.contract.id, "blocked", Math.max(Date.now(), current.updatedAt + 1),
+                ["CI wait exceeded the wall-clock ceiling"]);
+              await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            if (!runtime.signal.aborted) await runtime.commit(() => ({ status: "running", checkpoint: {
+              phase: "iterate", sequence: current.iteration, ciCycle: (task.state.checkpoint.ciCycle ?? 0) + 1 } }), context);
+            return;
+          } catch (error) {
+            const current = store.get(snapshot.contract.id);
+            if (current && (current.state === "publishing" || current.state === "awaiting-ci") && !runtime.signal.aborted) {
+              transition(current.contract.id, "blocked", Math.max(Date.now(), current.updatedAt + 1),
+                [`publication or CI needs reconciliation: ${error instanceof Error ? error.message : String(error)}`]);
+            }
+            if (!runtime.signal.aborted) await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: "blocked" } }), context);
+            return;
+          }
+        }
         if (snapshot.state === "running") {
           const receipt = store.step(task.input.id, snapshot.iteration);
           const recovery = options.effectRecovery;
@@ -104,12 +157,13 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
           }
           if (checked?.status === "reconciled" && result && receipt && driverConfirmed &&
             Date.now() - snapshot.startedAt! < snapshot.contract.limits!.maxWallTimeMs) {
-            const state = result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
+            const state = result.kind === "verified" && result.evidence.some((item) => item.trim())
+              ? options.publication ? "publishing" : "done"
               : result.kind === "progress" ? "waiting" : "blocked";
             const finished = store.finishIteration(task.input.id, snapshot.iteration, receipt.requestId, state,
               Math.max(Date.now(), snapshot.updatedAt + 1), [...result.evidence, ...checked.evidence], result.costUsd ?? null, result.modelsUsed, result.hostCheck, result.sessionFile);
             if (terminalStates.has(finished.state)) reportPending();
-            await runtime.commit(() => state === "waiting" ? { status: "running", checkpoint: {
+            await runtime.commit(() => state === "waiting" || state === "publishing" ? { status: "running", checkpoint: {
               phase: "iterate", sequence: snapshot.iteration } } :
               { status: "terminal", outcome: { status: "completed", result: state } }, context);
             return;
@@ -200,14 +254,15 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
               ? `iteration ceiling reached (${current.contract.maxIterations})` : null,
           ].filter((item): item is string => item !== null);
           const state = reasons.length ? "blocked"
-            : result.kind === "verified" && result.evidence.some((item) => item.trim()) ? "done"
+            : result.kind === "verified" && result.evidence.some((item) => item.trim())
+              ? options.publication ? "publishing" : "done"
               : result.kind === "progress" ? "waiting" : "blocked";
           if (runtime.signal.aborted) return;
           const finished = store.finishIteration(task.input.id, current.iteration, requestId, state, at,
             [...result.evidence, ...reasons], costUsd !== null && Number.isFinite(costUsd) && costUsd >= 0 ? costUsd : null,
             result.modelsUsed, result.hostCheck, result.sessionFile);
           if (terminalStates.has(finished.state)) reportPending();
-          if (state === "waiting") {
+          if (state === "waiting" || state === "publishing") {
             await runtime.commit(() => ({ status: "running", checkpoint: {
               phase: "iterate", sequence: task.state.checkpoint.sequence + 1,
             } }), context);

@@ -43,6 +43,10 @@ test("missing or invalid role maps block before workspace acquisition", async ()
   const invalid = join(roleDir, "invalid-coding-roles.json");
   writeFileSync(invalid, JSON.stringify({ schema: "wrong", roles: {} }));
   assert.equal(await createCodingWorkerHost({ ...base, rolesFilePath: invalid }).roles("fixture/agents"), null);
+  const drifted = createCodingWorkerHost({ ...base, rolesFilePath,
+    roles: new Map([["fixture/agents", { ...base.roles.get("fixture/agents")!,
+      potetoSkillDir: join(roleDir, "missing-pinned-recipe") }]]) });
+  assert.equal(await drifted.roles("fixture/agents"), null);
   assert.equal(acquired, false);
 });
 

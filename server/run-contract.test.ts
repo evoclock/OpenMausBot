@@ -22,9 +22,26 @@ test("run contract survives reopening and terminal states cannot restart", () =>
   assert.equal(second.get(contract.id)?.state, "running");
   assert.throws(() => second.transition(contract.id, "done", 3), /evidence/);
   assert.equal(second.get(contract.id)?.state, "running");
-  assert.equal(second.transition(contract.id, "done", 4, ["fixture verdict"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 3, durationMs: 1, timedOut: false, outputTail: "" }).state, "done");
+  assert.equal(second.transition(contract.id, "done", 4, ["fixture verdict"], { command: ["node"], exitCode: 0, commitSha: "a".repeat(40), startedAt: 3, durationMs: 1, timedOut: false, outputTail: "" }).state, "done");
   assert.throws(() => second.transition(contract.id, "running", 5), /transition/);
   second.close();
+});
+
+test("owner task origin persists and rejects a changed goal under the same key", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "owner-origin-")), "runtime.db");
+  const origin = { repository: contract.repository, goal: "Fix fixture", idempotencyKey: "owner-key-1",
+    botId: contract.botId, threadId: "thread-1" };
+  const first = new RunContractStore(path);
+  first.registerOwnerOrigin(contract.id, origin);
+  first.close();
+  const reopened = new RunContractStore(path);
+  try {
+    assert.deepEqual(reopened.ownerOrigin(contract.id), origin);
+    reopened.registerOwnerOrigin(contract.id, origin);
+    assert.throws(() => reopened.registerOwnerOrigin(contract.id, { ...origin, goal: "Changed" }), /conflict/);
+  } finally { reopened.close(); }
 });
 
 test("blocked abort evidence replaces the delivered report and survives reopen", () => {
@@ -54,7 +71,7 @@ test("terminal routine link survives restart and can be reconciled by coding ide
   const first = new RunContractStore(path);
   first.create(contract, 1);
   first.transition(contract.id, "running", 2);
-  const terminal = first.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
+  const terminal = first.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "a".repeat(40), startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   assert.deepEqual(first.linkRoutine("routine-run", contract.id), { status: "pending" });
   assert.equal(first.claimRoutineTerminal(contract.id, terminal)?.status, "claimed");
   first.close();
@@ -74,7 +91,7 @@ test("owner private-merge reason is attached to a verified run and survives rest
   assert.throws(() => store.recordOwnerMerge(contract.id, contract.repository,
     "This unblocks further development", "merge"), /verified run/);
   store.transition(contract.id, "running", 2);
-  store.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
+  store.transition(contract.id, "done", 3, ["verified"], { command: ["node"], exitCode: 0, commitSha: "a".repeat(40), startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   assert.throws(() => store.recordOwnerMerge(contract.id, "wrong/repo",
     "This unblocks further development", "merge"), /verified run/);
   store.recordOwnerMerge(contract.id, contract.repository, "This unblocks further development", "merge");

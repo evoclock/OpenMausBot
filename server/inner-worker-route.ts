@@ -22,6 +22,7 @@ export interface WorkerReport {
   sessionFile?: string;
   evidence: string[];
   progress: boolean;
+  stepEvidenceOk?: boolean;
   blocked?: boolean;
   costUsd?: number | null;
   modelUsed?: { instanceId: string; model: string };
@@ -45,7 +46,7 @@ export interface WorkerHost {
   release(leaseId: string, reason: string): Promise<void>;
   runPlaybook(workspace: IsolatedWorkspace, role: string, goal: string, requestId: string, signal: AbortSignal): Promise<WorkerReport>;
   review(workspace: IsolatedWorkspace, role: string, revision: string, signal: AbortSignal, goal?: string): Promise<ReviewReport>;
-  verifyWithPstack(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
+  verifyRevision(workspace: IsolatedWorkspace, revision: string, criteria: string[], signal: AbortSignal): Promise<string[] | null>;
   runHostCheck(workspace: IsolatedWorkspace, command: string[], revision: string): Promise<HostCheckRecord>;
 }
 
@@ -59,7 +60,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
       const prior = context?.previous;
       const carry = prior ? `${context?.compactor?.compact(context.history ?? [prior]) ??
         `Previous iteration ${prior.iteration} verdict: ${prior.verdict}\nEvidence:\n${prior.evidence.join("\n")}`}\nPrevious iteration Pi session file: ${prior.sessionFile ?? "unavailable"}` : "";
-      const goal = `Iteration ${context?.iteration ?? _iteration}\n${codingPlaybookPrompt(contract, spendRequired ? remainingUsd ?? contract.limits?.maxSpendUsd : undefined)}${carry ? `\n${carry}` : ""}`;
+      const goal = `${codingPlaybookPrompt(contract, spendRequired ? remainingUsd ?? contract.limits?.maxSpendUsd : undefined)}\nIteration ${context?.iteration ?? _iteration}${carry ? `\n${carry}` : ""}`;
       const work = async (): Promise<InnerLoopResult> => {
       if (signal.aborted) return { kind: "blocked", evidence: ["run cancelled"], costUsd: 0 };
       if (contract.repositoryClass !== "agent-private") return { kind: "blocked", evidence: ["external repository requires a separate verified route"], costUsd: 0 };
@@ -99,6 +100,11 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
         if (!charge(report.costUsd)) return blocked(spentUsd === null
           ? "coding run spend is uncertain; owner review required" : "spend ceiling reached before review");
         if (signal.aborted) return blocked("worker interrupted; reconcile outward effects");
+        if (report.stepEvidenceOk === false) {
+          retainLease = true;
+          return { kind: "progress", evidence: [...report.evidence, "pinned recipe step evidence is missing or claims a forbidden step"],
+            costUsd: spentUsd, ...(sessionFile ? { sessionFile } : {}), ...(modelsUsed.length ? { modelsUsed } : {}) };
+        }
         if (report.blocked) return blocked("worker turn remained blocked after one chase", report.evidence.join("\n"));
         if (!report.revision || !report.progress) {
           let dirty = "";
@@ -124,7 +130,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
           let hostCheck: HostCheckRecord | undefined;
           if (contract.checkCommand) {
             try {
-              const verified = await host.verifyWithPstack(workspace, workspace.base, contract.successCriteria, signal);
+              const verified = await host.verifyRevision(workspace, workspace.base, contract.successCriteria, signal);
               if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
               evidence.push(...(verified ?? []));
               hostCheck = await host.runHostCheck(workspace, contract.checkCommand, workspace.base);
@@ -158,7 +164,7 @@ export function createWorkerRoute(host: WorkerHost, durable?: {
             ...(sessionFile ? { sessionFile } : {}),
             ...(modelsUsed.length ? { modelsUsed } : {}) };
         }
-        const verified = await host.verifyWithPstack(workspace, report.revision, contract.successCriteria, signal);
+        const verified = await host.verifyRevision(workspace, report.revision, contract.successCriteria, signal);
         if (signal.aborted) return blocked("verification interrupted; reconcile outward effects");
         retainLease = true;
         if (!verified?.some((item) => item.trim())) {
