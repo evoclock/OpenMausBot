@@ -100,8 +100,9 @@ export function createCodingStartTurnPort(options: CodingStartTurnOptions): Codi
           const finished = new Promise<void>((resolve, reject) => { settle = resolve; fail = reject; });
           abort = () => { void options.interrupt(botId, task.threadId).finally(() => fail(new Error("coding turn cancelled"))); };
           signal.addEventListener("abort", abort, { once: true });
-          await options.startTurn(botId, chase === 0 ? prompt : prompt.replace(/^\/skill:poteto-mode-pi /,
-            `/skill:poteto-mode-pi ${STUCK_TURN_CHASE}\n\nOriginal goal:\n`), {
+          await options.startTurn(botId, chase === 0 ? prompt : prompt.startsWith("/skill:poteto-mode-pi ")
+            ? prompt.replace(/^\/skill:poteto-mode-pi /, `/skill:poteto-mode-pi ${STUCK_TURN_CHASE}\n\nOriginal goal:\n`)
+            : `${STUCK_TURN_CHASE}\n\nOriginal goal:\n${prompt}`, {
             threadId: task.threadId, requestId, onTurnSettled: settle,
             onDispatchError: (error) => fail(new Error(error)),
             onTurnStalled(released) { stalled = true; stallRelease = released; },
