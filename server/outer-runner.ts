@@ -5,7 +5,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { join } from "node:path";
 import { access } from "node:fs/promises";
 import { backup, DatabaseSync } from "node:sqlite";
-import { RunContractStore, type RunContractInput, type RunSnapshot } from "./run-contract.ts";
+import { RunContractStore, type RunContractInput, type RunSnapshot, type WorkflowFields } from "./run-contract.ts";
 import { CODING_RESTART_LIMIT_DEFAULT } from "./coding-run-config.ts";
 import { CodingEffectReceipts, reconcilePreparedEffects, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import { openLoopLedger, type IterationEntry, type IterationContextCompactor } from "./loop-ledger.ts";
@@ -28,6 +28,7 @@ const requiresSpendCap = (limits: RunSnapshot["contract"]["limits"]) =>
 export async function openOuterRunner(dataDir: string, inner: InnerLoop, options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
   onStart?: (snapshot: RunSnapshot) => void;
+  validateWorkflow?: (runId: string, definition: WorkflowFields) => { checks: string[]; evidence: string[] };
   restartLimit?: number;
   effectRecovery?: { receipts: CodingEffectReceipts; host: EffectReconcileHost;
     /** Only read a durably saved result and priced usage; never restart a worker turn. */
@@ -65,7 +66,7 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
   }
-  const store = new RunContractStore(join(dataDir, "runtime.db"));
+  const store = new RunContractStore(join(dataDir, "runtime.db"), options.validateWorkflow);
   const ledger = openLoopLedger(join(dataDir, "runtime.db"));
   const reportPending = () => {
     if (!options.onTerminal) return;
@@ -338,6 +339,9 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
     return matches[0]?.record.id as TaskId<string> | undefined;
   };
   const startOne = async (snapshot: RunSnapshot): Promise<TaskId<string>> => {
+    if (snapshot.contract.workflow && !snapshot.contract.workflow.enabled) {
+      throw new Error("workflow cannot start without trusted validation");
+    }
     const existing = await findTask(snapshot.contract.id);
     if (existing) {
       runByTask.set(existing, snapshot.contract.id);
@@ -366,7 +370,12 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   const starting = new Map<string, Promise<TaskId<string>>>();
   const start = (contract: RunContractInput): Promise<TaskId<string>> => {
     requireHealthy();
-    const snapshot = store.create(contract, Date.now());
+    if (contract.workflow && !options.validateWorkflow) {
+      throw new Error("workflow has no trusted intake validator");
+    }
+    const created = store.create(contract, Date.now());
+    const snapshot = created.contract.workflow && !created.contract.workflow.enabled
+      ? store.enableWorkflow(created.contract.id) : created;
     options.onStart?.(snapshot);
     const existing = starting.get(snapshot.contract.id);
     if (existing) return existing;
@@ -376,7 +385,15 @@ export async function openOuterRunner(dataDir: string, inner: InnerLoop, options
   };
   try {
     reportPending();
-    for (const contract of store.queued()) await start(contract);
+    for (const contract of store.queued()) {
+      if (contract.workflow?.enabled) {
+        const snapshot = store.get(contract.id);
+        if (!snapshot) throw new Error("queued workflow lost its run binding");
+        await startOne(snapshot);
+      } else if (!contract.workflow || options.validateWorkflow) {
+        await start(contract);
+      }
+    }
   } catch (error) {
     await harness.close(BACKGROUND_CONTEXT);
     store.close();

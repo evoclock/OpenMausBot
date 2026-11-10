@@ -2,13 +2,92 @@ import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
-import { advanceRun, runContractSchema, RunContractStore, type RunContractInput } from "./run-contract.ts";
+import { advanceRun, runContractSchema, RunContractStore, workflowDefinitionSchema, type RunContractInput } from "./run-contract.ts";
 
 const contract: RunContractInput = {
   id: "11111111-1111-4111-8111-111111111111", botId: "fixture", repository: "fixture/repo", ref: "review",
   successCriteria: ["inner loop confirms the goal"], checkCommand: ["node", "-e", "process.exit(0)"], repositoryClass: "agent-private", allowedEffects: ["edit"],
   authorisedExternalWrites: [],
 };
+
+const workflow = { id: "delivery-1", policyVersion: 1, taskClass: "delivery", stages: ["draft", "review"],
+  roleForStage: { draft: "author", review: "reviewer" }, assignments: { author: "fixture", reviewer: "actor-b" },
+  requiredChecks: ["statechart-pi", "poteto-mode-pi", "identity", "effects"], enabled: false };
+
+test("task definitions vary by task and reject self-relaxed enablement", () => {
+  assert.equal(workflowDefinitionSchema.parse(workflow).stages.length, 2);
+  assert.equal(workflowDefinitionSchema.parse({ ...workflow, stages: ["draft"], roleForStage: { draft: "author" },
+    assignments: { author: "fixture" } }).stages.length, 1);
+  assert.throws(() => workflowDefinitionSchema.parse({ ...workflow, enabled: true }), /enabled/);
+  assert.throws(() => workflowDefinitionSchema.parse({ ...workflow, requiredChecks: ["statechart-pi"] }), /checks/);
+  assert.throws(() => workflowDefinitionSchema.parse({ ...workflow, allowSelfApproval: true }), /unrecognized|Unrecognized/);
+  assert.throws(() => workflowDefinitionSchema.parse({ ...workflow,
+    assignments: { author: "actor-a", reviewer: "actor-a" } }), /identity/);
+  assert.throws(() => workflowDefinitionSchema.parse({ ...workflow, roleForStage: { draft: "author" } }), /stages and roles/);
+});
+
+test("task binding survives restart and an unvalidated workflow cannot dispatch", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "workflow-binding-")), "runtime.db");
+  let store = new RunContractStore(path);
+  store.create({ ...contract, workflow }, 1);
+  store.close();
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.get(contract.id)?.contract.workflow?.id, "delivery-1");
+    assert.throws(() => store.beginIteration(contract.id, 0, `${contract.id}:1`, 2), /workflow/);
+    assert.equal(store.step(contract.id, 1), undefined);
+    assert.throws(() => store.create({ ...contract, workflow: { ...workflow, taskClass: "other" } }, 3), /different contract/);
+  } finally { store.close(); }
+});
+
+test("unsafe enablement needs a trusted validator and definition-bound record across restart", () => {
+  const scratch = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(scratch, { recursive: true });
+  const path = join(mkdtempSync(join(scratch, "workflow-enable-")), "runtime.db");
+  let calls = 0;
+  let store = new RunContractStore(path, (id, planned) => {
+    calls += 1;
+    assert.equal(id, contract.id);
+    assert.equal(planned.id, workflow.id);
+    return { checks: [...workflow.requiredChecks], evidence: ["fixture validator checked skills and identities"] };
+  });
+  try {
+    assert.throws(() => store.create({ ...contract, workflow: { ...workflow, enabled: true } }, 1), /enabled/);
+    const relaxed = JSON.parse(JSON.stringify({ ...contract, workflow: { ...workflow, allowSelfApproval: true } })) as RunContractInput;
+    assert.throws(() => store.create(relaxed, 1), /Unrecognized|unrecognized/);
+    store.create({ ...contract, workflow }, 1);
+    assert.throws(() => store.beginIteration(contract.id, 0, `${contract.id}:1`, 2), /trusted validation/);
+    const enabled = store.enableWorkflow(contract.id);
+    assert.equal(enabled.contract.workflow?.enabled, true);
+    assert.equal(enabled.contract.workflow?.validation?.runId, contract.id);
+    assert.throws(() => runContractSchema.parse({ ...enabled.contract, workflow: {
+      ...enabled.contract.workflow, assignments: { author: "fixture", reviewer: "different-reviewer" },
+    } }), /matching trusted validation/);
+    assert.equal(store.enableWorkflow(contract.id).contract.workflow?.validation?.definitionHash,
+      enabled.contract.workflow?.validation?.definitionHash);
+    assert.equal(calls, 1);
+  } finally { store.close(); }
+  store = new RunContractStore(path);
+  try {
+    assert.equal(store.get(contract.id)?.contract.workflow?.enabled, true);
+    assert.equal(store.beginIteration(contract.id, 0, `${contract.id}:1`, 2).iteration, 1);
+    assert.equal(store.step(contract.id, 1)?.status, "prepared");
+  } finally { store.close(); }
+});
+
+test("UnsafeEnable counterexample cannot reach a prepared effect with missing checks", () => {
+  const store = new RunContractStore(":memory:", () => ({ checks: ["statechart-pi"], evidence: ["self-relaxed"] }));
+  try {
+    store.create({ ...contract, workflow }, 1);
+    assert.throws(() => store.enableWorkflow(contract.id), /required checks/);
+    assert.equal(store.get(contract.id)?.contract.workflow?.enabled, false);
+    assert.throws(() => store.beginIteration(contract.id, 0, `${contract.id}:1`, 2), /trusted validation/);
+    assert.throws(() => store.transition(contract.id, "running", 2), /trusted validation/);
+    assert.equal(store.step(contract.id, 1), undefined);
+  } finally { store.close(); }
+});
 
 test("run contract survives reopening and terminal states cannot restart", () => {
   const scratch = join(process.cwd(), "node_modules", ".cache");

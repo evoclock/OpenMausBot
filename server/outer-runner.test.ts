@@ -67,6 +67,60 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   } finally { await runner.close(); }
 });
 
+test("task-specific workflow is validated before the sole runner invokes its bound actor", async () => {
+  const dir = fixtureDir();
+  const workflow = { id: "direct-delivery", policyVersion: 1, taskClass: "delivery",
+    stages: ["build"], roleForStage: { build: "author" },
+    assignments: { author: contract.botId },
+    requiredChecks: ["statechart-pi", "poteto-mode-pi", "identity", "effects"], enabled: false };
+  let invoked = 0;
+  const runner = await openOuterRunner(dir, { async invoke() { invoked++; return verified(["fixture delivery verified"]); } }, {
+    validateWorkflow(_runId, definition) {
+      assert.equal(definition.id, workflow.id);
+      return { checks: [...workflow.requiredChecks], evidence: ["fixture validator recorded intake"] };
+    },
+  });
+  try {
+    await runner.wait(await runner.start({ ...contract, workflow }));
+    assert.equal(invoked, 1);
+    assert.equal(runner.get(contract.id)?.contract.workflow?.enabled, true);
+    assert.equal(runner.get(contract.id)?.state, "done");
+  } finally { await runner.close(); }
+  const store = new RunContractStore(join(dir, "runtime.db"));
+  try { assert.equal(store.get(contract.id)?.contract.workflow?.validation?.runId, contract.id); }
+  finally { store.close(); }
+});
+
+test("multi-stage Crew definition cannot complete without independent later stages", async () => {
+  const workflow = { id: "crew-delivery", policyVersion: 1, taskClass: "delivery", stages: ["build", "verify"],
+    roleForStage: { build: "author", verify: "reviewer" },
+    assignments: { author: contract.botId, reviewer: "separate-reviewer" },
+    requiredChecks: ["statechart-pi", "poteto-mode-pi", "identity", "effects"], enabled: false };
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return verified(["first stage checked"]); } }, {
+    validateWorkflow: () => ({ checks: [...workflow.requiredChecks], evidence: ["fixture intake"] }),
+  });
+  try {
+    await runner.wait(await runner.start({ ...contract, workflow }));
+    assert.equal(runner.get(contract.id)?.state, "blocked");
+    assert.match(runner.get(contract.id)?.evidence.join(" ") ?? "", /independent later stages/);
+  } finally { await runner.close(); }
+});
+
+test("runner refuses self-relaxed validation before preparing an effect", async () => {
+  let invoked = 0;
+  const workflow = { id: "unsafe", policyVersion: 1, taskClass: "delivery", stages: ["build"],
+    roleForStage: { build: "author" }, assignments: { author: contract.botId },
+    requiredChecks: ["statechart-pi", "poteto-mode-pi", "identity", "effects"], enabled: false };
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { invoked++; return verified(["unsafe"]); } }, {
+    validateWorkflow: () => ({ checks: ["statechart-pi"], evidence: ["self-relaxed"] }),
+  });
+  try {
+    assert.throws(() => runner.start({ ...contract, workflow }), /required checks/);
+    assert.equal(invoked, 0);
+    assert.equal(runner.get(contract.id)?.contract.workflow?.enabled, false);
+  } finally { await runner.close(); }
+});
+
 test("exact-head CI red consumes an iteration on the same branch and green settles once", async () => {
   const calls: string[] = [];
   const heads = ["a".repeat(40), "b".repeat(40)];

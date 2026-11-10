@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { createHmac } from "node:crypto";
 import { test } from "vitest";
 import { RunContractStore, type RunContract } from "./run-contract.ts";
-import { startGithubCodingRun, startOwnerCodingRun, startScheduledCodingRun, type TriggerTemplate } from "./run-triggers.ts";
+import { intakeCodingRun, startGithubCodingRun, startOwnerCodingRun, startScheduledCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
 const template: TriggerTemplate = {
   botId: "fixture", repository: "fixture/agents", ref: "review", successCriteria: ["pstack verifies goal"],
@@ -23,6 +23,26 @@ function github(raw: Buffer, secret = "fixture-secret", event = "check_run") {
   return { raw, secret, event, deliveryId: "11111111-1111-4111-8111-111111111111",
     signature: `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}` };
 }
+
+test("casual chat does not create a run and task intake needs a scoped workflow", async () => {
+  const runner = port();
+  try {
+    assert.deepEqual(await intakeCodingRun(runner, { kind: "chat", text: "How does this work?" }),
+      { status: "no-workflow" });
+    assert.equal(runner.started.length, 0);
+    await assert.rejects(intakeCodingRun(runner, { kind: "task", contract: {
+      ...template, id: "11111111-1111-4111-8111-111111111111",
+    } }), /workflow definition/);
+    assert.equal(runner.started.length, 0);
+    assert.deepEqual(await intakeCodingRun(runner, { kind: "task", contract: {
+      ...template, id: "11111111-1111-4111-8111-111111111111",
+      workflow: { id: "fixture-work", policyVersion: 1, taskClass: "delivery", stages: ["draft"],
+        roleForStage: { draft: "writer" }, assignments: { writer: "fixture" },
+        requiredChecks: ["statechart-pi", "poteto-mode-pi", "identity", "effects"], enabled: false },
+    } }), { status: "accepted" });
+    assert.equal(runner.started.length, 1);
+  } finally { runner.close(); }
+});
 
 test("a persisted scheduled occurrence starts only once", async () => {
   const runner = port();

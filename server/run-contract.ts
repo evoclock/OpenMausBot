@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,7 +12,55 @@ export const codingRunLimitsSchema = z.object({
   allowedFallbackDataRoutes: z.array(z.string().min(1)).default([]),
 }).strict();
 
+const requiredIntakeChecks = ["statechart-pi", "poteto-mode-pi", "identity", "effects"] as const;
+const validationSchema = z.object({
+  runId: z.string().uuid(), definitionHash: z.string().regex(/^[a-f0-9]{64}$/),
+  checks: z.array(z.string().min(1)), evidence: z.array(z.string().min(1)).min(1),
+}).strict();
+
+const workflowFields = z.object({
+  id: z.string().min(1), policyVersion: z.number().int().positive(), taskClass: z.string().min(1),
+  stages: z.array(z.string().min(1)).min(1),
+  roleForStage: z.record(z.string().min(1), z.string().min(1)),
+  assignments: z.record(z.string().min(1), z.string().min(1)),
+  requiredChecks: z.array(z.string().min(1)),
+}).strict();
+export type WorkflowFields = z.infer<typeof workflowFields>;
+export const workflowHash = (fields: WorkflowFields): string => {
+  const { id, policyVersion, taskClass, stages, roleForStage, assignments, requiredChecks } = fields;
+  return createHash("sha256").update(JSON.stringify(workflowFields.parse({
+    id, policyVersion, taskClass, stages, roleForStage, assignments, requiredChecks,
+  }))).digest("hex");
+};
+export const workflowDefinitionSchema = workflowFields.extend({
+  enabled: z.boolean(), validation: validationSchema.optional(),
+}).strict().superRefine((definition, ctx) => {
+  const roles = Object.values(definition.roleForStage);
+  const actors = new Set(Object.values(definition.assignments));
+  if (new Set(definition.stages).size !== definition.stages.length ||
+    Object.keys(definition.roleForStage).length !== definition.stages.length ||
+    definition.stages.some((stage) => !definition.roleForStage[stage]) ||
+    Object.keys(definition.assignments).length !== new Set(roles).size ||
+    roles.some((role) => !definition.assignments[role])) {
+    ctx.addIssue({ code: "custom", message: "workflow stages and roles do not match assigned identities" });
+  }
+  if (actors.size !== Object.keys(definition.assignments).length) {
+    ctx.addIssue({ code: "custom", message: "workflow identity must be independent" });
+  }
+  if (new Set(definition.requiredChecks).size !== definition.requiredChecks.length ||
+    requiredIntakeChecks.some((check) => !definition.requiredChecks.includes(check))) {
+    ctx.addIssue({ code: "custom", message: "workflow checks are incomplete" });
+  }
+  if (definition.enabled !== Boolean(definition.validation) ||
+    (definition.validation && (definition.validation.definitionHash !== workflowHash(definition) ||
+      definition.validation.checks.length !== definition.requiredChecks.length ||
+      definition.requiredChecks.some((check) => !definition.validation?.checks.includes(check))))) {
+    ctx.addIssue({ code: "custom", message: "workflow enabled without matching trusted validation" });
+  }
+});
+
 export const runContractSchema = z.object({
+  workflow: workflowDefinitionSchema.optional(),
   id: z.string().uuid(),
   botId: z.string().min(1),
   repository: z.string().min(1),
@@ -27,6 +76,13 @@ export const runContractSchema = z.object({
     effects: z.array(z.enum(["edit", "commit", "push", "draft-pr"])).min(1),
   }).strict()).default([]),
 }).strict().superRefine((contract, ctx) => {
+  if (contract.workflow?.validation?.runId !== undefined && contract.workflow.validation.runId !== contract.id) {
+    ctx.addIssue({ code: "custom", message: "workflow validation is bound to a different run" });
+  }
+  if (contract.workflow && contract.workflow.stages.length > 1 &&
+    contract.allowedEffects.some((effect) => effect === "push" || effect === "draft-pr")) {
+    ctx.addIssue({ code: "custom", message: "multi-stage workflow cannot publish before later stages are enforced" });
+  }
   if (contract.repositoryClass !== "external") return;
   const granted = new Set(contract.authorisedExternalWrites
     .filter((entry) => entry.repository === contract.repository)
@@ -71,7 +127,15 @@ const edges: Record<RunState, readonly RunState[]> = {
 export function advanceRun(current: RunSnapshot, next: RunState, at: number, evidence: string[] = []): RunSnapshot {
   const snapshot = runSnapshotSchema.parse(current);
   if (!edges[snapshot.state].includes(next)) throw new Error("invalid run transition");
+  if (next === "running" && snapshot.contract.workflow && (!snapshot.contract.workflow.enabled ||
+    snapshot.contract.workflow.assignments[snapshot.contract.workflow.roleForStage[snapshot.contract.workflow.stages[0]!]!] !== snapshot.contract.botId)) {
+    throw new Error("workflow transition requires trusted validation and actor binding");
+  }
   if (!Number.isSafeInteger(at) || at <= snapshot.updatedAt) throw new Error("run time must advance");
+  if ((next === "done" || next === "publishing") && snapshot.contract.workflow &&
+    snapshot.contract.workflow.stages.length > 1) {
+    throw new Error("workflow requires independent later stages before completion");
+  }
   if ((next === "done" || next === "publishing") && (!evidence.some((item) => item.trim()) || !snapshot.contract.checkCommand ||
     snapshot.hostCheck?.exitCode !== 0 || !/^[a-f0-9]{40}$/.test(snapshot.hostCheck.commitSha))) {
     throw new Error("completion requires a passing host check and verification evidence");
@@ -88,7 +152,10 @@ export function advanceRun(current: RunSnapshot, next: RunState, at: number, evi
 
 export class RunContractStore {
   private readonly db: DatabaseSync;
-  constructor(path: string) {
+  private readonly validateWorkflow?: (runId: string, definition: WorkflowFields) => { checks: string[]; evidence: string[] };
+  constructor(path: string, validateWorkflow?: (runId: string, definition: WorkflowFields) =>
+    { checks: string[]; evidence: string[] }) {
+    this.validateWorkflow = validateWorkflow;
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA synchronous = FULL");
@@ -215,14 +282,51 @@ export class RunContractStore {
   }
   create(contract: RunContractInput, at: number): RunSnapshot {
     const checked = runContractSchema.parse(contract);
+    if (checked.workflow?.enabled) throw new Error("workflow must start disabled before trusted intake validation");
     const snapshot = runSnapshotSchema.parse({ contract: checked, state: "queued", iteration: 0,
       updatedAt: at, startedAt: at, evidence: [] });
     const inserted = this.db.prepare("INSERT OR IGNORE INTO coding_runs (id, bot_id, version, snapshot) VALUES (?, ?, 0, ?)")
       .run(checked.id, checked.botId, JSON.stringify(snapshot));
     if (inserted.changes) return snapshot;
     const existing = this.get(checked.id);
-    if (existing && JSON.stringify(existing.contract) === JSON.stringify(checked)) return existing;
+    const priorWorkflow = existing?.contract.workflow;
+    const comparable = existing && { ...existing.contract, ...(priorWorkflow ? {
+      workflow: { ...priorWorkflow, enabled: false, validation: undefined },
+    } : {}) };
+    if (existing && JSON.stringify(comparable) === JSON.stringify(checked)) return existing;
     throw new Error("run id already exists with a different contract or state");
+  }
+  enableWorkflow(id: string): RunSnapshot {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.get(id);
+      if (!current || current.state !== "queued" || !current.contract.workflow || !this.validateWorkflow) {
+        throw new Error("workflow has no trusted intake validator");
+      }
+      if (current.contract.workflow.enabled) {
+        this.db.exec("COMMIT");
+        return current;
+      }
+      const definition = current.contract.workflow;
+      if (definition.assignments[definition.roleForStage[definition.stages[0]!]!] !== current.contract.botId) {
+        throw new Error("workflow first-stage actor does not match the trusted run bot");
+      }
+      const result = this.validateWorkflow(id, definition);
+      if (!result || !Array.isArray(result.checks) || !Array.isArray(result.evidence) ||
+        result.checks.length !== definition.requiredChecks.length ||
+        definition.requiredChecks.some((check) => !result.checks.includes(check)) ||
+        result.evidence.length === 0 || result.evidence.some((item) => typeof item !== "string" || !item.trim())) {
+        throw new Error("trusted workflow validation lacks required checks or evidence");
+      }
+      const next = runSnapshotSchema.parse({ ...current, contract: { ...current.contract, workflow: {
+        ...definition, enabled: true, validation: { runId: id, definitionHash: workflowHash(definition),
+          checks: result.checks, evidence: result.evidence },
+      } } });
+      this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
+        .run(JSON.stringify(next), id);
+      this.db.exec("COMMIT");
+      return next;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
   report(id: string): { snapshot: RunSnapshot; delivered: boolean } | undefined {
     const row = this.db.prepare("SELECT snapshot, delivered FROM coding_run_reports WHERE run_id = ?")
@@ -249,6 +353,10 @@ export class RunContractStore {
       const current = this.get(id);
       if (!current || current.iteration !== sequence || !["queued", "waiting"].includes(current.state) ||
         this.step(id, sequence + 1)) throw new Error("iteration is not ready to start");
+      if (current.contract.workflow && (!current.contract.workflow.enabled ||
+        current.contract.workflow.assignments[current.contract.workflow.roleForStage[current.contract.workflow.stages[0]!]!] !== current.contract.botId)) {
+        throw new Error("workflow cannot dispatch without trusted validation and actor binding");
+      }
       const next = advanceRun(current, "running", at);
       this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
         .run(JSON.stringify(next), id);
