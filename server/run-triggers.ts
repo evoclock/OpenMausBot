@@ -14,6 +14,15 @@ export interface RunStartPort {
 
 export type TriggerTemplate = Omit<RunContractInput, "id">;
 
+export async function intakeCodingRun(port: RunStartPort, input:
+  | { kind: "chat"; text: string }
+  | { kind: "task"; contract: RunContractInput }): Promise<{ status: "no-workflow" | "accepted" }> {
+  if (input.kind === "chat") return { status: "no-workflow" };
+  if (!input.contract.workflow) throw new Error("task intake requires a workflow definition");
+  await port.start(runContractSchema.parse(input.contract));
+  return { status: "accepted" };
+}
+
 function triggerId(source: string): string {
   const hex = createHash("sha256").update(source).digest("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
