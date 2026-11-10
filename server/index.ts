@@ -5,6 +5,7 @@ import { codingRunIdForRequest, codingTurnToolScope, openProductionCodingRuntime
 import { createProductionCodingGitHost } from "./coding-git-host.ts";
 import { CodingDenialBoundary } from "./coding-denial.ts";
 import { createLoopStatusRoutes } from "./routes/loop-status.ts";
+import { createCodingTaskRoutes } from "./routes/coding-tasks.ts";
 import { createEmergencyApprovalDowngrade } from "./host/emergency-approval-downgrade.ts";
 import { createDirectAdmission } from "./host/direct-admission.ts";
 import {
@@ -10199,8 +10200,13 @@ if (cfg.codingRuns) {
     config: cfg.codingRuns, dataDir: DATA_DIR, store, routines: routines!, webhooks,
     statusFeed: sessionStatusFeed,
     wakeOwner: () => { const id = cfg.sessionStatus?.wakeRoutineId; if (id) routines?.runNow(id); },
-    onTaskCreated: (_botId, threadId, requestId, workspace) => codingBoundary.register(threadId,
-      { id: codingRunIdForRequest(requestId), branch: workspace.branch, directory: workspace.directory }),
+    onTaskCreated: (_botId, threadId, requestId, workspace) => {
+      const registration = cfg.codingRuns?.registrations.find((entry) => entry.repository === workspace.repository);
+      codingBoundary.register(threadId, { id: codingRunIdForRequest(requestId), branch: workspace.branch,
+        directory: workspace.directory, ...(registration?.potetoRecipe ? { potetoSkillDir: registration.potetoRecipe.skillDir,
+          rolesFilePath: cfg.codingRuns?.rolesFilePath, checkCommand: registration.checkCommand,
+          checkTimeoutMs: registration.checkTimeoutMs } : {}) });
+    },
     driverKind(botId) { const bot = store.bot(botId); return bot ? registry.get(bot.modelSelection.instanceId)?.driverKind : undefined; },
     registry,
     async startTurn(botId, text, { triggerSource, allowedFallbackModels, ...options }) {
@@ -13360,6 +13366,7 @@ const cloudMoveRoutes = createCloudMoveRoutes({
   restart: () => { restartRequested = true; gracefulShutdown(); },
 });
 // `workspaceAccess` is assigned at boot, after this line: read it per request.
+ROUTES.push(createCodingTaskRoutes({ coding: () => coding, ownerSession: cloudOwnerSession }));
 ROUTES.push(createLoopStatusRoutes({ dataDir: DATA_DIR, codingSettlement: (id) => routines?.codingSettlement(id) ?? { executionStatus: null, reconciliationDisposition: null, settlementReceipts: [] }, botVisible: (auth, id) => Boolean(store.bot(id)) && visibleTo(viewerFor(auth)).bot(id),
   controls: () => coding }), createHostedSlackRoutes({ bot: (id) => store.bot(id), hostedReady: () => Boolean(workspaceAccess) && entitled("admin") }));
 const orgInstallStatuses = () => orgLibrary?.installStatuses() ?? new Map();

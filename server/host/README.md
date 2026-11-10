@@ -1,7 +1,7 @@
 # server/host — the server's host modules
 
 `server/index.ts` is being taken apart into modules that live here (and in
-`server/routes/` for HTTP routes). The rules, so the file never grows back:
+`server/routes/` for HTTP routes). The composition rules:
 
 1. **One module per concern, with explicit deps.** A module exports a factory,
    `createArea(deps: AreaDeps)`, that returns the functions the rest of the
@@ -28,11 +28,7 @@
    directly, as a real unit test, or is deleted when an end-to-end scenario
    already covers the behaviour. A loader hook that rewrote index.ts rewrites
    the new file.
-7. **Size is enforced.** `scripts/testing/file-size-ratchet.test.ts` lists every
-   source file over 1,000 lines; a listed count may only go down, nothing new
-   may pass 1,000 without a line there, and nothing may pass 2,000. New modules
-   here stay under 1,500 lines, most under 800.
-8. **Routes** keep the rules in `server/routes/README.md` (a `createXRoutes`
+7. **Routes** keep the rules in `server/routes/README.md` (a `createXRoutes`
    factory, one `ROUTES.push`, `PASS` when not yours) and the route ratchet in
    `scripts/testing/index-route-ratchet.test.ts` goes down with every move.
 

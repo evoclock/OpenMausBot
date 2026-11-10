@@ -115,6 +115,37 @@ test("production Git host resolves an App installation and creates the checked p
   assert.equal(typeof host.port.pullRequest, "function");
 });
 
+test("CI verdict is tied to the exact branch and draft PR head", async () => {
+  const head = "a".repeat(40);
+  let remoteHead = head;
+  let conclusion: "success" | "failure" = "success";
+  let draft = true;
+  const host = createProductionCodingGitHost({ repositoryRoot: "fixture", registrations: [],
+    gitDestinations: { worker: [{ ...grant, credential: { kind: "github-app", reference: "app" } }] },
+  }, { scopedToken: async () => "fixture-token", gitHubRequest: (async (input) => {
+    const url = new URL(String(input));
+    const body = url.pathname.includes("/git/ref/heads/") ? { object: { sha: remoteHead } }
+      : url.pathname.endsWith("/pulls") ? [{ number: 7, state: "open", draft: true,
+        base: { ref: "trunk" }, head: { ref: "bot/review", sha: remoteHead, repo: { full_name: repository } } }]
+      : url.pathname.endsWith("/pulls/7") ? { number: 7, state: "open", draft,
+        base: { ref: "trunk" }, head: { ref: "bot/review", sha: remoteHead } }
+      : url.pathname.endsWith("/check-runs") ? { total_count: 1,
+        check_runs: [{ name: "fixture-ci", status: "completed", conclusion }] }
+      : url.pathname.endsWith("/status") ? { statuses: [] }
+      : { full_name: repository };
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as typeof fetch });
+  assert.equal(await host.checkHead!(repository, "bot/review", "trunk", head, ["fixture-ci"]), "green");
+  assert.equal(await host.checkHead!(repository, "bot/review", "trunk", head, ["missing-ci"]), "pending");
+  conclusion = "failure";
+  assert.equal(await host.checkHead!(repository, "bot/review", "trunk", head, ["fixture-ci"]), "red");
+  draft = false;
+  await assert.rejects(host.checkHead!(repository, "bot/review", "trunk", head, ["fixture-ci"]), /open draft PR/);
+  draft = true;
+  remoteHead = "b".repeat(40);
+  await assert.rejects(host.checkHead!(repository, "bot/review", "trunk", head, ["fixture-ci"]), /CI head/);
+});
+
 test("production Git host reads outgoing authors with a narrow remote fetch refspec", async () => {
   const cache = join(process.cwd(), "node_modules", ".cache");
   mkdirSync(cache, { recursive: true });
@@ -292,7 +323,7 @@ test("a private merge eligibility reason is stored on the verified coding run", 
     authorisedExternalWrites: [] }, 1);
   store.transition(runId, "running", 2);
   store.transition(runId, "done", 3, ["review verified"], { command: ["node", "-e", "process.exit(0)"], exitCode: 0,
-    commitSha: "fixture", startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
+    commitSha: "a".repeat(40), startedAt: 2, durationMs: 1, timedOut: false, outputTail: "" });
   const h = harness();
   const { recordOwnerMerge: _unused, ...port } = h.port;
   const policy = createCodingGitRunPolicy({ repositoryRoot: "fixture", registrations: [],

@@ -20,7 +20,7 @@ import { createCodingWorkerHost } from "./coding-worker-host.ts";
 import { requireDriverRunApi, type InstalledWorkerDriver } from "./driver-run-api.ts";
 import type { IsolatedWorkspace } from "./inner-worker-route.ts";
 import { RunContractStore, type RunSnapshot } from "./run-contract.ts";
-import { scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
+import { ownerCodingRunId, scheduledCodingRunId, webhookCodingRunId, type TriggerTemplate } from "./run-triggers.ts";
 import { flushUsageLedger, readUsage } from "./usage-ledger.ts";
 import type { RoutineManager, RoutineRun } from "./routines.ts";
 import type { Store } from "./store.ts";
@@ -44,7 +44,8 @@ export function createCodingPublicationResolver(runStore: Pick<RunContractStore,
     const workspace = workspacesByRun.get(receipt.runId);
     if (!snapshot || !workspace || snapshot.contract.repository !== receipt.effect.repository ||
       workspace.repository !== snapshot.contract.repository || workspace.baseBranch !== snapshot.contract.ref ||
-      receipt.sequence !== snapshot.iteration + 1 || snapshot.state !== "done" ||
+      receipt.sequence !== snapshot.iteration + 1 || !["done", "publishing"].includes(snapshot.state) ||
+      (snapshot.state === "publishing" && snapshot.hostCheck?.exitCode !== 0) ||
       !snapshot.contract.allowedEffects.includes("push") || !snapshot.contract.allowedEffects.includes("draft-pr")) {
       throw new Error("Publication receipt has no matching terminal run and workspace");
     }
@@ -84,7 +85,7 @@ export async function openProductionCodingRuntime(options: {
     .map(({ instanceId, model }) => ({ instanceId, model }));
   const first = registrations[0];
   const repository = first?.repository;
-  if (!repository || registrations.some((entry) => entry.repository !== repository ||
+  if (!repository || (first.potetoRecipe && registrations.length !== 1) || registrations.some((entry) => entry.repository !== repository ||
     entry.workerBotId !== first.workerBotId || entry.reviewerBotId !== first.reviewerBotId ||
     entry.developmentRole !== first.developmentRole || entry.reviewRole !== first.reviewRole ||
     entry.workerBotId === entry.reviewerBotId)) {
@@ -92,13 +93,16 @@ export async function openProductionCodingRuntime(options: {
   }
   const codingDir = join(dataDir, "coding-run");
   const driverDir = join(codingDir, "durable-driver");
+  let driverIdentity: { path: string; version: string } | undefined;
   const loadDriver = async () => {
     mkdirSync(driverDir, { recursive: true, mode: 0o700 });
     const directory = realpathSync(driverDir);
     const testModule = process.env.NODE_ENV === "test" ? process.env.OMB_TEST_DRIVER_RUN_API_MODULE : undefined;
+    const api = options.driverFactory ? null : await requireDriverRunApi(testModule, config.driverRoot);
     const driver = options.driverFactory
       ? await options.driverFactory(directory)
-      : await (await requireDriverRunApi(testModule)).openDurableDriver({ directory });
+      : await api!.openDurableDriver({ directory });
+    if (api) driverIdentity = { path: api.path, version: api.version };
     if (typeof driver.invokeWorker !== "function" || typeof driver.status !== "function" ||
       typeof driver.reconcile !== "function") {
       await driver.close();
@@ -153,6 +157,7 @@ export async function openProductionCodingRuntime(options: {
   const roles = new Map(registrations.map((entry) => [entry.repository, {
     development: entry.developmentRole, independentReview: entry.reviewRole,
     developmentBotId: entry.workerBotId, reviewerBotId: entry.reviewerBotId,
+    potetoSkillDir: entry.potetoRecipe?.skillDir, checkTimeoutMs: entry.checkTimeoutMs,
   }]));
   const routinesById = new Map(routines.listRoutines().map((routine) => [routine.id, routine]));
   const hooksById = new Map(options.webhooks.list().map((hook) => [hook.id, hook]));
@@ -185,6 +190,8 @@ export async function openProductionCodingRuntime(options: {
     const id = codingRunIdForRequest(requestId);
     const live = origins.get(id);
     if (live) return live;
+    const owner = runStore.ownerOrigin(id);
+    if (owner) return { botId: owner.botId, threadId: owner.threadId, runId: id };
     const linked = runStore.routineLink(id);
     const run = linked && routines.listRuns().find((candidate) => candidate.id === linked.routineId);
     return run?.threadId ? { botId: run.botId, threadId: run.threadId, runId: run.id } : null;
@@ -198,6 +205,10 @@ export async function openProductionCodingRuntime(options: {
     },
     assertActiveRun(requestId) {
       const origin = originForRequest(requestId);
+      const owner = runStore.ownerOrigin(codingRunIdForRequest(requestId));
+      if (owner && origin?.threadId === owner.threadId && origin.botId === owner.botId &&
+        runStore.get(codingRunIdForRequest(requestId))?.state === "running" &&
+        store.tasks(owner.botId).some((task) => task.threadId === owner.threadId)) return;
       const run = origin && routines.runForThread(origin.threadId);
       if (!run || run.id !== origin.runId || run.botId !== origin.botId || run.status !== "running" ||
         (run.triggerSource !== "schedule" && run.triggerSource !== "webhook")) {
@@ -243,12 +254,15 @@ export async function openProductionCodingRuntime(options: {
     const origin = origins.get(snapshot.contract.id);
     const routineRunId = linked?.routineId ?? origin?.runId;
     const run = routineRunId ? routines.listRuns().find((candidate) => candidate.id === routineRunId) : undefined;
-    if (!run?.threadId) return false;
-    runStore.linkRoutine(run.id, snapshot.contract.id);
-    runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
+    const owner = runStore.ownerOrigin(snapshot.contract.id);
+    if (!run?.threadId && !owner) return false;
+    if (run?.threadId) {
+      runStore.linkRoutine(run.id, snapshot.contract.id);
+      runStore.claimRoutineTerminal(snapshot.contract.id, snapshot);
+    }
     const savedPublication = effectReceipts.publicationResult(snapshot.contract.id);
     if (savedPublication) publicationResults.set(snapshot.contract.id, savedPublication);
-    if (snapshot.state === "done" && !savedPublication) {
+    if (snapshot.state === "done" && !savedPublication && !first.potetoRecipe) {
       const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
       if (!workspace) return false;
       workspacesByRun.set(snapshot.contract.id, workspace);
@@ -291,12 +305,40 @@ export async function openProductionCodingRuntime(options: {
     const evidence = snapshot.evidence.filter((item) => item.trim()).join("\n");
     const detail = [evidence || "No result was reported.", publicationResults.get(snapshot.contract.id)]
       .filter((item): item is string => Boolean(item)).join("\n");
-    routines.settleCodingRun(run.id, snapshot);
+    if (run) routines.settleCodingRun(run.id, snapshot);
     const models = (snapshot.modelsUsed ?? []).map((item) => `iteration ${item.iteration}: ${item.instanceId}/${item.model}`).join("; ");
-    return delivery.deliver({ runId: snapshot.contract.id, botId: run.botId,
-      threadId: run.threadId, text: `Coding run ${snapshot.state}: ${models ? `Models: ${models}. ` : ""}${detail}` }) === "delivered";
+    return delivery.deliver({ runId: snapshot.contract.id, botId: run?.botId ?? owner!.botId,
+      threadId: run?.threadId ?? owner!.threadId, text: `Coding run ${snapshot.state}: ${driverIdentity ? `Driver ${driverIdentity.version} at ${driverIdentity.path}. ` : ""}${models ? `Models: ${models}. ` : ""}${detail}` }) === "delivered";
   };
+  const publication = first.potetoRecipe && effectHost && gitHost.checkHead ? {
+    async publish(snapshot: RunSnapshot) {
+      const workspace = workspacesByRun.get(snapshot.contract.id) ?? workspaceManager.findForRun(snapshot.contract.id);
+      if (!workspace) throw new Error("publication workspace lease cannot be verified");
+      workspacesByRun.set(snapshot.contract.id, workspace);
+      const branch = `bot/coding-${snapshot.contract.id.slice(0, 12)}`;
+      const hasDestination = (config.gitDestinations?.[snapshot.contract.botId] ?? []).some((grant) =>
+        grant.repository === snapshot.contract.repository && branch.startsWith(grant.branchPrefix));
+      const published = await publishVerifiedCodingRun({ snapshot, workspace, hasDestination,
+        createBranch: (directory, name, base) => gitHost.port.createBranch(directory, name, base),
+        receipts: effectReceipts, effectHost, head: (directory) => gitHost.port.head(directory) });
+      if (published !== branch) throw new Error("draft publication has no authorized destination");
+      return { branch, headSha: snapshot.hostCheck!.commitSha };
+    },
+    async check(snapshot: RunSnapshot) {
+      const publication = snapshot.publication;
+      if (!publication || publication.headSha !== snapshot.hostCheck?.commitSha) {
+        throw new Error("CI identity is missing or changed");
+      }
+      const verdict = await gitHost.checkHead!(snapshot.contract.repository, publication.branch,
+        snapshot.contract.ref, publication.headSha, first.requiredChecks!);
+      if (verdict === "green") effectReceipts.savePublicationResult(snapshot.contract.id,
+        `Draft PR checks passed at ${publication.headSha} on ${publication.branch}`);
+      return verdict;
+    },
+  } : undefined;
+  if (first.potetoRecipe && !publication) throw new Error("pinned coding run requires publication and CI inspection");
   const runtime = await openCodingRunRuntime({ dataDir: codingDir, restartLimit: config.restartLimit,
+    publication,
     contextCarryMaxBytes: config.contextCarryMaxBytes, workerHost: host, effectInspector: effectHost,
     routines: templates, webhooks: webhookTemplates, github: new Map(), onTerminal: deliver,
     onStart: () => status?.tick(), loadDriver,
@@ -336,6 +378,32 @@ export async function openProductionCodingRuntime(options: {
   };
   return {
     gitAction,
+    async ownerTask(input: { repository: string; goal: string; idempotencyKey: string }, authorized: boolean) {
+      if (!authorized || input.repository !== repository) throw new Error("owner authorization or repository missing");
+      if (!input.goal.trim() || input.goal.length > 2000 ||
+        !/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey)) throw new Error("invalid owner coding task");
+      const entry = registrations[0]!;
+      const source = routinesById.get(entry.routineId) ?? hooksById.get(entry.routineId);
+      const template = templates.get(entry.routineId) ?? webhookTemplates.get(entry.routineId);
+      if (!entry.potetoRecipe || !template?.limits || !source || !store.bot(source.botId)) {
+        throw new Error("owner coding task requires an active pinned registration and budget");
+      }
+      const id = ownerCodingRunId(input.repository, input.idempotencyKey);
+      const prior = runStore.ownerOrigin(id);
+      if (prior && (prior.repository !== input.repository || prior.goal !== input.goal.trim() ||
+        prior.idempotencyKey !== input.idempotencyKey || prior.botId !== source.botId)) {
+        throw new Error("coding task idempotency conflict");
+      }
+      const threadId = prior?.threadId ?? store.createTask(source.botId, input.goal.slice(0, 100), false)?.threadId;
+      if (!threadId) throw new Error("owner coding thread could not be created");
+      runStore.registerOwnerOrigin(id, { repository: input.repository, goal: input.goal.trim(),
+        idempotencyKey: input.idempotencyKey, botId: source.botId, threadId });
+      const result = await runtime.owner(input, template, authorized);
+      if (result.id !== id) throw new Error("owner coding task identity differs from the run");
+      status?.tick();
+      runtime.reportPending();
+      return { ...result, threadId };
+    },
     registered(routineId: string) { return templates.has(routineId) || webhookTemplates.has(routineId); },
     start(run: RoutineRun, botId: string, threadId: string, triggerSource: "schedule" | "webhook") {
       if (triggerSource === "webhook" && (!run.webhookId || !run.deliveryId ||

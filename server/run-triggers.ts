@@ -29,14 +29,36 @@ function agentTemplate(template: TriggerTemplate): TriggerTemplate {
 
 async function startOnce(port: RunStartPort, source: string, template: TriggerTemplate) {
   const contract = runContractSchema.parse({ ...agentTemplate(template), id: triggerId(source) });
-  if (port.get(contract.id)) return { status: "existing" as const, id: contract.id };
+  const prior = port.get(contract.id);
+  if (prior) {
+    if (JSON.stringify(prior.contract) !== JSON.stringify(contract)) throw new Error("coding task idempotency conflict");
+    return { status: "existing" as const, id: contract.id };
+  }
   try {
     await port.start(contract);
   } catch (error) {
-    if (!port.get(contract.id)) throw error;
+    const existing = port.get(contract.id);
+    if (!existing) throw error;
+    if (JSON.stringify(existing.contract) !== JSON.stringify(contract)) throw new Error("coding task idempotency conflict");
     return { status: "existing" as const, id: contract.id };
   }
   return { status: "accepted" as const, id: contract.id };
+}
+
+export function ownerCodingRunId(repository: string, idempotencyKey: string): string {
+  return triggerId(`owner:${repository}:${idempotencyKey}`);
+}
+
+export function startOwnerCodingRun(port: RunStartPort,
+  input: { repository: string; goal: string; idempotencyKey: string }, template: TriggerTemplate,
+  authorized: boolean) {
+  if (!authorized) return Promise.reject(new Error("owner authorization is required"));
+  if (input.repository !== template.repository || !input.goal.trim() || input.goal.length > 2000 ||
+    !/^[A-Za-z0-9_-]{8,128}$/.test(input.idempotencyKey)) {
+    return Promise.reject(new Error("invalid owner coding task"));
+  }
+  return startOnce(port, `owner:${input.repository}:${input.idempotencyKey}`,
+    { ...template, successCriteria: [input.goal.trim()] });
 }
 
 export function scheduledCodingRunId(routine: { id: string; routineId: string; scheduledFor: number }): string {

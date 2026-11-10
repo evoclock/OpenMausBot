@@ -16,7 +16,7 @@ const root = join(serverDir, "..");
 const fakePi = join(serverDir, "testing", "fake-pi-cli.ts");
 
 async function fixture(mode: "coding" | "happy" | "permission" | "coding-denied" | "coding-hold" | "drill" | "coding-iterations", localOnly = false) {
-  const cache = join(root, "node_modules", ".cache");
+  const cache = join(root, ".local", "coding-loop-2026-11-09", "fixture-cache");
   mkdirSync(cache, { recursive: true });
   const home = mkdtempSync(join(cache, "coding-production-"));
   const dataDir = join(home, ".openmausbot");
@@ -128,6 +128,72 @@ test("parallel composed fixtures bind distinct OS-assigned listener ports", asyn
   }
 }, 90_000);
 
+test.skipIf(!process.env.OMB_TEST_PINNED_POTETO_DIR)("opt-in owner entry reaches the pinned child and refuses unverifiable steps", async () => {
+  const f = await fixture("coding");
+  try {
+    await f.start();
+    const owner = (await f.api("POST", "/api/bots", { name: "Request owner" })).bot;
+    const worker = (await f.api("POST", "/api/bots", { name: "Coding worker" })).bot;
+    const reviewer = (await f.api("POST", "/api/bots", { name: "Independent reviewer" })).bot;
+    for (const bot of [worker, reviewer]) await f.api("PATCH", `/api/bots/${bot.id}`, {
+      modelSelection: { instanceId: "pi", model: "openai/gpt-5.4-mini" },
+    });
+    const routine = (await f.api("POST", "/api/routines", { name: "Pinned owner", prompt: "Unused routine",
+      botId: owner.id, schedule: { type: "once", at: Date.now() + 3_600_000 } })).routine;
+    await f.stop();
+    writeFileSync(f.configFile, JSON.stringify({ ...f.config, codingRuns: {
+      repositoryRoot: f.repository, rolesFilePath: f.rolesFilePath,
+      bots: { [owner.id]: { maxWallTimeMs: 120_000, maxIterations: 1 } },
+      registrations: [{ routineId: routine.id, workerBotId: worker.id, reviewerBotId: reviewer.id,
+        developmentRole: "fixture/development", reviewRole: "fixture/review", repository: "fixture/agents", ref: "main",
+        successCriteria: ["coding-fixture-result.txt exists"], checkCommand: ["node", "-e", "process.exit(0)"],
+        requiredChecks: ["fixture-ci"],
+        potetoRecipe: { skillDir: process.env.OMB_TEST_PINNED_POTETO_DIR, playbook: "bug-fix" },
+      }],
+    } }));
+    await f.start();
+    const pairing = await f.api("POST", "/api/auth/pairing", { label: "Fixture owner", scopes: ["admin"] });
+    const paired = await f.api("POST", "/api/auth/pair", { code: pairing.code });
+    const body = { repository: "fixture/agents", goal: "Fix the fixture", idempotencyKey: "owner-key-1" };
+    const request = () => fetch(`http://127.0.0.1:${f.port}/api/coding-tasks`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${paired.token}` },
+      body: JSON.stringify(body),
+    });
+    const accepted = await request();
+    expect(accepted.status).toBe(201);
+    const task = await accepted.json() as { id: string; threadId: string };
+    expect((await request()).status).toBe(200);
+    await f.until(async () => {
+      const response = await fetch(`http://127.0.0.1:${f.port}/api/coding-runs/${task.id}`, {
+        headers: { authorization: `Bearer ${paired.token}` },
+      });
+      return response.ok && (await response.json() as { state: string }).state === "blocked";
+    }, "pinned owner task to block on missing step evidence");
+    const turns = readFileSync(f.dump, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(turns.some((entry) => entry.argv?.includes("--skill") && entry.argv?.includes(process.env.OMB_TEST_PINNED_POTETO_DIR))).toBe(true);
+    expect(turns.some((entry) => entry.prompt?.message?.includes("Pinned playbooks/bug-fix.md"))).toBe(true);
+  } finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
+test("owner coding entry refuses loopback without an admin session", async () => {
+  const f = await fixture("happy");
+  try {
+    await f.start();
+    const response = await fetch(`http://127.0.0.1:${f.port}/api/coding-tasks`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repository: "fixture/agents", goal: "Fix the fixture", idempotencyKey: "owner-key-1" }),
+    });
+    expect(response.status).toBe(403);
+    const pairing = await f.api("POST", "/api/auth/pairing", { label: "Fixture owner", scopes: ["admin"] });
+    const paired = await f.api("POST", "/api/auth/pair", { code: pairing.code });
+    const authorized = await fetch(`http://127.0.0.1:${f.port}/api/coding-tasks`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${paired.token}` },
+      body: JSON.stringify({ repository: "fixture/agents", goal: "Fix the fixture", idempotencyKey: "owner-key-1" }),
+    });
+    expect(authorized.status).toBe(503);
+  } finally { await f.stop(); await removeTempDir(f.home); }
+}, 90_000);
+
 // Why: a second coding iteration must receive the previous worker's durable Pi session, not only a summary.
 test("two coding iterations retain session files in the run record and handover", async () => {
   const f = await fixture("coding-iterations");
@@ -186,7 +252,8 @@ test("two coding iterations retain session files in the run record and handover"
     expect(prompts[0]!.prompt!.message).toContain(iterations[0]!.sessionFile);
     const reviewPrompts = dumpEntries.filter((entry) =>
       entry.prompt?.message?.startsWith("You are Independent reviewer, a personal bot in OpenMausBot.\n") &&
-      entry.prompt.message.includes("Stated goal for this coding run:\nIteration 2\n"));
+      entry.prompt.message.includes("Stated goal for this coding run:\n/skill:poteto-mode-pi ") &&
+      entry.prompt.message.includes("Iteration 2\n"));
     expect(reviewPrompts, JSON.stringify(prefixes)).toHaveLength(1);
   } catch (error) { console.error(f.logs().slice(-5000)); throw error; }
   finally { await f.stop(); await removeTempDir(f.home); }

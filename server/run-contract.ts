@@ -37,7 +37,7 @@ export const runContractSchema = z.object({
 });
 export type RunContract = z.infer<typeof runContractSchema>;
 export type RunContractInput = z.input<typeof runContractSchema>;
-export const runStateSchema = z.enum(["queued", "running", "waiting", "blocked", "unverified", "done", "failed", "cancelled"]);
+export const runStateSchema = z.enum(["queued", "running", "waiting", "publishing", "awaiting-ci", "blocked", "unverified", "done", "failed", "cancelled"]);
 export type RunState = z.infer<typeof runStateSchema>;
 export type HostCheckRecord = { command: string[]; exitCode: number | null; commitSha: string; startedAt: number; durationMs: number; timedOut: boolean; outputTail: string };
 export const runSnapshotSchema = z.object({
@@ -53,12 +53,15 @@ export const runSnapshotSchema = z.object({
   iterations: z.array(z.object({ iteration: z.number().int().positive(), sessionFile: z.string().min(1) }).strict()).optional(),
   evidence: z.array(z.string()),
   hostCheck: z.object({ command: z.array(z.string()), exitCode: z.number().int().nullable(), commitSha: z.string(), startedAt: z.number().int(), durationMs: z.number().int().nonnegative(), timedOut: z.boolean(), outputTail: z.string() }).strict().optional(),
+  publication: z.object({ headSha: z.string().regex(/^[a-f0-9]{40}$/), branch: z.string().min(1) }).strict().optional(),
 }).strict();
 export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
 
 const edges: Record<RunState, readonly RunState[]> = {
   queued: ["running", "blocked", "cancelled"],
-  running: ["waiting", "blocked", "unverified", "done", "failed", "cancelled"],
+  running: ["waiting", "publishing", "blocked", "unverified", "done", "failed", "cancelled"],
+  publishing: ["awaiting-ci", "blocked", "cancelled"],
+  "awaiting-ci": ["waiting", "done", "blocked", "cancelled"],
   waiting: ["running", "blocked", "cancelled"],
   blocked: ["running", "blocked", "failed", "cancelled"],
   unverified: ["running", "failed", "cancelled"],
@@ -69,8 +72,14 @@ export function advanceRun(current: RunSnapshot, next: RunState, at: number, evi
   const snapshot = runSnapshotSchema.parse(current);
   if (!edges[snapshot.state].includes(next)) throw new Error("invalid run transition");
   if (!Number.isSafeInteger(at) || at <= snapshot.updatedAt) throw new Error("run time must advance");
-  if (next === "done" && (!evidence.some((item) => item.trim()) || !snapshot.contract.checkCommand ||
-    snapshot.hostCheck?.exitCode !== 0 || !snapshot.hostCheck.commitSha)) throw new Error("completion requires a passing host check and verification evidence");
+  if ((next === "done" || next === "publishing") && (!evidence.some((item) => item.trim()) || !snapshot.contract.checkCommand ||
+    snapshot.hostCheck?.exitCode !== 0 || !/^[a-f0-9]{40}$/.test(snapshot.hostCheck.commitSha))) {
+    throw new Error("completion requires a passing host check and verification evidence");
+  }
+  if (next === "publishing" && (!snapshot.contract.allowedEffects.includes("push") ||
+    !snapshot.contract.allowedEffects.includes("draft-pr"))) throw new Error("publication is not authorized");
+  if (next === "done" && snapshot.state === "awaiting-ci" &&
+    snapshot.publication?.headSha !== snapshot.hostCheck?.commitSha) throw new Error("CI is not bound to the verified head");
   const iteration = snapshot.iteration + (next === "running" ? 1 : 0);
   return runSnapshotSchema.parse({ ...snapshot, state: next, iteration, updatedAt: at,
     elapsedMs: snapshot.startedAt ? Math.max(snapshot.elapsedMs, at - snapshot.startedAt) : snapshot.elapsedMs,
@@ -93,9 +102,29 @@ export class RunContractStore {
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_reports (run_id TEXT PRIMARY KEY, snapshot TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_tasks (run_id TEXT PRIMARY KEY, task_id INTEGER NOT NULL UNIQUE)");
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_holds (run_id TEXT PRIMARY KEY, held INTEGER NOT NULL CHECK (held IN (0, 1)))");
+    this.db.exec(`CREATE TABLE IF NOT EXISTS coding_owner_origins (
+      run_id TEXT PRIMARY KEY, repository TEXT NOT NULL, goal TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+      bot_id TEXT NOT NULL, thread_id TEXT NOT NULL, UNIQUE(repository, idempotency_key))`);
     this.db.exec("CREATE TABLE IF NOT EXISTS coding_run_merge_reasons (run_id TEXT PRIMARY KEY, repository TEXT NOT NULL, reason TEXT NOT NULL, method TEXT NOT NULL CHECK (method IN ('merge', 'rebase')))");
   }
   close(): void { this.db.close(); }
+  ownerOrigin(id: string): { repository: string; goal: string; idempotencyKey: string; botId: string; threadId: string } | undefined {
+    const row = this.db.prepare(`SELECT repository, goal, idempotency_key, bot_id, thread_id
+      FROM coding_owner_origins WHERE run_id = ?`).get(id) as { repository: string; goal: string;
+      idempotency_key: string; bot_id: string; thread_id: string } | undefined;
+    return row ? { repository: row.repository, goal: row.goal, idempotencyKey: row.idempotency_key,
+      botId: row.bot_id, threadId: row.thread_id } : undefined;
+  }
+  registerOwnerOrigin(id: string, input: { repository: string; goal: string; idempotencyKey: string;
+    botId: string; threadId: string }): void {
+    this.db.prepare(`INSERT OR IGNORE INTO coding_owner_origins VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, input.repository, input.goal, input.idempotencyKey, input.botId, input.threadId);
+    const saved = this.ownerOrigin(id);
+    if (!saved || saved.repository !== input.repository || saved.goal !== input.goal ||
+      saved.idempotencyKey !== input.idempotencyKey || saved.botId !== input.botId) {
+      throw new Error("coding task idempotency conflict");
+    }
+  }
   /** A claim is not an applied settlement receipt. Once claimed, an uncertain external effect must be held. */
   routineLink(codingId: string): { routineId: string; status: "pending" | "claimed"; terminal?: RunSnapshot } | undefined {
     const row = this.db.prepare("SELECT routine_id, status, terminal FROM coding_routine_links WHERE coding_id = ?")
@@ -164,6 +193,21 @@ export class RunContractStore {
     const row = this.db.prepare("SELECT repository, reason, method FROM coding_run_merge_reasons WHERE run_id = ?")
       .get(id) as { repository: string; reason: string; method: "merge" | "rebase" } | undefined;
     return row ? { repository: row.repository, reason: row.reason, method: row.method } : undefined;
+  }
+  markPublication(id: string, branch: string, headSha: string): RunSnapshot {
+    const current = this.get(id);
+    if (!current || current.state !== "publishing" || current.hostCheck?.exitCode !== 0 ||
+      current.hostCheck.commitSha !== headSha || !/^[a-f0-9]{40}$/.test(headSha) || !branch) {
+      throw new Error("publication does not match the verified head");
+    }
+    if (current.publication && current.publication.headSha === headSha && current.publication.branch !== branch) {
+      throw new Error("publication identity changed");
+    }
+    const next = advanceRun({ ...current, publication: { branch, headSha } }, "awaiting-ci",
+      Math.max(Date.now(), current.updatedAt + 1), [`Draft publication bound to ${headSha}`]);
+    this.db.prepare("UPDATE coding_runs SET version = version + 1, snapshot = ? WHERE id = ?")
+      .run(JSON.stringify(next), id);
+    return next;
   }
   get(id: string): RunSnapshot | undefined {
     const row = this.db.prepare("SELECT snapshot FROM coding_runs WHERE id = ?").get(id) as { snapshot: string } | undefined;

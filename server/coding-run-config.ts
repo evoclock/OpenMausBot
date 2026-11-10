@@ -43,6 +43,7 @@ export const codingRunConfigSchema = z.object({
   gitAppInstallations: z.record(reference, codingGitAppInstallationSchema).optional(),
   repositoryRoot: z.string().min(1),
   rolesFilePath: z.string().min(1).optional(),
+  driverRoot: z.string().startsWith("/").min(2).optional(),
   /** Consecutive interrupted task invocations before parking; default 5. */
   restartLimit: z.number().int().positive().optional(),
   /** Maximum UTF-8 bytes of redacted iteration history in the next worker goal; default 8192. */
@@ -62,7 +63,11 @@ export const codingRunConfigSchema = z.object({
     repository: z.string().min(1), ref: z.string().min(1),
     successCriteria: z.array(z.string().min(1)).min(1),
     checkCommand: z.array(z.string().min(1)).min(1),
-  }).strict()).min(1).max(20),
+    checkTimeoutMs: z.number().int().positive().max(1_200_000).optional(),
+    requiredChecks: z.array(z.string().min(1).max(128)).min(1).optional(),
+    potetoRecipe: z.object({ skillDir: z.string().startsWith("/").min(2), playbook: z.literal("bug-fix") }).strict().optional(),
+  }).strict().refine((entry) => !entry.potetoRecipe || entry.requiredChecks?.length,
+    "pinned coding requires named CI checks")).min(1).max(20),
 }).strict();
 
 export type CodingRunConfig = z.output<typeof codingRunConfigSchema>;

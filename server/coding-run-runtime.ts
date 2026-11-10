@@ -6,7 +6,7 @@ import { createIterationContextCompactor } from "./iteration-context-compactor.t
 import { CodingEffectReceipts, type EffectReconcileHost } from "./coding-effect-receipts.ts";
 import type { InstalledWorkerDriver } from "./driver-run-api.ts";
 import type { RunSnapshot } from "./run-contract.ts";
-import { startGithubCodingRun, startScheduledCodingRun, startWebhookCodingRun, type TriggerTemplate } from "./run-triggers.ts";
+import { startGithubCodingRun, startOwnerCodingRun, startScheduledCodingRun, startWebhookCodingRun, type TriggerTemplate } from "./run-triggers.ts";
 
 interface GithubRegistration {
   secret: string;
@@ -24,6 +24,8 @@ export async function openCodingRunRuntime(options: {
   onTerminal?: (snapshot: RunSnapshot) => boolean | void;
   onStart?: (snapshot: RunSnapshot) => void;
   onCancel?: (snapshot: RunSnapshot) => Promise<void>;
+  publication?: { publish(snapshot: RunSnapshot): Promise<{ branch: string; headSha: string }>;
+    check(snapshot: RunSnapshot): Promise<"green" | "red" | "pending"> };
   effectInspector?: EffectReconcileHost;
   driver?: InstalledWorkerDriver;
   loadDriver?: () => Promise<InstalledWorkerDriver>;
@@ -87,7 +89,8 @@ export async function openCodingRunRuntime(options: {
         receipts.saveResult(contract.id, iteration, requestId, result);
       }
       return result;
-    } }, { onTerminal: options.onTerminal, onStart: options.onStart, onCancel: options.onCancel, restartLimit: options.restartLimit,
+    } }, { onTerminal: options.onTerminal, onStart: options.onStart, onCancel: options.onCancel,
+      publication: options.publication, restartLimit: options.restartLimit,
       contextCompactor: createIterationContextCompactor(options.contextCarryMaxBytes),
       ...(options.effectInspector ? { effectRecovery: { receipts, host: options.effectInspector,
         async recoverResult(contract, iteration, requestId) { return receipts.savedResult(contract.id, iteration, requestId); },
@@ -110,6 +113,9 @@ export async function openCodingRunRuntime(options: {
   } catch (error) { receipts.close(); throw error; }
   runner.resume();
   return {
+    owner(input: { repository: string; goal: string; idempotencyKey: string }, template: TriggerTemplate, authorized: boolean) {
+      return startOwnerCodingRun(runner, input, template, authorized);
+    },
     scheduled(run: { id: string; routineId: string; botId: string; scheduledFor: number;
       triggerSource?: string; status: string }) {
       const template = options.routines.get(run.routineId);

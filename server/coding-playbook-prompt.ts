@@ -9,8 +9,7 @@ export function codingPlaybookPrompt(contract: RunContractInput, remainingUsd?: 
     throw new Error("coding playbook requires an approved check and finite positive budget");
   }
   return [
-    "/skill:poteto-mode-pi",
-    "Use the Autonomous run playbook for one bounded unit. Do not assume a loop command is available.",
+    "/skill:poteto-mode-pi Use the pinned Bug fix playbook for one bounded unit. The host owns the only outer loop, delegation and PR opening. Do not start a loop, watcher, subagent, swarm, arena or another PR.",
     `Goal: ${contract.successCriteria.join("; ")}`,
     `Approved check: ${contract.successCriteria.join("; ")}`,
     `Budget: at most ${wallTime} ms${remainingUsd === undefined ? "" : ` and $${remainingUsd} remaining`}. Stop at the first limit.`,

@@ -11,7 +11,8 @@ const contract: RunContractInput = {
 
 test("autonomous prompt includes goal, check and finite remaining budget", () => {
   const prompt = codingPlaybookPrompt(contract, 0.5);
-  assert.match(prompt, /^\/skill:poteto-mode-pi/m);
+  assert.match(prompt, /^\/skill:poteto-mode-pi /);
+  assert.doesNotMatch(prompt, /Autonomous run playbook/);
   assert.match(prompt, /Goal: acceptance passes/);
   assert.match(prompt, /Approved check: acceptance passes/);
   assert.match(prompt, /30000 ms and \$0\.5 remaining/);

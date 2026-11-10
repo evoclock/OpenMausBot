@@ -88,7 +88,9 @@ test("a task reacquires its lease without another get or pushing recovered commi
 
 test("first acquire records the upstream tip when local main lags a clean slot", async () => {
   const root = process.cwd();
-  const dir = mkdtempSync(join(root, "node_modules", ".cache", "coding-upstream-"));
+  const cache = join(root, ".omb-scratch", "coding-treehouse-tests");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "coding-upstream-"));
   const slot = join(dir, "slot");
   mkdirSync(slot);
   const git = (...args: string[]) => execFileSync("git", args, { cwd: slot, encoding: "utf8" }).trim();
@@ -136,7 +138,9 @@ test("first acquire records the upstream tip when local main lags a clean slot",
 
 test.each(["clean", "dirty", "bundle-failure", "unpushed-clean", "ignored", "ignored-unreadable"])("release reconciles %s workspace before guarded return", async (condition) => {
   const root = process.cwd();
-  const dir = mkdtempSync(join(root, "node_modules", ".cache", "coding-release-"));
+  const cache = join(root, ".omb-scratch", "coding-treehouse-tests");
+  mkdirSync(cache, { recursive: true });
+  const dir = mkdtempSync(join(cache, "coding-release-"));
   const fakeTreehouse = join(dir, "treehouse.mjs");
   const fakeGit = join(dir, "git.mjs");
   const log = join(dir, "calls.log");

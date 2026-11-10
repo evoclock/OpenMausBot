@@ -67,6 +67,53 @@ test("outer loop invokes fresh inner iterations until its verified verdict", asy
   } finally { await runner.close(); }
 });
 
+test("exact-head CI red consumes an iteration on the same branch and green settles once", async () => {
+  const calls: string[] = [];
+  const heads = ["a".repeat(40), "b".repeat(40)];
+  const runner = await openOuterRunner(fixtureDir(), {
+    async invoke(_run, iteration) { return { ...verified([`review accepted ${iteration}`]),
+      hostCheck: { ...verified([]).hostCheck, commitSha: heads[iteration - 1]! } }; },
+  }, { publication: {
+    async publish(snapshot) {
+      calls.push(`publish:${snapshot.iteration}:${snapshot.hostCheck?.commitSha}`);
+      return { branch: "bot/coding-33333333", headSha: snapshot.hostCheck!.commitSha };
+    },
+    async check(snapshot) {
+      calls.push(`ci:${snapshot.iteration}:${snapshot.publication?.headSha}`);
+      return snapshot.iteration === 1 ? "red" : "green";
+    },
+  } });
+  try {
+    await runner.wait(await runner.start({ ...contract, allowedEffects: ["edit", "push", "draft-pr"] }));
+    assert.equal(runner.get(contract.id)?.state, "done");
+    assert.equal(runner.get(contract.id)?.iteration, 2);
+    assert.deepEqual(calls, [`publish:1:${heads[0]}`, `ci:1:${heads[0]}`,
+      `publish:2:${heads[1]}`, `ci:2:${heads[1]}`]);
+  } finally { await runner.close(); }
+});
+
+test("pending exact-head CI stays awaiting-ci without republishing and yields one terminal report", async () => {
+  let publishes = 0;
+  let checks = 0;
+  const runner = await openOuterRunner(fixtureDir(), { async invoke() { return verified(["review accepted"]); } }, {
+    publication: {
+      async publish(snapshot) { publishes++; return { branch: "bot/coding-33333333", headSha: snapshot.hostCheck!.commitSha }; },
+      async check(snapshot) {
+        assert.equal(snapshot.state, "awaiting-ci");
+        assert.equal(snapshot.publication?.headSha, snapshot.hostCheck?.commitSha);
+        return ++checks === 1 ? "pending" : "green";
+      },
+    },
+  });
+  try {
+    await runner.wait(await runner.start({ ...contract, allowedEffects: ["edit", "push", "draft-pr"] }));
+    assert.equal(runner.get(contract.id)?.state, "done");
+    assert.equal(publishes, 1);
+    assert.equal(checks, 2);
+    assert.equal(runner.report(contract.id)?.snapshot.state, "done");
+  } finally { await runner.close(); }
+});
+
 test("ledger persists bounded entries across restart and carries only the preceding verdict", async () => {
   const dir = fixtureDir();
   const contexts: Array<{ iteration: number; previous?: { evidence: string[]; verdict: string } }> = [];

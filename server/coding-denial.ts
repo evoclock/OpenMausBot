@@ -6,6 +6,10 @@ export interface CodingThread {
   id: string;
   branch: string;
   directory: string;
+  potetoSkillDir?: string;
+  rolesFilePath?: string;
+  checkCommand?: string[];
+  checkTimeoutMs?: number;
 }
 
 export class CodingDenialBoundary {

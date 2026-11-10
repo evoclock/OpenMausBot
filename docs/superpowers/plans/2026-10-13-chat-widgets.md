@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Two repos, two branches named `feat/chat-widgets`: server, shared and desktop in `OpenGrokBot-widgets` (milind-soni/OpenMausBot); iOS and Android in `mausbot-mobile-widgets` (SupaMaus/mausbot-mobile). Never put phone code in the first or desktop code in the second. No push, no PR.
-- Ratchets (`scripts/testing/file-size-ratchet.test.ts`, `index-route-ratchet.test.ts`): `server/index.ts`, `src/state/store.tsx`, `server/store.ts`, `server/config.ts`, `ChatView.tsx`, `GroupView.tsx`, `scripts/mcp-server.ts`, `server/drivers/agents-call.ts` may not gain a line; `server/index.ts` may not gain a path guard; no new file over 1,000 lines. Move code out to make room and lower the pinned number.
+- The route ratchet (`scripts/testing/index-route-ratchet.test.ts`) prevents new path guards in `server/index.ts`. Put new routes in `server/routes/`.
 - Server code runs on type stripping: type-only imports must be `import type`, no enums, no parameter properties.
 - Tests are colocated `*.test.ts` (never `.tsx`); React tests start with `// @vitest-environment happy-dom` and use `createElement`.
 - Every desktop UI string goes through `t()` with a key in `src/locales/en.json`. iOS strings need `pt-BR`, `zh-Hans`, `zh-Hant` entries in `ios/App/Localizable.xcstrings`; Android strings need `values/`, `values-b+zh+Hans/`, `values-b+zh+Hant/`.
@@ -69,7 +69,7 @@ export function resolveWidgetAction(payload: WidgetPayload, ref: string, values:
 
 **Files:**
 - Create: `server/chat-widgets.ts`, `server/chat-widgets.test.ts`, `server/drivers/agents-widget-tools.ts`, `server/drivers/agents-call-cards.ts`
-- Modify: `server/index.ts` (swap `createOptionsCard` for `createAgentCard`, same line count), `server/drivers/agents-catalog.ts` (spread the two definitions; read-only annotation list untouched), `server/drivers/agents-call.ts` (the `create_options_card` branch moves into `agents-call-cards.ts`, which also handles the two widget tools; lower its ratchet number), `server/routes/bot-messages.ts` (`widgetAction`), `server/replies.ts` (widget branch), `server/delta-context.ts` (`isContextMessage`), `server/routes/threads.ts` (markdown export line), `server/team-backup.ts` (`messageText`), `scripts/mcp-server.ts` (projection keeps `widget`, in place), `server/drivers/agents-catalog-wire.test.ts` goldens and budget baselines, `scripts/testing/file-size-ratchet.test.ts`
+- Modify: `server/index.ts` (swap `createOptionsCard` for `createAgentCard`), `server/drivers/agents-catalog.ts` (spread the two definitions; read-only annotation list untouched), `server/drivers/agents-call.ts` (the `create_options_card` branch moves into `agents-call-cards.ts`, which also handles the two widget tools), `server/routes/bot-messages.ts` (`widgetAction`), `server/replies.ts` (widget branch), `server/delta-context.ts` (`isContextMessage`), `server/routes/threads.ts` (markdown export line), `server/team-backup.ts` (`messageText`), `scripts/mcp-server.ts` (projection keeps `widget`, in place), `server/drivers/agents-catalog-wire.test.ts` goldens and budget baselines
 
 **Interfaces:**
 - Consumes: everything Task 1 produces.
